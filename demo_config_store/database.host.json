@@ -1,0 +1,11 @@
+{
+  "key": "database.host",
+  "value": "staging-db.example.com",
+  "scope": "global",
+  "environment": "development",
+  "encrypted": false,
+  "version": 2,
+  "created_at": "2025-09-14T15:51:45.718114",
+  "updated_at": "2025-09-14T15:51:45.864953",
+  "metadata": {}
+}

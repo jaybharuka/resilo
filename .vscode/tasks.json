@@ -1,0 +1,46 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start Node API (port 3001)",
+			"type": "shell",
+			"command": "cd \"d:\\AIOps Bot\\dashboard\"; node server.js",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "build-dashboard",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"cd \"d:\\AIOps Bot\\dashboard\"; if (Test-Path node_modules) { Write-Host 'Using existing node_modules' } else { npm ci }; npm run build"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dashboard",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"cd \"d:\\AIOps Bot\\dashboard\"; npm run build"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-dashboard",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"cd \"d:\\AIOps Bot\\dashboard\"; npm run build"
+			],
+			"group": "build"
+		}
+	]
+}

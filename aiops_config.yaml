@@ -1,0 +1,41 @@
+components:
+- auto_restart: true
+  class: AdvancedPerformanceMonitor
+  config:
+    monitoring_interval: 10
+  critical: true
+  module: performance_monitor
+  name: performance_monitor
+  type: monitoring
+- class: IntelligentResourceOptimizer
+  config:
+    optimization_interval: 30
+  dependencies:
+  - performance_monitor
+  module: resource_optimizer
+  name: resource_optimizer
+  type: performance
+- class: IntelligentAutoScaler
+  config:
+    scaling_policies: 4
+  dependencies:
+  - performance_monitor
+  module: auto_scaler
+  name: auto_scaler
+  type: automation
+- class: IntelligentLoadBalancer
+  config:
+    health_check_interval: 30
+  module: load_balancer
+  name: load_balancer
+  type: load_balancing
+- class: AdaptiveMLPlatform
+  config:
+    model_update_interval: 300
+  module: adaptive_ml
+  name: adaptive_ml
+  type: adaptive_ml
+orchestrator:
+  component_startup_timeout: 60
+  health_check_interval: 30
+  max_restart_attempts: 3

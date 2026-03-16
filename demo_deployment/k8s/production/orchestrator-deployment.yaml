@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: orchestrator
+    environment: production
+    service-type: orchestrator
+  name: orchestrator-deployment
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+        service-type: orchestrator
+    spec:
+      containers:
+      - env:
+        - name: PORT
+          value: '8081'
+        - name: CONFIG_PATH
+          value: /app/config
+        image: aiops/orchestrator:latest
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        name: orchestrator
+        ports:
+        - containerPort: 8081
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 1000m
+            memory: 1Gi
+      restartPolicy: Always

@@ -1,0 +1,340 @@
+groups:
+- interval: 30s
+  name: dynamic_alerts
+  rules:
+  - alert: system_cpu_usage_percent_high_warning
+    annotations:
+      description: 'system_cpu_usage_percent value {{ $value }} exceeds warning threshold
+        of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_cpu_usage_percent is above warning threshold
+    expr: system_cpu_usage_percent > 80
+    for: 2m
+    labels:
+      metric: system_cpu_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_cpu_usage_percent_high_critical
+    annotations:
+      description: 'system_cpu_usage_percent value {{ $value }} exceeds critical threshold
+        of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_cpu_usage_percent is critically high
+    expr: system_cpu_usage_percent > 90
+    for: 2m
+    labels:
+      metric: system_cpu_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: system_cpu_usage_percent_low_warning
+    annotations:
+      description: 'system_cpu_usage_percent value {{ $value }} is below warning threshold
+        of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_cpu_usage_percent is below warning threshold
+    expr: system_cpu_usage_percent < 10
+    for: 2m
+    labels:
+      metric: system_cpu_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_cpu_usage_percent_low_critical
+    annotations:
+      description: 'system_cpu_usage_percent value {{ $value }} is below critical
+        threshold of 5.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_cpu_usage_percent is critically low
+    expr: system_cpu_usage_percent < 5
+    for: 2m
+    labels:
+      metric: system_cpu_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: system_memory_usage_percent_high_warning
+    annotations:
+      description: 'system_memory_usage_percent value {{ $value }} exceeds warning
+        threshold of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_memory_usage_percent is above warning threshold
+    expr: system_memory_usage_percent > 80
+    for: 2m
+    labels:
+      metric: system_memory_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_memory_usage_percent_high_critical
+    annotations:
+      description: 'system_memory_usage_percent value {{ $value }} exceeds critical
+        threshold of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_memory_usage_percent is critically high
+    expr: system_memory_usage_percent > 90
+    for: 2m
+    labels:
+      metric: system_memory_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: system_memory_usage_percent_low_warning
+    annotations:
+      description: 'system_memory_usage_percent value {{ $value }} is below warning
+        threshold of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_memory_usage_percent is below warning threshold
+    expr: system_memory_usage_percent < 10
+    for: 2m
+    labels:
+      metric: system_memory_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_memory_usage_percent_low_critical
+    annotations:
+      description: 'system_memory_usage_percent value {{ $value }} is below critical
+        threshold of 5.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_memory_usage_percent is critically low
+    expr: system_memory_usage_percent < 5
+    for: 2m
+    labels:
+      metric: system_memory_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: system_disk_usage_percent_high_warning
+    annotations:
+      description: 'system_disk_usage_percent value {{ $value }} exceeds warning threshold
+        of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_disk_usage_percent is above warning threshold
+    expr: system_disk_usage_percent > 80
+    for: 2m
+    labels:
+      metric: system_disk_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_disk_usage_percent_high_critical
+    annotations:
+      description: 'system_disk_usage_percent value {{ $value }} exceeds critical
+        threshold of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_disk_usage_percent is critically high
+    expr: system_disk_usage_percent > 90
+    for: 2m
+    labels:
+      metric: system_disk_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: system_disk_usage_percent_low_warning
+    annotations:
+      description: 'system_disk_usage_percent value {{ $value }} is below warning
+        threshold of 20.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_disk_usage_percent is below warning threshold
+    expr: system_disk_usage_percent < 20
+    for: 2m
+    labels:
+      metric: system_disk_usage_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: system_disk_usage_percent_low_critical
+    annotations:
+      description: 'system_disk_usage_percent value {{ $value }} is below critical
+        threshold of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: system_disk_usage_percent is critically low
+    expr: system_disk_usage_percent < 10
+    for: 2m
+    labels:
+      metric: system_disk_usage_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: app_response_time_seconds_high_warning
+    annotations:
+      description: 'app_response_time_seconds value {{ $value }} exceeds warning threshold
+        of 1.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_response_time_seconds is above warning threshold
+    expr: app_response_time_seconds > 1.0
+    for: 2m
+    labels:
+      metric: app_response_time_seconds
+      severity: warning
+      threshold_type: dynamic
+  - alert: app_response_time_seconds_high_critical
+    annotations:
+      description: 'app_response_time_seconds value {{ $value }} exceeds critical
+        threshold of 2.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_response_time_seconds is critically high
+    expr: app_response_time_seconds > 2.0
+    for: 2m
+    labels:
+      metric: app_response_time_seconds
+      severity: critical
+      threshold_type: dynamic
+  - alert: app_error_rate_percent_high_warning
+    annotations:
+      description: 'app_error_rate_percent value {{ $value }} exceeds warning threshold
+        of 5.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_error_rate_percent is above warning threshold
+    expr: app_error_rate_percent > 5
+    for: 2m
+    labels:
+      metric: app_error_rate_percent
+      severity: warning
+      threshold_type: dynamic
+  - alert: app_error_rate_percent_high_critical
+    annotations:
+      description: 'app_error_rate_percent value {{ $value }} exceeds critical threshold
+        of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_error_rate_percent is critically high
+    expr: app_error_rate_percent > 10
+    for: 2m
+    labels:
+      metric: app_error_rate_percent
+      severity: critical
+      threshold_type: dynamic
+  - alert: app_throughput_requests_per_sec_high_warning
+    annotations:
+      description: 'app_throughput_requests_per_sec value {{ $value }} exceeds warning
+        threshold of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_throughput_requests_per_sec is above warning threshold
+    expr: app_throughput_requests_per_sec > 80
+    for: 2m
+    labels:
+      metric: app_throughput_requests_per_sec
+      severity: warning
+      threshold_type: dynamic
+  - alert: app_throughput_requests_per_sec_high_critical
+    annotations:
+      description: 'app_throughput_requests_per_sec value {{ $value }} exceeds critical
+        threshold of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_throughput_requests_per_sec is critically high
+    expr: app_throughput_requests_per_sec > 90
+    for: 2m
+    labels:
+      metric: app_throughput_requests_per_sec
+      severity: critical
+      threshold_type: dynamic
+  - alert: app_throughput_requests_per_sec_low_warning
+    annotations:
+      description: 'app_throughput_requests_per_sec value {{ $value }} is below warning
+        threshold of 20.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_throughput_requests_per_sec is below warning threshold
+    expr: app_throughput_requests_per_sec < 20
+    for: 2m
+    labels:
+      metric: app_throughput_requests_per_sec
+      severity: warning
+      threshold_type: dynamic
+  - alert: app_throughput_requests_per_sec_low_critical
+    annotations:
+      description: 'app_throughput_requests_per_sec value {{ $value }} is below critical
+        threshold of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: app_throughput_requests_per_sec is critically low
+    expr: app_throughput_requests_per_sec < 10
+    for: 2m
+    labels:
+      metric: app_throughput_requests_per_sec
+      severity: critical
+      threshold_type: dynamic
+  - alert: http_requests_total_high_warning
+    annotations:
+      description: 'http_requests_total value {{ $value }} exceeds warning threshold
+        of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: http_requests_total is above warning threshold
+    expr: http_requests_total > 80
+    for: 2m
+    labels:
+      metric: http_requests_total
+      severity: warning
+      threshold_type: dynamic
+  - alert: http_requests_total_high_critical
+    annotations:
+      description: 'http_requests_total value {{ $value }} exceeds critical threshold
+        of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: http_requests_total is critically high
+    expr: http_requests_total > 90
+    for: 2m
+    labels:
+      metric: http_requests_total
+      severity: critical
+      threshold_type: dynamic
+  - alert: http_requests_total_low_warning
+    annotations:
+      description: 'http_requests_total value {{ $value }} is below warning threshold
+        of 20.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: http_requests_total is below warning threshold
+    expr: http_requests_total < 20
+    for: 2m
+    labels:
+      metric: http_requests_total
+      severity: warning
+      threshold_type: dynamic
+  - alert: http_requests_total_low_critical
+    annotations:
+      description: 'http_requests_total value {{ $value }} is below critical threshold
+        of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: http_requests_total is critically low
+    expr: http_requests_total < 10
+    for: 2m
+    labels:
+      metric: http_requests_total
+      severity: critical
+      threshold_type: dynamic
+  - alert: user_sessions_active_high_warning
+    annotations:
+      description: 'user_sessions_active value {{ $value }} exceeds warning threshold
+        of 80.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: user_sessions_active is above warning threshold
+    expr: user_sessions_active > 80
+    for: 2m
+    labels:
+      metric: user_sessions_active
+      severity: warning
+      threshold_type: dynamic
+  - alert: user_sessions_active_high_critical
+    annotations:
+      description: 'user_sessions_active value {{ $value }} exceeds critical threshold
+        of 90.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: user_sessions_active is critically high
+    expr: user_sessions_active > 90
+    for: 2m
+    labels:
+      metric: user_sessions_active
+      severity: critical
+      threshold_type: dynamic
+  - alert: user_sessions_active_low_warning
+    annotations:
+      description: 'user_sessions_active value {{ $value }} is below warning threshold
+        of 20.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: user_sessions_active is below warning threshold
+    expr: user_sessions_active < 20
+    for: 2m
+    labels:
+      metric: user_sessions_active
+      severity: warning
+      threshold_type: dynamic
+  - alert: user_sessions_active_low_critical
+    annotations:
+      description: 'user_sessions_active value {{ $value }} is below critical threshold
+        of 10.00 (pattern: unknown)'
+      pattern_analysis: Based on 0 data points over default
+      summary: user_sessions_active is critically low
+    expr: user_sessions_active < 10
+    for: 2m
+    labels:
+      metric: user_sessions_active
+      severity: critical
+      threshold_type: dynamic
