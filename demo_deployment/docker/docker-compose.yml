@@ -1,0 +1,138 @@
+networks:
+  aiops-network:
+    driver: bridge
+services:
+  analytics-engine:
+    build:
+      context: ./analytics-engine
+      dockerfile: Dockerfile
+    container_name: analytics-engine
+    environment:
+      DATA_PATH: /app/data
+      PORT: '8083'
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 40s
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8083/health
+      timeout: 10s
+    image: aiops/analytics-engine:latest
+    networks:
+    - aiops-network
+    ports:
+    - 8083:8083
+    restart: unless-stopped
+    volumes:
+    - analytics_data:/app/data
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_LEVEL: INFO
+      PORT: '8080'
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 40s
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
+      timeout: 10s
+    image: aiops/api-gateway:latest
+    networks:
+    - aiops-network
+    ports:
+    - 8080:8080
+    restart: unless-stopped
+  config-manager:
+    build:
+      context: ./config-manager
+      dockerfile: Dockerfile
+    container_name: config-manager
+    depends_on:
+    - orchestrator
+    environment:
+      PORT: '8084'
+      STORAGE_PATH: /app/storage
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 40s
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8084/health
+      timeout: 10s
+    image: aiops/config-manager:latest
+    networks:
+    - aiops-network
+    ports:
+    - 8084:8084
+    restart: unless-stopped
+    volumes:
+    - config_data:/app/storage
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: orchestrator
+    environment:
+      CONFIG_PATH: /app/config
+      PORT: '8081'
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 40s
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8081/health
+      timeout: 10s
+    image: aiops/orchestrator:latest
+    networks:
+    - aiops-network
+    ports:
+    - 8081:8081
+    restart: unless-stopped
+    volumes:
+    - config_data:/app/config
+  performance-monitor:
+    build:
+      context: ./performance-monitor
+      dockerfile: Dockerfile
+    container_name: performance-monitor
+    environment:
+      METRICS_INTERVAL: '30'
+      PORT: '8082'
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 40s
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8082/health
+      timeout: 10s
+    image: aiops/performance-monitor:latest
+    networks:
+    - aiops-network
+    ports:
+    - 8082:8082
+    restart: unless-stopped
+version: '3.8'
+volumes:
+  analytics_data: {}
+  config_data: {}
+  monitoring_data: {}

@@ -1,0 +1,16 @@
+{
+  "name": "system-service",
+  "version": "1.0.0",
+  "description": "Real-time system monitoring service for AIOps Dashboard",
+  "main": "systemService.js",
+  "scripts": {
+    "start": "node systemService.js",
+    "dev": "nodemon systemService.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "systeminformation": "^5.21.7",
+    "os-utils": "^0.0.14"
+  }
+}

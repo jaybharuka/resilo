@@ -1,0 +1,37 @@
+# Enterprise AIOps Configuration
+# Add your API keys here to enable full AI capabilities
+
+google_cloud:
+  # Gemini Pro API key configured
+  api_key: "AIzaSyCg-bOAACJXm3pXV1iouUH8L3jjCAlv4z4"
+  project_id: "aiops-chatbot"
+  
+  # Gemini Pro Configuration
+  model: "gemini-pro"
+  temperature: 0.7
+  max_tokens: 1000
+  
+# Notification Services (Optional)
+discord:
+  webhook_url: "YOUR_DISCORD_WEBHOOK_URL"
+  
+slack:
+  webhook_url: "YOUR_SLACK_WEBHOOK_URL"
+  
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  username: "your-email@gmail.com"
+  password: "your-app-password"
+  
+# System Configuration
+monitoring:
+  update_interval: 30  # seconds
+  max_events: 100
+  performance_threshold:
+    cpu: 80
+    memory: 85
+    disk: 90
+    
+# Demo mode (set to false when API keys are added)
+demo_mode: false

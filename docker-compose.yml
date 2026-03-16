@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # Prometheus monitoring system
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: aiops-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - aiops-network
+
+  # System metrics exporter
+  metrics-exporter:
+    build: ./metrics-exporter
+    container_name: aiops-metrics-exporter
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    networks:
+      - aiops-network
+
+  # Sample application with enhanced metrics
+  sample-app:
+    build: ./sample-app
+    container_name: aiops-sample-app
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_APP=app.py
+    restart: unless-stopped
+    networks:
+      - aiops-network
+
+  # AIOps Bot with ML analytics
+  aiops-bot:
+    build: ./bot
+    container_name: aiops-bot
+    ports:
+      - "8080:8080"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - SAMPLE_APP_URL=http://sample-app:5000
+      - METRICS_EXPORTER_URL=http://metrics-exporter:8001
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+    depends_on:
+      - prometheus
+      - sample-app
+      - metrics-exporter
+    restart: unless-stopped
+    networks:
+      - aiops-network
+
+networks:
+  aiops-network:
+    driver: bridge

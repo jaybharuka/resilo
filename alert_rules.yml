@@ -1,0 +1,32 @@
+groups:
+- name: aiops-alerts
+  rules:
+  - alert: HighRequestRate
+    expr: rate(sample_app_requests_total[1m]) > 0.1
+    for: 10s
+    labels:
+      severity: warning
+      service: sample-app
+    annotations:
+      summary: 'High request rate detected on sample app'
+      description: 'Request rate is {{ $value }} requests/second, which is above the threshold of 0.1 req/s'
+      
+  - alert: ServiceDown
+    expr: up{job="sample-app"} == 0
+    for: 30s
+    labels:
+      severity: critical
+      service: sample-app
+    annotations:
+      summary: 'Sample app is down'
+      description: 'The sample application has been unreachable for more than 30 seconds'
+      
+  - alert: HighCPUUsage
+    expr: rate(process_cpu_seconds_total[1m]) > 0.01
+    for: 30s
+    labels:
+      severity: warning
+      service: sample-app
+    annotations:
+      summary: 'High CPU usage detected'
+      description: 'CPU usage rate is {{ $value }} which indicates high load'

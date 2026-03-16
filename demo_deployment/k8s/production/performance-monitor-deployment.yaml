@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: performance-monitor
+    environment: production
+    service-type: performance_monitor
+  name: performance-monitor-deployment
+  namespace: production
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: performance-monitor
+  template:
+    metadata:
+      labels:
+        app: performance-monitor
+        service-type: performance_monitor
+    spec:
+      containers:
+      - env:
+        - name: PORT
+          value: '8082'
+        - name: METRICS_INTERVAL
+          value: '30'
+        image: aiops/performance-monitor:latest
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        name: performance-monitor
+        ports:
+        - containerPort: 8082
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+      restartPolicy: Always

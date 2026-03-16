@@ -1,0 +1,7 @@
+route:
+  receiver: 'aiops-bot'
+receivers:
+  - name: 'aiops-bot'
+    webhook_configs:
+      - url: 'http://aiops-bot:5000/alert'
+        send_resolved: true

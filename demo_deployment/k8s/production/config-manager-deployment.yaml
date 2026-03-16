@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: config-manager
+    environment: production
+    service-type: config_manager
+  name: config-manager-deployment
+  namespace: production
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: config-manager
+  template:
+    metadata:
+      labels:
+        app: config-manager
+        service-type: config_manager
+    spec:
+      containers:
+      - env:
+        - name: PORT
+          value: '8084'
+        - name: STORAGE_PATH
+          value: /app/storage
+        image: aiops/config-manager:latest
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8084
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        name: config-manager
+        ports:
+        - containerPort: 8084
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8084
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 300m
+            memory: 512Mi
+          requests:
+            cpu: 300m
+            memory: 512Mi
+      restartPolicy: Always

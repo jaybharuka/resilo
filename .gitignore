@@ -1,0 +1,40 @@
+# Node modules and environment files
+node_modules/
+.env
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Logs and cache
+*.log
+*.cache
+
+# Temporary Claude working directory files
+tmpclaude-*-cwd
+dashboard/tmpclaude-*-cwd
+
+# Runtime databases (auto-generated)
+*.db
+
+# Export outputs
+exports/
+
+# Extra Sensitive patterns
+*.pem
+*.key
+*.p12
+*.crt
+.env*
+*secret*.yml
+*secret*.json
+*secret*.yaml
+api_config.json
+
+
+*.db
+
+*.sqlite
+
+nul
+

@@ -1,0 +1,202 @@
+credentials:
+  cloud_platforms:
+    aws:
+      access_key_id: YOUR_AWS_ACCESS_KEY_ID
+      encrypted: true
+      region: us-east-1
+      secret_access_key: YOUR_AWS_SECRET_ACCESS_KEY
+      services:
+      - cloudwatch
+      - ec2
+      - s3
+      - lambda
+    azure:
+      client_id: YOUR_AZURE_CLIENT_ID
+      client_secret: YOUR_AZURE_CLIENT_SECRET
+      encrypted: true
+      subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
+      tenant_id: YOUR_AZURE_TENANT_ID
+    gcp:
+      client_email: gAAAAABoxxyrGRRoZokjJGAk1rlqSC4Kdx4lHWVZBjvbXdpg1bVy0M2uOwrToKtiZ_DoMGlGZPOy4zIKXAlpNOB1WcEXYh1-7MHjT4Zegz5tqjvpBKg9Uel5Fq7p2x35E0BYq-_qkrlADmAv_2QQMQxemt3UUJg_m3i2rJ5MmdLgsWRYGtu8-nU=
+      encrypted: true
+      private_key: gAAAAABoxxyrKDjIMLiiFRevrZeJhO-MtHXYj0x4s9dj0rXu5-cVO70v8pbToWK2oanMa3Hkd65pr9u49mKkwMOJMsE8BFTv7i9WhDTWasZa6RvV8Th79ZRY3BFIK0M_kMkO5T65mH0vUHYxH7aFHPkeDT6RnWEON5CO8VEHZeA0J2Gum-HhSh7VHg5D0Ol-BnhOKIZL45XRT10GTlDvwefevddtgp-BbKTg2hgnPbYfPlQfpxu1m2pyP4Mdm0kkTkF48XkzoN4Ws7RhZrHDCsqwTDvSTkuKlJP_R4ARyqJzQsoo14gHDT8jRtBr7G_WvMSon3ntq7E1jBTdmODkemiDVzaUtaX0GX86UTXI79jrrwkklxvzWkBKCXgDTCEopUrJ3ikfSbJCwMf91e26PwaDvtEEWisoazNYFIYTZwJZX0Ky-thc9dME_v_lIwXy3R4ljeWsW1XeXX23oDFAZYBN2cwePQiUO98WYELkNV661wH1WJnNQXjafeNNLW3vPd0_U2_CbHYendeYjQ2Da0LnUQl3OPHfymKzQRvUcUnW5vUetmMI3qdpme1Gqk0LSr3EcvMF-cIdsKP5ALITAcIhhVn0t14aWRkylIN0Qq0hHgPADEM4n2O3bfH9gz0DHWPLhHEYe8L1gYy3pJoPAq5ZLViyFD6SvoO4qsNluSadj7UEFsKRt80jngsuGwO4D8sVlmUrGrzhQN6mY_CmaQxox8TnMp2YO-xk0unpH4jOjy24rzlio-sbgLldFdDvR1xw6au4NS-QXbNAjQbyD4wwsr4U5OBHKaq-C9f-FPLwgtuUln85NTkuVjELHkqihDY98G02LvQJ3xfphdIHC6AY77GFz2Z3oH_4PCJaMJ8wWUveMEowNWcdAG63tTG6xXYIEF19FTUN9TSAOJS7QhuCxUsttrzUNtGS0ONL6_qBRQiJCuLEHd-qdlAsNvPfza-hoBbagsEwhiv8YPoDL2KVJ_jh97C7GKp88d3JvXWo0FUupgxWn1-_OBG8QO6n51asUXA55Oi05CVngdn7ia6C5nZiYEOFFoXagHJ7kczBscrwxxuks7R4NtWOXV38UylZskgECbIQHBD0LrLiktdI_B_iMgGOHXmR-GYDoK2xpcR9lLsYZNrRCMuY_EOmLLYMr4Hpq-k1lcANGXUEJ_2tueh_Sn7avH6bcTT2_fHIHasg2JnlYmHvWQEESgQNFSfeyyeRDiyzth9q0mLIk1ZcF44CeqvHYUOzM09FbmbUMz30a4eAkqv1fnGdDYmM3_-uqIuizFOZRG99tQLWG6NgYDrELsL1XiQBg0e-ahCscO3n8YPCla8CNKoUvxIWdTdf7pk8mzV_XbFqtrH42xEbXis9XSvKVVCrL4Fgnuqs2Zn1SkSRctt-Hn18STLPCvZCbUNDqUr7IFrbNDy-7adgX21Tn35RK7BqGhGQJRjpgvo9TTZa_SftDIsTxRm5ZvY0jOoXSQyXW4yuMyZFu4DJ3gdmASstO3OdUfMP35HDChVRYE1VhO7-EhOJx8Pl-X_sCu50SiTEtfri0QeY63UurMKoGbbbjXPe68ni9m442VMeM2bn8omoRk7a-4zmlPG4SGWs3SjEQPfMTjBC4M9tfhKu4f6zPHywS6I0S8OhORY9L37us2TqMHDfMHUkUUGbvuuJSkL9P1NlPef0258Xy7JpvregKdEVCgUlNVWZu8dL1_LOcTtOVGSSl9mxkALWq2sK8gE2V5EVd4Xe3MURbRGHbzFnS5KnQX3KW1N1kxdsG5t6_m_sqa750lKIifW60zTkQTU_oX9MUcDNoQzLE5YbM6UZ64avCC3ggahxE4luIwzaVQ24LG1Kntcjf9EV0QQ7rr5Mt2ALkVibI86Wzh2RJhsrHPYgBIeVt8FKhufkPN2GfhotFChPn3G66Pockwr6d_qD0mRIt9tvwXtPGQpz_nR-mNbtxwc6J9TggH3uSCjorLoP8ip7N3F-kOe5FiFlb40w1How9z4bOMPMSVW_api0iSajmAe2zEpaz9qe_P2ZQvivYD0kc6VHPdB63xdJ-wXTCsf90HnHkDk4BpFnzBXr7YJ1j9iSjDEvMGnPVoDOBlF6rpxFbpM3-TUm8rb_41lxb0eAbd0YSbeH_1r0d6kkrK-V9Yelz40kxHCJRpGZ0eFQuxvTnyH3PFpK3WlbtAL9CnahWSd2sxC56eVwVxLTwivZj7aD0lg38jrV6yddFN324NcJqSaVAxyLI5P8TM5-2swJdTHdVdcnz9NxfjqEU4RH9cEMyHLpSlqBTVY3W2kCEnIhuVNYnoa2ZVX0ZV9xPqXXJ09T-u2vfHP2xHSwooRlCrdXSn6oxSadFauAs6Y=
+      private_key_id: gAAAAABoxxyrgc2HMiVZMRwVqNSqbv81Au7A_UIJh9TrOZWgmvgVUk-OT0YcCmuG8wNDAyiIWW77oPgYn2Ll_ru0sTiY27LKmIHBAL0vcSNtjFVcY7qBghUi6NMZHJA8dHbM9uKDlspH
+      project_id: gAAAAABoxxyrnZU4kbcwVuIUOCLfXrR0Q0s6FuXBIQqD82gVsC8QFkqEXCwdzbNXFoxssubsqPhiAWGXy7xXXsY8KeczeK3MX9CoyjCkkkKkXsMpGDI2AEs=
+  communication:
+    discord:
+      bot_token: gAAAAABoxynjAsGbIc_bzjLLdO_iPjO9tsbzPOW-f0JWoadtnXO-RluvH6NqB_eOnAOcMQKpwmgCsIyy9GoG36rHZInuIr4nMyTuac2N7b60P8h9L6hfH9wpMeWhocnsYOHLsk7UL7Sn6edoNAyYM1qM2BV5HGQHFnYfez0jZNI-JWMmAcbvACc=
+      encrypted: true
+      guild_id: gAAAAABoxy6Z2SZ7NVUbIk-9M3Asfhontiqlpew8LMRorpDaGVVxgvRemGzAJjh8r38oWx5anf1DIM7YF2-U6rIoukvzdIAoZuC9LcIwVEeMN_MlsZAeYZQ=
+      webhook_url: https://discord.com/api/webhooks/1416888536690458728/demo-webhook-token-for-intelligent-aiops
+      webhook_url: https://discord.com/api/webhooks/1416888535847407709/demo-intelligent-aiops
+    microsoft_teams:
+      app_id: YOUR_TEAMS_APP_ID
+      app_password: YOUR_TEAMS_APP_PASSWORD
+      encrypted: true
+      webhook_url: https://outlook.office.com/webhook/YOUR/WEBHOOK/URL
+    pagerduty:
+      api_token: YOUR_PAGERDUTY_API_TOKEN
+      encrypted: true
+      integration_key: YOUR_PAGERDUTY_INTEGRATION_KEY
+    slack:
+      bot_token: gAAAAABoxyLHqAdtB_po0_OvFh0_MeIiGoXFk3oYdio1jhes75NGOUqtnOKyyk7GZhIcGC_C8CYrMjHi2TeBGF8mL0pg-CM81yH8w121U6Bc2K0iNpTSU4khiNKdk0_ST10VXJP5gTN2U1oSIeme8ErqtVoEdCJnIg==
+      encrypted: true
+      signing_secret: gAAAAABoxyLHFTETnaELKRW8EP4MepoWXvkuK-40Gdu22qbbIKN0GBX_FEUVuyrMmsLOwB9KRecVAgRKW446zXaqixPffw15hng2E2Cf4tyeTzgy_XJIYs4-H_yLTuEI8dvqhpuEB-p9
+      webhook_url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+  databases:
+    mongodb:
+      connection_string: mongodb://username:password@host:port/database
+      encrypted: true
+    mysql:
+      database: aiops_production
+      encrypted: true
+      host: YOUR_MYSQL_HOST
+      password: YOUR_MYSQL_PASSWORD
+      port: 3306
+      username: YOUR_MYSQL_USERNAME
+    postgresql:
+      database: aiops_production
+      encrypted: true
+      host: YOUR_POSTGRES_HOST
+      password: YOUR_POSTGRES_PASSWORD
+      port: 5432
+      username: YOUR_POSTGRES_USERNAME
+    redis:
+      encrypted: true
+      host: YOUR_REDIS_HOST
+      password: YOUR_REDIS_PASSWORD
+      port: 6379
+  identity:
+    active_directory:
+      domain: YOUR_AD_DOMAIN
+      encrypted: true
+      password: YOUR_AD_PASSWORD
+      server: YOUR_AD_SERVER
+      username: YOUR_AD_USERNAME
+    auth0:
+      client_id: YOUR_AUTH0_CLIENT_ID
+      client_secret: YOUR_AUTH0_CLIENT_SECRET
+      domain: YOUR_AUTH0_DOMAIN
+      encrypted: true
+    okta:
+      api_token: YOUR_OKTA_API_TOKEN
+      domain: YOUR_OKTA_DOMAIN
+      encrypted: true
+  itsm:
+    jira:
+      api_token: YOUR_JIRA_API_TOKEN
+      encrypted: true
+      server: https://your-company.atlassian.net
+      username: YOUR_JIRA_USERNAME
+    remedy:
+      encrypted: true
+      password: YOUR_REMEDY_PASSWORD
+      server: YOUR_REMEDY_SERVER
+      username: YOUR_REMEDY_USERNAME
+    servicenow:
+      encrypted: true
+      instance: YOUR_SERVICENOW_INSTANCE
+      password: YOUR_SERVICENOW_PASSWORD
+      username: YOUR_SERVICENOW_USERNAME
+  messaging:
+    sendgrid:
+      api_key: YOUR_SENDGRID_API_KEY
+      encrypted: true
+      from_email: noreply@company.com
+    smtp:
+      encrypted: true
+      password: YOUR_EMAIL_APP_PASSWORD
+      port: 587
+      server: smtp.gmail.com
+      use_tls: true
+      username: your-email@company.com
+    twilio:
+      account_sid: YOUR_TWILIO_ACCOUNT_SID
+      auth_token: YOUR_TWILIO_AUTH_TOKEN
+      encrypted: true
+      from_number: '+1234567890'
+  monitoring_tools:
+    datadog:
+      api_key: YOUR_DATADOG_API_KEY
+      app_key: YOUR_DATADOG_APP_KEY
+      encrypted: true
+      site: datadoghq.com
+    elastic:
+      api_key: YOUR_ELASTIC_API_KEY
+      encrypted: true
+      host: YOUR_ELASTICSEARCH_HOST
+      port: 9200
+    new_relic:
+      account_id: YOUR_NEWRELIC_ACCOUNT_ID
+      api_key: YOUR_NEWRELIC_API_KEY
+      encrypted: true
+    splunk:
+      encrypted: true
+      host: YOUR_SPLUNK_HOST
+      password: YOUR_SPLUNK_PASSWORD
+      port: 8089
+      username: YOUR_SPLUNK_USERNAME
+  threat_intelligence:
+    abuseipdb:
+      api_key: YOUR_ABUSEIPDB_API_KEY
+      base_url: https://api.abuseipdb.com/api/v2/
+      encrypted: false
+    misp:
+      api_key: YOUR_MISP_API_KEY
+      base_url: https://your-misp-instance.com
+      encrypted: true
+      verify_ssl: true
+    threatconnect:
+      api_key: YOUR_THREATCONNECT_API_KEY
+      base_url: https://api.threatconnect.com
+      encrypted: true
+      secret_key: YOUR_THREATCONNECT_SECRET_KEY
+    virustotal:
+      api_key: YOUR_VIRUSTOTAL_API_KEY
+      base_url: https://www.virustotal.com/vtapi/v2/
+      encrypted: false
+      rate_limit: 4
+  vulnerability_scanners:
+    nessus:
+      access_key: YOUR_NESSUS_ACCESS_KEY
+      base_url: https://cloud.tenable.com
+      encrypted: true
+      secret_key: YOUR_NESSUS_SECRET_KEY
+    qualys:
+      base_url: https://qualysapi.qualys.com
+      encrypted: true
+      password: YOUR_QUALYS_PASSWORD
+      username: YOUR_QUALYS_USERNAME
+    rapid7:
+      api_key: YOUR_RAPID7_API_KEY
+      base_url: https://us.api.insight.rapid7.com
+      encrypted: true
+debug: false
+environment: production
+external_apis:
+  max_concurrent_requests: 100
+  retry_attempts: 3
+  retry_delay: 5
+  timeout: 30
+log_level: INFO
+logging:
+  backup_count: 10
+  file: /var/log/aiops/aiops.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+  max_size: 100MB
+ml:
+  max_training_time: 3600
+  model_backup_retention: 30
+  model_storage_path: /data/models/
+  training_schedule: 0 2 * * *
+security:
+  api_rate_limit: 1000
+  enable_2fa: true
+  encryption_key: YOUR_32_CHAR_ENCRYPTION_KEY
+  jwt_secret: YOUR_JWT_SECRET_KEY
+  session_timeout: 3600
+ssl:
+  ca_file: /path/to/ssl/ca-bundle.crt
+  cert_file: /path/to/ssl/certificate.crt
+  key_file: /path/to/ssl/private.key

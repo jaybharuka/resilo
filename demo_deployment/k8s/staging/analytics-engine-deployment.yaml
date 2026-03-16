@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: analytics-engine
+    environment: staging
+    service-type: analytics_engine
+  name: analytics-engine-deployment
+  namespace: staging
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: analytics-engine
+  template:
+    metadata:
+      labels:
+        app: analytics-engine
+        service-type: analytics_engine
+    spec:
+      containers:
+      - env:
+        - name: PORT
+          value: '8083'
+        - name: DATA_PATH
+          value: /app/data
+        image: aiops/analytics-engine:latest
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8083
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        name: analytics-engine
+        ports:
+        - containerPort: 8083
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8083
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 2Gi
+          requests:
+            cpu: 1500m
+            memory: 2Gi
+      restartPolicy: Always
