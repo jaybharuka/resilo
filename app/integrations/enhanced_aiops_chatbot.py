@@ -66,7 +66,7 @@ class EnhancedAIOpsBot:
             # Initialize Google Gemini if available
             if GEMINI_AVAILABLE:
                 print("🧠 Initializing NVIDIA OpenAI Client...")
-                nvidia_api_key = os.getenv('NVIDIA_API_KEY') or "REDACTED_NVIDIA_API_KEY"
+                nvidia_api_key = os.getenv('NVIDIA_API_KEY')
                 if nvidia_api_key:
                     self.gemini_model = OpenAI(
                         base_url="https://integrate.api.nvidia.com/v1",
