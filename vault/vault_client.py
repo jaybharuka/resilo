@@ -14,7 +14,9 @@ import logging
 logger = logging.getLogger("aiops.vault")
 
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://localhost:8200")
-VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "aiops-root-token")
+VAULT_TOKEN = os.environ.get("VAULT_TOKEN")
+if not VAULT_TOKEN:
+    logger.warning("VAULT_TOKEN not set — Vault integration disabled")
 
 # Paths → env-var mappings to auto-load at startup
 _SECRET_MAP = {
