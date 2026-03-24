@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: Detect hardcoded secrets with gitleaks
+        entry: gitleaks protect --staged --config .gitleaks.toml --redact -v
+        language: system
+        pass_filenames: false
