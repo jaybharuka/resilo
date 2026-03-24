@@ -9,7 +9,7 @@ const ThemeContext = createContext({
 const THEMES = ['light', 'dark', 'high-contrast'];
 
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState('light');
+  const [theme, setThemeState] = useState('dark');
 
   useEffect(() => {
     try {

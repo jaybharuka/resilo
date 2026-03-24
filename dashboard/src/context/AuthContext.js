@@ -1,108 +1,97 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { authApi, setAuthTokenOnClient, setRefreshTokenOnClient } from '../services/api';
-import toast from 'react-hot-toast';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import { setTokenGetter, authApi } from '../services/api';
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [user, setUser] = useState(() => {
-    try {
-      const raw = localStorage.getItem('aiops:user');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [token, setToken] = useState(() => localStorage.getItem('aiops:token'));
-  const [loading, setLoading] = useState(false);
-
-  // Sync axios auth header
+  const [user, setUser] = useState(undefined); // undefined = loading
+  const [role, setRole] = useState('employee');
+  const [authError, setAuthError] = useState(null); 
+  
   useEffect(() => {
-    setAuthTokenOnClient(token || undefined);
-  }, [token]);
-
-  // Define logout handler BEFORE any effects that reference it
-  const doLogout = useCallback(async (serverLogout = true) => {
-    try {
-      const tk = localStorage.getItem('aiops:token');
-      if (serverLogout && tk) {
-        await authApi.logout();
+    async function initAuth() {
+      const storedToken = localStorage.getItem('aiops:token');
+      if (storedToken) {
+        setTokenGetter(() => storedToken); // Synchronous token getter for custom JWT
+        try {
+          const meData = await authApi.me();
+          // FastAPI returns user directly; legacy Flask wraps in {user: ...}
+          const u = meData?.id ? meData : meData?.user;
+          if (u) {
+            setUser(u);
+            setRole(u.role || 'employee');
+            try { localStorage.setItem('aiops:user', JSON.stringify(u)); } catch {}
+          } else {
+            setUser(null);
+            try { localStorage.removeItem('aiops:user'); } catch {}
+          }
+        } catch (err) {
+          console.error("Token validation failed", err);
+          setTokenGetter(null);
+          localStorage.removeItem('aiops:token');
+          setUser(null);
+        }
+      } else {
+        setUser(null);
       }
-    } catch {
-      // ignore
-    } finally {
-      setUser(null);
-      setToken(null);
-      localStorage.removeItem('aiops:token');
-      localStorage.removeItem('aiops:user');
-      localStorage.removeItem('aiops:refresh');
-      navigate('/login', { replace: true });
     }
-  }, [navigate]);
+    initAuth();
+  }, []);
 
-  // Auto-logout on global unauthorized events
-  useEffect(() => {
-    const handler = () => doLogout(false);
-    window.addEventListener('aiops:unauthorized', handler);
-    return () => window.removeEventListener('aiops:unauthorized', handler);
-  }, [doLogout]);
+  const isLoading = user === undefined;
+  const isAuthenticated = !!user;
 
-  // Restore session
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!token) return;
-      try {
-        const me = await authApi.me();
-        if (!mounted) return;
-        setUser(me.user);
-      } catch {
-        // invalid token
-        doLogout(false);
-      }
-    })();
-    return () => { mounted = false; };
-  }, [token]);
-
-  const doLogin = useCallback(async (email, password, rolePreference) => {
-    setLoading(true);
+  const login = useCallback(async (email, password) => {
+    setAuthError(null);
     try {
-      const res = await authApi.login({ email, password, role: rolePreference });
-      const { token: tk, refresh_token: rt, user: u } = res;
-      setToken(tk);
-      setUser(u);
-      localStorage.setItem('aiops:token', tk);
-      if (rt) {
-        setRefreshTokenOnClient(rt);
-        try { localStorage.setItem('aiops:refresh', rt); } catch {}
+      const res = await authApi.login({ email, password });
+      // 2FA required — surface to the login page
+      if (res?.requires_2fa) {
+        return { ok: false, requires_2fa: true, temp_token: res.temp_token };
       }
-      localStorage.setItem('aiops:user', JSON.stringify(u));
-      try { toast.success('Signed in'); } catch {}
-      // Redirect to intended page or dashboard
-      const from = (location.state && location.state.from) || { pathname: '/dashboard' };
-      navigate(from, { replace: true });
-      return { ok: true };
-    } catch (e) {
-      const msg = e?.response?.data?.error || e.message;
-      try { toast.error(msg || 'Login failed'); } catch {}
-      return { ok: false, error: msg };
-    } finally {
-      setLoading(false);
+      if (res?.token && res?.user) {
+        localStorage.setItem('aiops:token', res.token);
+        try { localStorage.setItem('aiops:user', JSON.stringify(res.user)); } catch {}
+        setTokenGetter(() => res.token);
+        setUser(res.user);
+        setRole(res.user.role || 'employee');
+        return { ok: true };
+      } else {
+        throw new Error('Invalid response from server.');
+      }
+    } catch (err) {
+      // FastAPI uses {detail: "..."}, legacy Flask uses {error: "..."}
+      const serverError = err?.response?.data?.detail || err?.response?.data?.error;
+      setAuthError(serverError || 'Sign-in failed.');
+      throw new Error(serverError || 'Sign-in failed.');
     }
-  }, [location.state, navigate]);
+  }, []);
+
+  const loginWithGoogle = useCallback(async () => {
+    setAuthError('Google Login is not available in local mode.');
+    throw new Error('Google Login unavailable');
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await authApi.logout(); } catch {}
+    setTokenGetter(null);
+    localStorage.removeItem('aiops:token');
+    localStorage.removeItem('aiops:refresh');
+    localStorage.removeItem('aiops:user');
+    setUser(null);
+    setRole('employee');
+  }, []);
 
   const value = useMemo(() => ({
     user,
-    role: user?.role || 'employee',
-    token,
-    loading,
-    login: doLogin,
-    logout: doLogout,
-    isAuthenticated: !!user && !!token,
-  }), [user, token, loading, doLogin, doLogout]);
+    role: user?.role || role,
+    loading: isLoading,
+    login,
+    loginWithGoogle,
+    logout,
+    isAuthenticated,
+    authError,
+  }), [user, role, isLoading, login, loginWithGoogle, logout, isAuthenticated, authError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

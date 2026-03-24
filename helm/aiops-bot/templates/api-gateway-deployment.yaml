@@ -1,0 +1,43 @@
+{{- with .Values.services.apiGateway }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "aiops-bot.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ .name }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      {{- include "aiops-bot.selectorLabels" (dict "name" .name "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aiops-bot.selectorLabels" (dict "name" .name "root" $) | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .name }}
+          image: "{{ $.Values.image.registry }}/{{ .image }}:{{ .tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .port }}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: aiops-secrets
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .port }}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+{{- end }}

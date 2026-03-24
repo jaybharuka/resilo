@@ -23,13 +23,15 @@ Stop-PortListener 3001
 Stop-PortListener 3011
 
 # Start backend (new terminal)
-if ($AdminPassword) {
-  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($AdminPassword)
-  $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($BSTR)
-} else { $plain = "" }
-& (Join-Path $here 'start_backend.ps1') -OpenRegistration:$OpenRegistration -AllowActions:$AllowActions -AdminEmail $AdminEmail -AdminPassword $plain
+$backendArgs = @{
+  OpenRegistration = $OpenRegistration
+  AllowActions     = $AllowActions
+  AdminEmail       = $AdminEmail
+}
+if ($AdminPassword) { $backendArgs['AdminPassword'] = $AdminPassword }
+& (Join-Path $here 'start_backend.ps1') @backendArgs
 
 # Start dashboard (new terminal)
-& (Join-Path $here 'start_dashboard.ps1') -Port $Port -Host $BindHost -BuildIfNeeded -KillExisting
+& (Join-Path $here 'start_dashboard.ps1') -Port $Port -BindAddress $BindHost -BuildIfNeeded -KillExisting
 
 Write-Host "All services started (or attempted)." -ForegroundColor Green

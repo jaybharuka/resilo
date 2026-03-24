@@ -1,0 +1,1549 @@
+"""
+core_api.py — AIOps Bot Unified Core API (FastAPI, port 8000)
+
+Consolidates agent management, metrics, alerts, and remediation into one
+multi-tenant FastAPI service. Replaces the scattered Flask endpoints over time.
+
+Architecture:
+    Nginx (443) → core_api (8000)
+    Nginx (443) → auth_api (5001)
+    Flask (5000) → legacy (deprecated, being migrated here)
+
+Start:
+    uvicorn core_api:app --host 0.0.0.0 --port 8000 --reload
+
+Environment variables:
+    DATABASE_URL        postgresql+asyncpg://aiops:aiops@localhost:5432/aiops
+    JWT_SECRET_KEY      same secret as auth_api.py
+    ANOMALY_AUTONOMOUS  "org"|"true"|"false"  (default: org)
+    ANOMALY_POLL_INTERVAL  seconds (default: 30)
+"""
+
+import asyncio
+import hashlib
+import logging
+import os
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Any
+
+import bcrypt
+from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from jose import JWTError, jwt
+from pydantic import BaseModel
+from pythonjsonlogger import jsonlogger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from sqlalchemy import select, func as sqlfunc, desc
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import (
+    init_db, get_db, SessionLocal,
+    Organization, User, Agent, MetricSnapshot,
+    AlertRecord, RemediationRecord, AuditLog,
+    NotificationChannel, AlertRule, NotificationLog,
+)
+from rbac import (
+    TokenPayload, get_token_payload, get_current_user,
+    require_permission, require, get_agent_from_key, generate_agent_key,
+)
+from anomaly_engine import start_anomaly_engine, start_daily_summary_scheduler
+
+# ── Structured JSON logging ───────────────────────────────────────────────────
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(jsonlogger.JsonFormatter(
+    fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+))
+logging.root.handlers = [_handler]
+logging.root.setLevel(logging.INFO)
+log = logging.getLogger("core_api")
+
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="AIOps Core API",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Wildcard origins with allow_credentials=True is a critical misconfiguration —
+# it allows any site on the internet to make authenticated requests on behalf
+# of your logged-in users (session riding / credential theft).
+# ALLOWED_ORIGINS must be a comma-separated list of your actual frontend URLs.
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001,http://127.0.0.1:3000",
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+)
+
+
+# ── Request logging middleware ────────────────────────────────────────────────
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    latency = round((time.perf_counter() - start) * 1000, 1)
+    log.info(
+        "HTTP %s %s",
+        request.method,
+        request.url.path,
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "latency_ms": latency,
+            "ip": request.client.host if request.client else "unknown",
+        },
+    )
+    return response
+
+
+# ── Startup / Shutdown ────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def _startup():
+    await init_db()
+    await _seed_default_org()
+    asyncio.create_task(start_anomaly_engine())
+    asyncio.create_task(start_daily_summary_scheduler())
+    asyncio.create_task(_local_metrics_loop())
+    log.info("Core API started")
+
+
+# ── Local machine metrics collector ──────────────────────────────────────────
+# Registers this server as a built-in agent in the default org and stores
+# live psutil metrics so all org members can see them without deploying an agent.
+
+_LOCAL_AGENT_LABEL = "local-server"
+
+async def _get_or_create_local_agent(db: AsyncSession, org_id: str) -> Agent:
+    """Return the built-in local-server agent for the given org, creating it if needed."""
+    import socket
+    from rbac import generate_agent_key
+    result = await db.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.label == _LOCAL_AGENT_LABEL)
+    )
+    agent = result.scalar_one_or_none()
+    if agent:
+        return agent
+    raw_key, key_hash = generate_agent_key()
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        org_id=org_id,
+        label=_LOCAL_AGENT_LABEL,
+        key_hash=key_hash,
+        status="live",
+        pending_cmds=[],
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+    log.info("Local-server agent registered (org=%s, agent=%s)", org_id, agent.id)
+    return agent
+
+
+async def _collect_local_metrics() -> dict:
+    """Read live metrics from psutil (runs in thread-pool to avoid blocking)."""
+    import asyncio, socket
+    loop = asyncio.get_event_loop()
+
+    def _read():
+        import psutil, time
+        cpu = psutil.cpu_percent(interval=1)
+        mem = psutil.virtual_memory()
+        disk_parts = psutil.disk_partitions()
+        total_disk = used_disk = 0
+        for p in disk_parts:
+            try:
+                u = psutil.disk_usage(p.mountpoint)
+                total_disk += u.total
+                used_disk += u.used
+            except Exception:
+                pass
+        disk_pct = round(used_disk / total_disk * 100, 1) if total_disk else 0
+        net = psutil.net_io_counters()
+        try:
+            temps = psutil.sensors_temperatures() or {}
+            flat = [t.current for lst in temps.values() for t in lst]
+            temperature = round(sum(flat) / len(flat), 1) if flat else None
+        except Exception:
+            temperature = None
+        try:
+            load = psutil.getloadavg()
+            load_avg = round(load[0], 2)
+        except Exception:
+            load_avg = None
+        boot = psutil.boot_time()
+        uptime_secs = int(time.time() - boot)
+        return {
+            "cpu": round(cpu, 1),
+            "memory": round(mem.percent, 1),
+            "memory_used": mem.used,
+            "memory_total": mem.total,
+            "disk": disk_pct,
+            "network_in": round(net.bytes_recv / (1024 * 1024), 2),
+            "network_out": round(net.bytes_sent / (1024 * 1024), 2),
+            "temperature": temperature,
+            "load_avg": load_avg,
+            "processes": len(psutil.pids()),
+            "uptime_secs": uptime_secs,
+        }
+
+    return await loop.run_in_executor(None, _read)
+
+
+async def _local_metrics_loop():
+    """Every 30 s: collect psutil metrics and store as MetricSnapshot for every org."""
+    import socket
+    hostname = socket.gethostname()
+    interval = int(os.getenv("ANOMALY_POLL_INTERVAL", "30"))
+    await asyncio.sleep(5)  # let the DB settle on first startup
+    while True:
+        try:
+            metrics = await _collect_local_metrics()
+            async with SessionLocal() as db:
+                # Find all orgs
+                orgs_result = await db.execute(select(Organization).where(Organization.is_active == True))
+                orgs = orgs_result.scalars().all()
+                for org in orgs:
+                    agent = await _get_or_create_local_agent(db, org.id)
+                    # network_in/out stored as bytes (BigInteger) — convert from MB float
+                    net_in_mb  = metrics.get("network_in")  or 0.0
+                    net_out_mb = metrics.get("network_out") or 0.0
+                    load       = metrics.get("load_avg")
+                    snap = MetricSnapshot(
+                        org_id=org.id,
+                        agent_id=agent.id,
+                        timestamp=datetime.now(timezone.utc),
+                        cpu=metrics["cpu"],
+                        memory=metrics["memory"],
+                        disk=metrics["disk"],
+                        network_in=int(net_in_mb * 1024 * 1024),
+                        network_out=int(net_out_mb * 1024 * 1024),
+                        temperature=metrics.get("temperature"),
+                        load_avg=str(load) if load is not None else None,
+                        processes=metrics.get("processes"),
+                        uptime_secs=metrics.get("uptime_secs"),
+                        extra={"hostname": hostname, "source": "local"},
+                    )
+                    db.add(snap)
+                    # Keep agent status live
+                    agent.status = "live"
+                    agent.last_seen = datetime.now(timezone.utc)
+                await db.commit()
+        except Exception as exc:
+            log.error("Local metrics collection failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
+async def _seed_default_org():
+    """Ensure a 'Default' org exists and all existing users are assigned to it."""
+    async with SessionLocal() as db:
+        # Check if any org exists
+        result = await db.execute(select(sqlfunc.count()).select_from(Organization))
+        if result.scalar() > 0:
+            # Still migrate any users / invites that slipped through without org_id
+            orgs_result = await db.execute(select(Organization).limit(1))
+            first_org = orgs_result.scalar_one_or_none()
+            if first_org:
+                await db.execute(
+                    __import__("sqlalchemy").text(
+                        f"UPDATE users SET org_id = '{first_org.id}' WHERE org_id IS NULL"
+                    )
+                )
+                await db.execute(
+                    __import__("sqlalchemy").text(
+                        f"UPDATE invite_tokens SET org_id = '{first_org.id}' WHERE org_id IS NULL"
+                    )
+                )
+                await db.commit()
+            return
+
+        org = Organization(
+            id=str(uuid.uuid4()),
+            name="Default Organization",
+            slug="default",
+            plan="enterprise",
+            settings={"autonomous_mode": False},
+        )
+        db.add(org)
+        await db.flush()
+
+        # Assign all existing users to this org (migration for users created before orgs)
+        await db.execute(
+            __import__("sqlalchemy").text(
+                f"UPDATE users SET org_id = '{org.id}' WHERE org_id IS NULL"
+            )
+        )
+        # Also set invite tokens org_id
+        await db.execute(
+            __import__("sqlalchemy").text(
+                f"UPDATE invite_tokens SET org_id = '{org.id}' WHERE org_id IS NULL"
+            )
+        )
+        await db.commit()
+        log.info("Default organization seeded (id=%s)", org.id)
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "core-api", "version": "1.0.0"}
+
+
+@app.get("/api/whoami")
+async def whoami(request: Request):
+    """Debug: decode the Bearer token without enforcing permissions."""
+    import base64 as _b64, json as _json
+    from jose import jwt as _jwt, JWTError as _JWTError
+    _secret = os.getenv("JWT_SECRET_KEY", "dev-secret")
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return {"error": "no bearer token"}
+    raw_tok = auth[7:]
+    # Always decode without verification first to see claims
+    try:
+        parts = raw_tok.split(".")
+        pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        raw_payload = _json.loads(_b64.urlsafe_b64decode(pad))
+    except Exception as e:
+        return {"error": f"base64 decode failed: {e}"}
+    # Then verify signature
+    try:
+        _jwt.decode(raw_tok, _secret, algorithms=["HS256"])
+        return {"decoded": raw_payload, "secret_ok": True}
+    except _JWTError as e:
+        return {"decoded": raw_payload, "secret_ok": False, "jwt_error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ORGANIZATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CreateOrgRequest(BaseModel):
+    name: str
+    slug: str
+    plan: str = "free"
+
+
+class OrgSettingsRequest(BaseModel):
+    autonomous_mode: Optional[bool] = None
+
+
+@app.get("/api/orgs")
+@limiter.limit("60/minute")
+async def list_orgs(
+    request: Request,
+    token: TokenPayload = Depends(require_permission("admin:orgs")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Organization).order_by(Organization.created_at))
+    return [_org_out(o) for o in result.scalars().all()]
+
+
+@app.post("/api/orgs", status_code=201)
+@limiter.limit("10/minute")
+async def create_org(
+    request: Request,
+    body: CreateOrgRequest,
+    token: TokenPayload = Depends(require_permission("admin:orgs")),
+    db: AsyncSession = Depends(get_db),
+):
+    dup = await db.execute(select(Organization).where(Organization.slug == body.slug))
+    if dup.scalar_one_or_none():
+        raise HTTPException(409, "Slug already in use")
+    org = Organization(name=body.name, slug=body.slug, plan=body.plan)
+    db.add(org)
+    await db.commit()
+    await db.refresh(org)
+    return _org_out(org)
+
+
+@app.get("/api/orgs/{org_id}")
+async def get_org(
+    org_id: str,
+    token: TokenPayload = Depends(require("orgs:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return _org_out(await _fetch_org(db, org_id))
+
+
+@app.patch("/api/orgs/{org_id}/settings")
+async def update_org_settings(
+    org_id: str,
+    body: OrgSettingsRequest,
+    token: TokenPayload = Depends(require("admin:orgs")),
+    db: AsyncSession = Depends(get_db),
+):
+    org = await _fetch_org(db, org_id)
+    settings = dict(org.settings or {})
+    if body.autonomous_mode is not None:
+        settings["autonomous_mode"] = body.autonomous_mode
+    org.settings = settings
+    await db.commit()
+    return _org_out(org)
+
+
+def _org_out(org: Organization) -> dict:
+    return {
+        "id": org.id, "name": org.name, "slug": org.slug,
+        "plan": org.plan, "is_active": org.is_active,
+        "settings": org.settings or {},
+        "created_at": org.created_at.isoformat() if org.created_at else None,
+    }
+
+
+async def _fetch_org(db: AsyncSession, org_id: str) -> Organization:
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    return org
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CreateAgentRequest(BaseModel):
+    label: str
+
+
+class SendCommandRequest(BaseModel):
+    action: str
+    params: dict = {}
+
+
+AGENT_ALLOWLIST = {
+    "clear_cache", "disk_cleanup", "free_memory", "run_gc",
+    "kill_process", "restart_service",
+}
+
+
+@app.get("/api/orgs/{org_id}/agents")
+@limiter.limit("60/minute")
+async def list_agents(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("agents:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Agent)
+        .where(Agent.org_id == org_id, Agent.is_active == True)
+        .order_by(Agent.created_at.desc())
+    )
+    agents = result.scalars().all()
+    return [_agent_out(a) for a in agents]
+
+
+@app.post("/api/orgs/{org_id}/agents", status_code=201)
+@limiter.limit("20/minute")
+async def create_agent(
+    request: Request,
+    org_id: str,
+    body: CreateAgentRequest,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    await _fetch_org(db, org_id)
+    raw_key, key_hash = generate_agent_key()
+
+    agent = Agent(
+        org_id=org_id,
+        label=body.label,
+        key_hash=key_hash,
+        created_by=token.sub,
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    await _audit(db, org_id, token.sub, "agent.created", "agent", agent.id,
+                 {"label": body.label})
+
+    hostname = request.headers.get("host", "localhost:8000")
+    install_cmd = (
+        f"AIOPS_SERVER=http://{hostname} "
+        f"AIOPS_KEY={raw_key} "
+        f"AIOPS_ORG={org_id} "
+        f"python app/integrations/remote_agent.py"
+    )
+
+    return {
+        **_agent_out(agent),
+        "api_key": raw_key,  # shown ONCE — not stored in plain text
+        "install_cmd": install_cmd,
+        "warning": "Save this API key now. It will not be shown again.",
+    }
+
+
+@app.get("/api/orgs/{org_id}/agents/{agent_id}")
+async def get_agent(
+    org_id: str,
+    agent_id: str,
+    token: TokenPayload = Depends(require("agents:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _fetch_agent(db, org_id, agent_id)
+    # Latest metrics
+    snap_result = await db.execute(
+        select(MetricSnapshot)
+        .where(MetricSnapshot.agent_id == agent_id)
+        .order_by(desc(MetricSnapshot.timestamp))
+        .limit(1)
+    )
+    snap = snap_result.scalar_one_or_none()
+    return {**_agent_out(agent), "latest_metrics": _snap_out(snap) if snap else None}
+
+
+@app.delete("/api/orgs/{org_id}/agents/{agent_id}")
+async def delete_agent(
+    org_id: str,
+    agent_id: str,
+    token: TokenPayload = Depends(require("agents:delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _fetch_agent(db, org_id, agent_id)
+    agent.is_active = False
+    await db.commit()
+    await _audit(db, org_id, token.sub, "agent.deactivated", "agent", agent_id)
+    return {"ok": True}
+
+
+@app.post("/api/orgs/{org_id}/agents/{agent_id}/command")
+@limiter.limit("30/minute")
+async def send_command(
+    request: Request,
+    org_id: str,
+    agent_id: str,
+    body: SendCommandRequest,
+    token: TokenPayload = Depends(require("remediation:execute")),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.action not in AGENT_ALLOWLIST:
+        raise HTTPException(400, f"Action not allowed. Allowed: {sorted(AGENT_ALLOWLIST)}")
+
+    agent = await _fetch_agent(db, org_id, agent_id)
+    cmd_id = str(uuid.uuid4())
+    cmds = list(agent.pending_cmds or [])
+    cmds.append({"cmd_id": cmd_id, "action": body.action, "params": body.params})
+    agent.pending_cmds = cmds
+
+    # Create pending remediation record
+    record = RemediationRecord(
+        id=cmd_id,
+        org_id=org_id,
+        agent_id=agent_id,
+        action=body.action,
+        params=body.params,
+        source="manual",
+        triggered_by=token.sub,
+        status="pending",
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+    await db.commit()
+
+    await _audit(db, org_id, token.sub, "remediation.queued", "remediation", cmd_id,
+                 {"action": body.action, "agent": agent.label})
+    return {"ok": True, "cmd_id": cmd_id}
+
+
+@app.get("/api/orgs/{org_id}/agents/{agent_id}/commands")
+async def get_agent_commands(
+    org_id: str,
+    agent_id: str,
+    token: TokenPayload = Depends(require("agents:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    await _fetch_agent(db, org_id, agent_id)
+    result = await db.execute(
+        select(RemediationRecord)
+        .where(RemediationRecord.agent_id == agent_id)
+        .order_by(desc(RemediationRecord.created_at))
+        .limit(50)
+    )
+    return [_remediation_out(r) for r in result.scalars().all()]
+
+
+def _agent_out(a: Agent) -> dict:
+    return {
+        "id": a.id, "org_id": a.org_id, "label": a.label,
+        "status": a.status, "is_active": a.is_active,
+        "platform_info": a.platform_info,
+        "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+async def _fetch_agent(db: AsyncSession, org_id: str, agent_id: str) -> Agent:
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.org_id == org_id, Agent.is_active == True)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    return agent
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INGEST — Agent heartbeat (X-Agent-Key auth, no JWT)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MetricsPayload(BaseModel):
+    cpu: float
+    memory: float
+    disk: float
+    network_in: int = 0
+    network_out: int = 0
+    temperature: Optional[float] = None
+    load_avg: Optional[str] = None
+    processes: Optional[int] = None
+    uptime_secs: Optional[int] = None
+
+
+class HeartbeatBody(BaseModel):
+    org_id: str
+    metrics: MetricsPayload
+    info: Optional[dict] = None    # hostname, os, cpu_cores, python_version
+
+
+class CommandResultBody(BaseModel):
+    org_id: str
+    cmd_id: str
+    status: str   # success|failed|skipped
+    result: Optional[str] = None
+    error: Optional[str] = None
+
+
+@app.post("/ingest/heartbeat")
+@limiter.limit("30/minute")
+async def agent_heartbeat(
+    request: Request,
+    body: HeartbeatBody,
+    agent: Agent = Depends(get_agent_from_key),
+    db: AsyncSession = Depends(get_db),
+):
+    # Enforce org isolation
+    if agent.org_id != body.org_id:
+        raise HTTPException(403, "Org ID mismatch")
+
+    now = datetime.now(timezone.utc)
+
+    # Persist metric snapshot
+    snap = MetricSnapshot(
+        id=str(uuid.uuid4()),
+        org_id=agent.org_id,
+        agent_id=agent.id,
+        timestamp=now,
+        cpu=body.metrics.cpu,
+        memory=body.metrics.memory,
+        disk=body.metrics.disk,
+        network_in=body.metrics.network_in,
+        network_out=body.metrics.network_out,
+        temperature=body.metrics.temperature,
+        load_avg=body.metrics.load_avg,
+        processes=body.metrics.processes,
+        uptime_secs=body.metrics.uptime_secs,
+    )
+    db.add(snap)
+
+    # Update platform info if provided
+    if body.info:
+        agent.platform_info = body.info
+
+    # Drain pending commands to deliver in response
+    pending = list(agent.pending_cmds or [])
+    agent.pending_cmds = []
+
+    await db.commit()
+
+    return {"agent_id": agent.id, "commands": pending, "received_at": now.isoformat()}
+
+
+@app.post("/ingest/command-result")
+async def command_result(
+    body: CommandResultBody,
+    agent: Agent = Depends(get_agent_from_key),
+    db: AsyncSession = Depends(get_db),
+):
+    if agent.org_id != body.org_id:
+        raise HTTPException(403, "Org ID mismatch")
+
+    result = await db.execute(
+        select(RemediationRecord).where(RemediationRecord.id == body.cmd_id)
+    )
+    record = result.scalar_one_or_none()
+    if record:
+        record.status       = body.status
+        record.result       = body.result
+        record.error        = body.error
+        record.completed_at = datetime.now(timezone.utc)
+        record.verified     = body.status == "success"
+        await db.commit()
+
+    await _audit(db, agent.org_id, agent_id=agent.id, action="remediation.completed",
+                 resource_type="remediation", resource_id=body.cmd_id,
+                 detail={"status": body.status})
+    return {"ok": True}
+
+
+# ── Legacy heartbeat compatibility (existing remote_agent.py uses token in body) ──
+
+class LegacyHeartbeatBody(BaseModel):
+    token: str
+    info: Optional[dict] = None
+    metrics: Optional[dict] = None
+
+
+@app.post("/agents/heartbeat")
+@limiter.limit("30/minute")
+async def legacy_heartbeat(
+    request: Request,
+    body: LegacyHeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Backward-compatible endpoint for remote_agent.py instances using the old
+    token-in-body protocol. Logs a deprecation warning.
+    Clients should migrate to POST /ingest/heartbeat with X-Agent-Key header.
+    """
+    import hashlib as _hl
+    log.warning("Legacy agent heartbeat — migrate to /ingest/heartbeat with X-Agent-Key")
+
+    token_hash = _hl.sha256(body.token.encode()).hexdigest()
+    result = await db.execute(
+        select(Agent).where(Agent.key_hash == token_hash, Agent.is_active == True)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(401, "Invalid token")
+
+    now = datetime.now(timezone.utc)
+    agent.last_seen = now
+    agent.status = "online"
+    if body.info:
+        agent.platform_info = body.info
+
+    if body.metrics:
+        m = body.metrics
+        snap = MetricSnapshot(
+            id=str(uuid.uuid4()),
+            org_id=agent.org_id,
+            agent_id=agent.id,
+            timestamp=now,
+            cpu=m.get("cpu", 0.0),
+            memory=m.get("memory", 0.0),
+            disk=m.get("disk", 0.0),
+            network_in=int(m.get("network_in", 0)),
+            network_out=int(m.get("network_out", 0)),
+            temperature=m.get("temperature"),
+            load_avg=str(m.get("load_avg", "")) or None,
+            processes=m.get("processes"),
+            uptime_secs=m.get("uptime_secs"),
+        )
+        db.add(snap)
+
+    pending = list(agent.pending_cmds or [])
+    agent.pending_cmds = []
+    await db.commit()
+
+    return {"ok": True, "agent_id": agent.id, "commands": pending}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# METRICS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/orgs/{org_id}/metrics")
+@limiter.limit("120/minute")
+async def list_metrics(
+    request: Request,
+    org_id: str,
+    agent_id: Optional[str] = None,
+    from_ts: Optional[str] = None,
+    to_ts: Optional[str] = None,
+    limit: int = 200,
+    token: TokenPayload = Depends(require("metrics:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(MetricSnapshot).where(MetricSnapshot.org_id == org_id)
+    if agent_id:
+        q = q.where(MetricSnapshot.agent_id == agent_id)
+    if from_ts:
+        q = q.where(MetricSnapshot.timestamp >= datetime.fromisoformat(from_ts))
+    if to_ts:
+        q = q.where(MetricSnapshot.timestamp <= datetime.fromisoformat(to_ts))
+    q = q.order_by(desc(MetricSnapshot.timestamp)).limit(min(limit, 1000))
+
+    result = await db.execute(q)
+    return [_snap_out(s) for s in result.scalars().all()]
+
+
+@app.get("/api/orgs/{org_id}/metrics/latest")
+async def latest_metrics(
+    org_id: str,
+    token: TokenPayload = Depends(require("metrics:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest snapshot per agent for the org."""
+    sub = (
+        select(
+            MetricSnapshot.agent_id,
+            sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"),
+        )
+        .where(MetricSnapshot.org_id == org_id)
+        .group_by(MetricSnapshot.agent_id)
+        .subquery()
+    )
+    result = await db.execute(
+        select(MetricSnapshot).join(
+            sub,
+            (MetricSnapshot.agent_id == sub.c.agent_id)
+            & (MetricSnapshot.timestamp == sub.c.max_ts),
+        )
+    )
+    return [_snap_out(s) for s in result.scalars().all()]
+
+
+def _snap_out(s: MetricSnapshot) -> dict:
+    return {
+        "id": s.id, "org_id": s.org_id, "agent_id": s.agent_id,
+        "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+        "cpu": s.cpu, "memory": s.memory, "disk": s.disk,
+        "network_in": s.network_in, "network_out": s.network_out,
+        "temperature": s.temperature, "load_avg": s.load_avg,
+        "processes": s.processes, "uptime_secs": s.uptime_secs,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALERTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class UpdateAlertRequest(BaseModel):
+    status: str   # acknowledged | resolved
+
+
+class CreateAlertRequest(BaseModel):
+    agent_id: Optional[str] = None
+    severity: str
+    category: str
+    title: str
+    detail: str
+    metric_value: Optional[float] = None
+    threshold: Optional[float] = None
+
+
+@app.get("/api/orgs/{org_id}/alerts")
+@limiter.limit("120/minute")
+async def list_alerts(
+    request: Request,
+    org_id: str,
+    alert_status: Optional[str] = None,
+    severity: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    limit: int = 50,
+    token: TokenPayload = Depends(require("alerts:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(AlertRecord).where(AlertRecord.org_id == org_id)
+    if alert_status:
+        q = q.where(AlertRecord.status == alert_status)
+    if severity:
+        q = q.where(AlertRecord.severity == severity)
+    if agent_id:
+        q = q.where(AlertRecord.agent_id == agent_id)
+    q = q.order_by(desc(AlertRecord.created_at)).limit(min(limit, 500))
+
+    result = await db.execute(q)
+    return [_alert_out(a) for a in result.scalars().all()]
+
+
+@app.post("/api/orgs/{org_id}/alerts", status_code=201)
+async def create_alert(
+    org_id: str,
+    body: CreateAlertRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    alert = AlertRecord(
+        org_id=org_id,
+        agent_id=body.agent_id,
+        severity=body.severity,
+        category=body.category,
+        title=body.title,
+        detail=body.detail,
+        metric_value=body.metric_value,
+        threshold=body.threshold,
+    )
+    db.add(alert)
+    await db.commit()
+    await db.refresh(alert)
+    await _audit(db, org_id, token.sub, "alert.created.manual", "alert", alert.id)
+    return _alert_out(alert)
+
+
+@app.put("/api/orgs/{org_id}/alerts/{alert_id}")
+async def update_alert(
+    org_id: str,
+    alert_id: str,
+    body: UpdateAlertRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.status not in ("acknowledged", "resolved"):
+        raise HTTPException(400, "Status must be 'acknowledged' or 'resolved'")
+
+    result = await db.execute(
+        select(AlertRecord).where(AlertRecord.id == alert_id, AlertRecord.org_id == org_id)
+    )
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(404, "Alert not found")
+
+    alert.status = body.status
+    if body.status == "resolved":
+        alert.resolved_at = datetime.now(timezone.utc)
+    await db.commit()
+    await _audit(db, org_id, token.sub, f"alert.{body.status}", "alert", alert_id)
+    return _alert_out(alert)
+
+
+def _alert_out(a: AlertRecord) -> dict:
+    return {
+        "id": a.id, "org_id": a.org_id, "agent_id": a.agent_id,
+        "severity": a.severity, "category": a.category,
+        "title": a.title, "detail": a.detail,
+        "metric_value": a.metric_value, "threshold": a.threshold,
+        "status": a.status,
+        "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REMEDIATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TriggerRemediationRequest(BaseModel):
+    agent_id: str
+    action: str
+    params: dict = {}
+    dry_run: bool = False
+
+
+@app.get("/api/orgs/{org_id}/remediation")
+@limiter.limit("60/minute")
+async def list_remediations(
+    request: Request,
+    org_id: str,
+    agent_id: Optional[str] = None,
+    rem_status: Optional[str] = None,
+    limit: int = 50,
+    token: TokenPayload = Depends(require("remediation:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(RemediationRecord).where(RemediationRecord.org_id == org_id)
+    if agent_id:
+        q = q.where(RemediationRecord.agent_id == agent_id)
+    if rem_status:
+        q = q.where(RemediationRecord.status == rem_status)
+    q = q.order_by(desc(RemediationRecord.created_at)).limit(min(limit, 500))
+
+    result = await db.execute(q)
+    return [_remediation_out(r) for r in result.scalars().all()]
+
+
+@app.post("/api/orgs/{org_id}/remediation", status_code=201)
+@limiter.limit("20/minute")
+async def trigger_remediation(
+    request: Request,
+    org_id: str,
+    body: TriggerRemediationRequest,
+    token: TokenPayload = Depends(require("remediation:execute")),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.action not in AGENT_ALLOWLIST:
+        raise HTTPException(400, f"Action not in allowlist: {sorted(AGENT_ALLOWLIST)}")
+
+    agent = await _fetch_agent(db, org_id, body.agent_id)
+
+    cmd_id = str(uuid.uuid4())
+    record = RemediationRecord(
+        id=cmd_id,
+        org_id=org_id,
+        agent_id=body.agent_id,
+        action=body.action,
+        params=body.params,
+        source="manual",
+        triggered_by=token.sub,
+        status="pending",
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+
+    if not body.dry_run:
+        cmds = list(agent.pending_cmds or [])
+        cmds.append({"cmd_id": cmd_id, "action": body.action, "params": body.params})
+        agent.pending_cmds = cmds
+        record.status = "running"
+
+    await db.commit()
+    await _audit(db, org_id, token.sub, "remediation.triggered.manual", "remediation",
+                 cmd_id, {"action": body.action, "dry_run": body.dry_run})
+    return _remediation_out(record)
+
+
+@app.get("/api/orgs/{org_id}/remediation/stats")
+async def remediation_stats(
+    org_id: str,
+    token: TokenPayload = Depends(require("remediation:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(RemediationRecord).where(RemediationRecord.org_id == org_id)
+    )
+    records = result.scalars().all()
+    total  = len(records)
+    ok     = sum(1 for r in records if r.status == "success")
+    failed = sum(1 for r in records if r.status == "failed")
+    auto   = sum(1 for r in records if r.source == "auto")
+    return {
+        "total": total, "success": ok, "failed": failed,
+        "auto": auto, "manual": total - auto,
+        "success_rate": round(ok / total * 100, 1) if total else 0,
+    }
+
+
+@app.get("/api/orgs/{org_id}/remediation/{record_id}")
+async def get_remediation(
+    org_id: str,
+    record_id: str,
+    token: TokenPayload = Depends(require("remediation:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(RemediationRecord)
+        .where(RemediationRecord.id == record_id, RemediationRecord.org_id == org_id)
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(404, "Remediation record not found")
+    return _remediation_out(record)
+
+
+def _remediation_out(r: RemediationRecord) -> dict:
+    return {
+        "id": r.id, "org_id": r.org_id,
+        "alert_id": r.alert_id, "agent_id": r.agent_id,
+        "action": r.action, "params": r.params or {},
+        "source": r.source, "triggered_by": r.triggered_by,
+        "status": r.status, "result": r.result, "error": r.error,
+        "before_metrics": r.before_metrics, "after_metrics": r.after_metrics,
+        "verified": r.verified,
+        "started_at":   r.started_at.isoformat()   if r.started_at   else None,
+        "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        "created_at":   r.created_at.isoformat()   if r.created_at   else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDIT LOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/orgs/{org_id}/audit")
+@limiter.limit("30/minute")
+async def list_audit(
+    request: Request,
+    org_id: str,
+    limit: int = 100,
+    token: TokenPayload = Depends(require("audit:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AuditLog)
+        .where(AuditLog.org_id == org_id)
+        .order_by(desc(AuditLog.created_at))
+        .limit(min(limit, 1000))
+    )
+    logs = result.scalars().all()
+    return [
+        {
+            "id": l.id, "action": l.action, "user_id": l.user_id,
+            "agent_id": l.agent_id, "resource_type": l.resource_type,
+            "resource_id": l.resource_id, "detail": l.detail,
+            "ip_address": l.ip_address,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in logs
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: write audit log
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _audit(
+    db: AsyncSession,
+    org_id: Optional[str],
+    user_id: Optional[str] = None,
+    action: str = "",
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    detail: Optional[dict] = None,
+    agent_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+) -> None:
+    db.add(AuditLog(
+        id=str(uuid.uuid4()),
+        org_id=org_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        detail=detail,
+        ip_address=ip_address,
+    ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTIFICATION CHANNELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VALID_CHANNEL_TYPES = {"email", "slack", "telegram"}
+_VALID_SEVERITIES    = {"critical", "high", "medium", "low", "info"}
+
+
+class CreateChannelRequest(BaseModel):
+    channel_type: str                        # email | slack | telegram
+    label:        Optional[str] = None
+    config:       dict                       # channel-specific credentials
+    enabled:      bool = True
+    severities:   Optional[List[str]] = None  # None → all
+
+
+class UpdateChannelRequest(BaseModel):
+    label:      Optional[str]       = None
+    config:     Optional[dict]      = None
+    enabled:    Optional[bool]      = None
+    severities: Optional[List[str]] = None
+
+
+def _channel_out(ch: NotificationChannel) -> dict:
+    cfg = dict(ch.config or {})
+    # Mask secrets in responses
+    if ch.channel_type == "email":
+        cfg.pop("smtp_password", None)
+    if ch.channel_type == "telegram":
+        token = cfg.get("bot_token", "")
+        if token:
+            cfg["bot_token"] = token[:6] + "…" + token[-4:] if len(token) > 10 else "***"
+    return {
+        "id":           ch.id,
+        "org_id":       ch.org_id,
+        "user_id":      ch.user_id,
+        "channel_type": ch.channel_type,
+        "label":        ch.label,
+        "config":       cfg,
+        "enabled":      ch.enabled,
+        "severities":   ch.severities,
+        "created_at":   ch.created_at.isoformat() if ch.created_at else None,
+        "updated_at":   ch.updated_at.isoformat() if ch.updated_at else None,
+    }
+
+
+@app.get("/api/orgs/{org_id}/notification-channels")
+@limiter.limit("60/minute")
+async def list_notification_channels(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("alerts:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all notification channels for the org."""
+    result = await db.execute(
+        select(NotificationChannel)
+        .where(NotificationChannel.org_id == org_id)
+        .order_by(NotificationChannel.created_at)
+    )
+    return [_channel_out(ch) for ch in result.scalars().all()]
+
+
+@app.post("/api/orgs/{org_id}/notification-channels", status_code=201)
+@limiter.limit("30/minute")
+async def create_notification_channel(
+    request: Request,
+    org_id: str,
+    body: CreateChannelRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.channel_type not in _VALID_CHANNEL_TYPES:
+        raise HTTPException(400, f"channel_type must be one of: {sorted(_VALID_CHANNEL_TYPES)}")
+
+    bad_sevs = [s for s in (body.severities or []) if s not in _VALID_SEVERITIES]
+    if bad_sevs:
+        raise HTTPException(400, f"Invalid severities: {bad_sevs}")
+
+    ch = NotificationChannel(
+        org_id=org_id,
+        user_id=token.sub,
+        channel_type=body.channel_type,
+        label=body.label,
+        config=body.config,
+        enabled=body.enabled,
+        severities=body.severities,
+    )
+    db.add(ch)
+    await db.commit()
+    await db.refresh(ch)
+    await _audit(db, org_id, token.sub, "notification_channel.created",
+                 "notification_channel", ch.id, {"type": body.channel_type})
+    return _channel_out(ch)
+
+
+@app.put("/api/orgs/{org_id}/notification-channels/{channel_id}")
+async def update_notification_channel(
+    org_id: str,
+    channel_id: str,
+    body: UpdateChannelRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(NotificationChannel).where(
+            NotificationChannel.id     == channel_id,
+            NotificationChannel.org_id == org_id,
+        )
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+
+    if body.label      is not None: ch.label      = body.label
+    if body.config     is not None: ch.config     = body.config
+    if body.enabled    is not None: ch.enabled    = body.enabled
+    if body.severities is not None:
+        bad = [s for s in body.severities if s not in _VALID_SEVERITIES]
+        if bad:
+            raise HTTPException(400, f"Invalid severities: {bad}")
+        ch.severities = body.severities
+
+    await db.commit()
+    await db.refresh(ch)
+    await _audit(db, org_id, token.sub, "notification_channel.updated",
+                 "notification_channel", channel_id)
+    return _channel_out(ch)
+
+
+@app.delete("/api/orgs/{org_id}/notification-channels/{channel_id}", status_code=204)
+async def delete_notification_channel(
+    org_id: str,
+    channel_id: str,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(NotificationChannel).where(
+            NotificationChannel.id     == channel_id,
+            NotificationChannel.org_id == org_id,
+        )
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+    await db.delete(ch)
+    await db.commit()
+    await _audit(db, org_id, token.sub, "notification_channel.deleted",
+                 "notification_channel", channel_id)
+
+
+@app.post("/api/orgs/{org_id}/notification-channels/{channel_id}/test")
+@limiter.limit("10/minute")
+async def test_notification_channel(
+    request: Request,
+    org_id: str,
+    channel_id: str,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a test message to verify a channel is reachable."""
+    from notification_service import send_test_notification
+
+    result = await db.execute(
+        select(NotificationChannel).where(
+            NotificationChannel.id     == channel_id,
+            NotificationChannel.org_id == org_id,
+        )
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+
+    outcome = await send_test_notification(ch)
+    return outcome
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALERT RULES
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VALID_METRICS = {"cpu", "memory", "disk"}
+
+
+class CreateAlertRuleRequest(BaseModel):
+    name:             str
+    metric:           str            # cpu | memory | disk
+    threshold:        float
+    severity:         str            # critical | high | medium | low | info
+    agent_id:         Optional[str] = None   # None = all agents
+    cooldown_minutes: int            = 15
+    enabled:          bool           = True
+    notify_channels:  Optional[List[str]] = None
+
+
+class UpdateAlertRuleRequest(BaseModel):
+    name:             Optional[str]       = None
+    metric:           Optional[str]       = None
+    threshold:        Optional[float]     = None
+    severity:         Optional[str]       = None
+    agent_id:         Optional[str]       = None
+    cooldown_minutes: Optional[int]       = None
+    enabled:          Optional[bool]      = None
+    notify_channels:  Optional[List[str]] = None
+
+
+def _rule_out(r: AlertRule) -> dict:
+    return {
+        "id":               r.id,
+        "org_id":           r.org_id,
+        "agent_id":         r.agent_id,
+        "name":             r.name,
+        "metric":           r.metric,
+        "threshold":        r.threshold,
+        "severity":         r.severity,
+        "cooldown_minutes": r.cooldown_minutes,
+        "enabled":          r.enabled,
+        "notify_channels":  r.notify_channels,
+        "created_by":       r.created_by,
+        "created_at":       r.created_at.isoformat() if r.created_at else None,
+        "updated_at":       r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+@app.get("/api/orgs/{org_id}/alert-rules")
+@limiter.limit("60/minute")
+async def list_alert_rules(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("alerts:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AlertRule)
+        .where(AlertRule.org_id == org_id)
+        .order_by(AlertRule.created_at)
+    )
+    return [_rule_out(r) for r in result.scalars().all()]
+
+
+@app.post("/api/orgs/{org_id}/alert-rules", status_code=201)
+@limiter.limit("30/minute")
+async def create_alert_rule(
+    request: Request,
+    org_id: str,
+    body: CreateAlertRuleRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.metric not in _VALID_METRICS:
+        raise HTTPException(400, f"metric must be one of: {sorted(_VALID_METRICS)}")
+    if body.severity not in _VALID_SEVERITIES:
+        raise HTTPException(400, f"severity must be one of: {sorted(_VALID_SEVERITIES)}")
+    if not (0 < body.threshold <= 100):
+        raise HTTPException(400, "threshold must be between 0 and 100")
+
+    rule = AlertRule(
+        org_id=org_id,
+        agent_id=body.agent_id,
+        name=body.name,
+        metric=body.metric,
+        threshold=body.threshold,
+        severity=body.severity,
+        cooldown_minutes=body.cooldown_minutes,
+        enabled=body.enabled,
+        notify_channels=body.notify_channels,
+        created_by=token.sub,
+    )
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+    await _audit(db, org_id, token.sub, "alert_rule.created", "alert_rule", rule.id,
+                 {"metric": body.metric, "threshold": body.threshold})
+    return _rule_out(rule)
+
+
+@app.put("/api/orgs/{org_id}/alert-rules/{rule_id}")
+async def update_alert_rule(
+    org_id: str,
+    rule_id: str,
+    body: UpdateAlertRuleRequest,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AlertRule).where(
+            AlertRule.id     == rule_id,
+            AlertRule.org_id == org_id,
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "Alert rule not found")
+
+    if body.metric is not None:
+        if body.metric not in _VALID_METRICS:
+            raise HTTPException(400, f"metric must be one of: {sorted(_VALID_METRICS)}")
+        rule.metric = body.metric
+    if body.severity is not None:
+        if body.severity not in _VALID_SEVERITIES:
+            raise HTTPException(400, f"severity must be one of: {sorted(_VALID_SEVERITIES)}")
+        rule.severity = body.severity
+    if body.threshold is not None:
+        if not (0 < body.threshold <= 100):
+            raise HTTPException(400, "threshold must be between 0 and 100")
+        rule.threshold = body.threshold
+    if body.name             is not None: rule.name             = body.name
+    if body.agent_id         is not None: rule.agent_id         = body.agent_id
+    if body.cooldown_minutes is not None: rule.cooldown_minutes = body.cooldown_minutes
+    if body.enabled          is not None: rule.enabled          = body.enabled
+    if body.notify_channels  is not None: rule.notify_channels  = body.notify_channels
+
+    await db.commit()
+    await db.refresh(rule)
+    await _audit(db, org_id, token.sub, "alert_rule.updated", "alert_rule", rule_id)
+    return _rule_out(rule)
+
+
+@app.delete("/api/orgs/{org_id}/alert-rules/{rule_id}", status_code=204)
+async def delete_alert_rule(
+    org_id: str,
+    rule_id: str,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AlertRule).where(
+            AlertRule.id     == rule_id,
+            AlertRule.org_id == org_id,
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "Alert rule not found")
+    await db.delete(rule)
+    await db.commit()
+    await _audit(db, org_id, token.sub, "alert_rule.deleted", "alert_rule", rule_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTIFICATION LOGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/orgs/{org_id}/notification-logs")
+@limiter.limit("60/minute")
+async def list_notification_logs(
+    request: Request,
+    org_id: str,
+    channel_type:      Optional[str] = None,
+    notification_type: Optional[str] = None,
+    status:            Optional[str] = None,
+    limit: int = 100,
+    token: TokenPayload = Depends(require("alerts:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Paginated notification history for the org."""
+    q = select(NotificationLog).where(NotificationLog.org_id == org_id)
+    if channel_type:
+        q = q.where(NotificationLog.channel_type == channel_type)
+    if notification_type:
+        q = q.where(NotificationLog.notification_type == notification_type)
+    if status:
+        q = q.where(NotificationLog.status == status)
+    q = q.order_by(desc(NotificationLog.sent_at)).limit(min(limit, 500))
+
+    result = await db.execute(q)
+    return [
+        {
+            "id":                nl.id,
+            "org_id":            nl.org_id,
+            "alert_id":          nl.alert_id,
+            "channel_id":        nl.channel_id,
+            "channel_type":      nl.channel_type,
+            "notification_type": nl.notification_type,
+            "recipient":         nl.recipient,
+            "subject":           nl.subject,
+            "status":            nl.status,
+            "error":             nl.error,
+            "sent_at":           nl.sent_at.isoformat() if nl.sent_at else None,
+        }
+        for nl in result.scalars().all()
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DAILY SUMMARY (manual trigger — for testing / on-demand)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/orgs/{org_id}/daily-summary/send")
+@limiter.limit("5/minute")
+async def trigger_daily_summary(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("alerts:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger an on-demand daily summary for the org."""
+    from notification_service import dispatch_daily_summary
+
+    await _fetch_org(db, org_id)
+    asyncio.create_task(_send_summary_bg(org_id))
+    return {"ok": True, "message": "Daily summary dispatch queued"}
+
+
+async def _send_summary_bg(org_id: str) -> None:
+    from notification_service import dispatch_daily_summary
+    try:
+        async with SessionLocal() as db:
+            await dispatch_daily_summary(db, org_id)
+        log.info("On-demand daily summary dispatched: org=%s", org_id[:8])
+    except Exception as exc:
+        log.error("On-demand daily summary failed: org=%s: %s", org_id[:8], exc)

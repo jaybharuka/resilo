@@ -1,0 +1,48 @@
+# Filebeat config for Windows Docker Desktop (WSL2 backend)
+# Uses Docker autodiscover via the daemon socket instead of mounting
+# container log paths (which are inside the WSL2 VM, not the Windows host).
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # Docker socket is exposed by Docker Desktop into Linux containers
+      host: "unix:///var/run/docker.sock"
+      templates:
+        # Harvest logs from ALL containers automatically
+        - condition:
+            regexp:
+              docker.container.name: "aiops-.*"
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              processors:
+                - decode_json_fields:
+                    fields: ["message"]
+                    target: ""
+                    overwrite_keys: true
+                    when:
+                      regexp:
+                        message: "^\\{"
+
+# Fallback: also harvest any plain log files if present
+filebeat.inputs:
+  - type: log
+    enabled: false   # disabled on Windows — enable if running on Linux
+    paths:
+      - /var/log/*.log
+    fields:
+      source: host-system
+    fields_under_root: true
+
+processors:
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  - add_host_metadata: ~
+
+output.logstash:
+  hosts: ["logstash:5044"]
+
+# Silence noisy startup logs
+logging.level: warning
+logging.to_files: false

@@ -1,0 +1,110 @@
+# Default values — override with values-staging.yaml or values-production.yaml
+
+namespace: aiops
+
+image:
+  registry: aiops
+  pullPolicy: IfNotPresent
+
+# Per-service configuration
+services:
+  apiGateway:
+    name: api-gateway
+    image: api-gateway
+    tag: latest
+    port: 8080
+    replicas: 2
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      cpuThreshold: 70
+      memoryThreshold: 80
+
+  orchestrator:
+    name: orchestrator
+    image: orchestrator
+    tag: latest
+    port: 8081
+    replicas: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    hpa:
+      enabled: false
+
+  performanceMonitor:
+    name: performance-monitor
+    image: performance-monitor
+    tag: latest
+    port: 8082
+    replicas: 1
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 8
+      cpuThreshold: 70
+      memoryThreshold: 80
+    env:
+      METRICS_INTERVAL: "30"
+
+  analyticsEngine:
+    name: analytics-engine
+    image: analytics-engine
+    tag: latest
+    port: 8083
+    replicas: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1500m"
+        memory: "2Gi"
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      cpuThreshold: 70
+      memoryThreshold: 80
+
+  configManager:
+    name: config-manager
+    image: config-manager
+    tag: latest
+    port: 8084
+    replicas: 1
+    resources:
+      requests:
+        cpu: "150m"
+        memory: "256Mi"
+      limits:
+        cpu: "300m"
+        memory: "512Mi"
+    hpa:
+      enabled: false
+
+# Secrets — values are base64 encoded in the generated K8s Secret
+secrets:
+  discordWebhookUrl: ""
+  slackWebhookUrl: ""
+  jwtSecret: ""
+  geminiApiKey: ""

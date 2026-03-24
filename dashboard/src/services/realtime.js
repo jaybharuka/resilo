@@ -1,15 +1,21 @@
 import { io } from 'socket.io-client';
 import { API_BASE_URL } from './api';
 
-// Socket base: use REACT_APP_SOCKET_URL or infer from API_BASE_URL host with port 3001
+// Socket base: use REACT_APP_SOCKET_URL, then window.location.origin (same host/port as page),
+// then infer from API_BASE_URL host with port 3011 (Express/Socket.IO server)
 const inferSocketUrl = () => {
   const env = process.env.REACT_APP_SOCKET_URL;
   if (env) return env;
   try {
+    if (typeof window !== 'undefined' && window.location) {
+      return window.location.origin; // same host+port as the served page
+    }
+  } catch {}
+  try {
     const u = new URL(API_BASE_URL);
-    return `${u.protocol}//${u.hostname}:3001`;
+    return `${u.protocol}//${u.hostname}:3011`;
   } catch {
-    return 'http://localhost:3001';
+    return 'http://localhost:3011';
   }
 };
 

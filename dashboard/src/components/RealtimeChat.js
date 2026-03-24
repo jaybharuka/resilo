@@ -43,7 +43,7 @@ const RealtimeChat = ({ open, onClose }) => {
       setTimeout(() => {
         setMessages([{
           id: 1,
-          text: "Hi! I'm your AIOps assistant. I can help you with system monitoring, performance analysis, and troubleshooting. What would you like to know?",
+          text: "Hi! I'm your Resilo assistant. I can help you with system monitoring, performance analysis, and troubleshooting. What would you like to know?",
           sender: 'bot',
           timestamp: new Date(),
           sentiment: 'friendly'
@@ -185,7 +185,7 @@ const RealtimeChat = ({ open, onClose }) => {
             <BotIcon sx={{ color: theme.palette.primary.main, mr: 1 }} />
             <Box>
               <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                AIOps Assistant
+                Resilo Assistant
               </Typography>
               <Typography variant="caption" color="textSecondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                 <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#4caf50', display: 'inline-block' }} />

@@ -1,137 +1,185 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
-/* Theme root classes: theme-light (default), theme-dark, theme-hc */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ─── Design tokens ─── */
+:root {
+  --amber:        #F59E0B;
+  --amber-bright: #FCD34D;
+  --amber-dim:    #D97706;
+  --teal:         #2DD4BF;
+  --red-alert:    #F87171;
+
+  /* Warm dark surfaces */
+  --s1: 14 13 11;    /* base bg */
+  --s2: 22 20 16;    /* card bg */
+  --s3: 31 29 24;    /* elevated */
+  --s4: 42 40 32;    /* border */
+
+  /* Warm text */
+  --tw1: 245 240 232; /* primary */
+  --tw2: 168 159 140; /* secondary */
+  --tw3: 107 99 87;   /* muted */
+}
+
+/* ─── Theme tokens ─── */
 :root.theme-light {
-  --bg: 248 250 252; /* gray-50 */
-  --text: 17 24 39; /* gray-900 */
-  --surface: 255 255 255; /* white */
-  --surface-border: 229 231 235; /* gray-200 */
+  --bg: 248 250 252;
+  --text: 15 23 42;
+  --surface: 255 255 255;
+  --surface-border: 226 232 240;
 }
 :root.theme-dark {
-  --bg: 17 24 39; /* gray-900 */
-  --text: 229 231 235; /* gray-200 */
-  --surface: 17 24 39; /* same as bg for flat dark surfaces */
-  --surface-border: 55 65 81; /* gray-700-ish */
+  --bg: 14 13 11;
+  --text: 245 240 232;
+  --surface: 22 20 16;
+  --surface-border: 42 40 32;
 }
 :root.theme-hc {
-  --bg: 0 0 0; /* black */
-  --text: 255 255 255; /* white */
-  --surface: 0 0 0; /* black */
-  --surface-border: 255 255 255; /* white */
+  --bg: 0 0 0;
+  --text: 255 255 255;
+  --surface: 0 0 0;
+  --surface-border: 255 255 255;
+}
+
+/* ─── Base ─── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-family: 'Outfit', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 html, body, #root {
   height: 100%;
-}
-
-body { background-color: rgb(var(--bg)); color: rgb(var(--text)); }
-
-
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-* {
-  box-sizing: border-box;
-}
-
-html {
-  font-family: 'Inter', system-ui, sans-serif;
+  min-height: 100vh;
 }
 
 body {
   margin: 0;
   background: rgb(var(--bg));
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  color: rgb(var(--text));
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+code, .mono {
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
 }
 
-#root {
-  min-height: 100vh;
+/* ─── Display font (Bebas Neue) ─── */
+.font-display {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.04em;
 }
 
-/* --- Theme overrides for commonly used Tailwind utilities --- */
-/* Surfaces */
-:root.theme-dark .bg-white { background-color: rgb(var(--surface)) !important; }
-:root.theme-hc .bg-white { background-color: rgb(var(--surface)) !important; }
-
-/* Borders */
-:root.theme-dark .border-gray-200 { border-color: rgb(var(--surface-border)) !important; }
-:root.theme-hc .border-gray-200 { border-color: rgb(var(--surface-border)) !important; }
-
-/* Text */
-:root.theme-dark .text-gray-900 { color: rgb(var(--text)) !important; }
-:root.theme-dark .text-gray-700 { color: rgb(var(--text)) !important; opacity: 0.9; }
-:root.theme-dark .text-gray-600 { color: rgb(var(--text)) !important; opacity: 0.8; }
-:root.theme-dark .text-gray-500 { color: rgb(var(--text)) !important; opacity: 0.7; }
-
-:root.theme-hc .text-gray-900,
-:root.theme-hc .text-gray-700,
-:root.theme-hc .text-gray-600,
-:root.theme-hc .text-gray-500 { color: rgb(var(--text)) !important; }
-
-/* Page background */
-:root.theme-dark .bg-gray-50 { background-color: rgb(var(--bg)) !important; }
-:root.theme-hc .bg-gray-50 { background-color: rgb(var(--bg)) !important; }
-
-/* Hover states */
-:root.theme-dark .hover\:bg-gray-50:hover { background-color: rgba(255,255,255,0.04) !important; }
-:root.theme-hc .hover\:bg-gray-50:hover { background-color: rgba(255,255,255,0.12) !important; }
-
-/* Custom utility classes for glassmorphism effects */
-.glass-card {
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+/* ─── Metric numbers ─── */
+.metric-value {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.03em;
+  line-height: 1;
 }
 
-.metric-card {
-  background: rgba(31, 41, 55, 0.5);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(75, 85, 99, 0.5);
-  padding: 1.5rem;
-  border-radius: 12px;
-  transition: all 0.3s ease;
+/* ─── Sidebar ─── */
+.sidebar-bg {
+  background: linear-gradient(180deg, rgb(12, 11, 9) 0%, rgb(10, 9, 7) 100%);
+  border-right: 1px solid rgba(245, 158, 11, 0.1);
 }
 
-.metric-card:hover {
-  background: rgba(31, 41, 55, 0.7);
-  transform: scale(1.05);
-}
-
-.status-indicator {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
-}
-
-.gradient-text {
-  background: linear-gradient(90deg, #60a5fa, #a78bfa);
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
+/* ─── Nav item states ─── */
 .nav-item {
-  padding: 1rem;
-  border-radius: 8px;
-  transition: all 0.2s ease;
-  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(245, 240, 232, 0.04);
+}
+.nav-active {
+  background: rgba(245, 158, 11, 0.1) !important;
+  border-left-color: #F59E0B !important;
+  color: #F59E0B !important;
 }
 
-.nav-item.active {
-  background: rgba(59, 130, 246, 0.2);
-  color: #60a5fa;
-  border: 1px solid rgba(59, 130, 246, 0.3);
+/* ─── Status glow dots ─── */
+.dot-healthy  { background: #2DD4BF; box-shadow: 0 0 8px rgba(45, 212, 191, 0.6); }
+.dot-warning  { background: #F59E0B; box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+.dot-critical { background: #F87171; box-shadow: 0 0 8px rgba(248, 113, 113, 0.6); }
+.dot-offline  { background: #6B6357; box-shadow: none; }
+.dot-checking { background: #F59E0B; box-shadow: 0 0 6px rgba(245,158,11,0.4); }
+
+/* ─── Login atmospheric bg ─── */
+.login-bg {
+  background:
+    radial-gradient(ellipse 90% 50% at 50% 0%, rgba(245, 158, 11, 0.07) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 85% 85%, rgba(45, 212, 191, 0.04) 0%, transparent 50%),
+    rgb(14, 13, 11);
+}
+
+/* ─── Subtle grid overlay ─── */
+.grid-bg::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(245, 158, 11, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(245, 158, 11, 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Dark mode overrides ─── */
+:root.theme-dark .bg-white            { background-color: rgb(var(--surface)) !important; }
+:root.theme-dark .border-slate-200    { border-color: rgb(var(--surface-border)) !important; }
+:root.theme-dark .text-slate-900      { color: rgb(var(--text)) !important; }
+:root.theme-dark .text-slate-800      { color: rgb(var(--text)) !important; opacity: 0.9; }
+:root.theme-dark .text-slate-700      { color: rgb(var(--text)) !important; opacity: 0.85; }
+:root.theme-dark .text-slate-600      { color: rgb(var(--text)) !important; opacity: 0.75; }
+:root.theme-dark .text-slate-500      { color: rgb(var(--text)) !important; opacity: 0.6; }
+:root.theme-dark .bg-slate-50         { background-color: rgba(255,255,255,0.04) !important; }
+:root.theme-dark .bg-slate-100        { background-color: rgba(255,255,255,0.08) !important; }
+:root.theme-dark .hover\:bg-slate-50:hover { background-color: rgba(255,255,255,0.05) !important; }
+
+:root.theme-hc .bg-white              { background-color: #000 !important; }
+:root.theme-hc .text-slate-900,
+:root.theme-hc .text-slate-800,
+:root.theme-hc .text-slate-700,
+:root.theme-hc .text-slate-600,
+:root.theme-hc .text-slate-500        { color: #fff !important; }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar              { width: 5px; height: 5px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        { background: rgba(245, 158, 11, 0.2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover  { background: rgba(245, 158, 11, 0.4); }
+
+/* ─── Prose reset inside chat ─── */
+.prose p   { margin: 0 0 0.5em; }
+.prose ul  { margin: 0.25em 0 0.5em 1.4em; list-style-type: disc; padding-left: 0.25em; }
+.prose ol  { margin: 0.25em 0 0.5em 1.4em; list-style-type: decimal; padding-left: 0.25em; }
+.prose li  { margin: 0.25em 0; line-height: 1.55; display: list-item; }
+.prose ul li::marker { color: #F59E0B; }
+.prose ol li::marker { color: #F59E0B; }
+.prose strong { color: #D4C9B0; font-weight: 600; }
+.prose em { color: #A89F8C; font-style: italic; }
+.prose pre { margin: 0.5em 0; overflow-x: auto; }
+.prose code {
+  background: rgba(245, 158, 11, 0.1);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ─── Focus ring ─── */
+:focus-visible { outline: 2px solid #F59E0B; outline-offset: 2px; }
+
+/* ─── Health ribbon (dark theme) ─── */
+:root.theme-dark .health-ribbon {
+  background: rgba(22, 20, 16, 0.9) !important;
+  border-color: rgba(245, 158, 11, 0.12) !important;
+  backdrop-filter: blur(8px);
 }

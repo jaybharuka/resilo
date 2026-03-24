@@ -1,896 +1,178 @@
-/*
-Multi-Role Dashboard System
-Admin and Employee portals with role-based access and device management
-*/
-
 import React, { useState, useEffect } from 'react';
-import {
-  Box,
-  Grid,
-  Paper,
-  Typography,
-  Card,
-  CardContent,
-  Chip,
-  Button,
-  TextField,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Avatar,
-  IconButton,
-  Badge,
-  Tabs,
-  Tab,
-  Switch,
-  FormControlLabel,
-  Alert,
-  Tooltip,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Divider
-} from '@mui/material';
-import {
-  AdminPanelSettings as AdminIcon,
-  Person as EmployeeIcon,
-  Computer as DeviceIcon,
-  Security as SecurityIcon,
-  Dashboard as DashboardIcon,
-  Analytics as AnalyticsIcon,
-  Settings as SettingsIcon,
-  Add as AddIcon,
-  Edit as EditIcon,
-  Delete as DeleteIcon,
-  Visibility as ViewIcon,
-  Warning as WarningIcon,
-  CheckCircle as SuccessIcon,
-  Error as ErrorIcon,
-  BusinessCenter as CompanyIcon,
-  Group as GroupIcon,
-  Notifications as NotificationsIcon,
-  Schedule as ScheduleIcon
-} from '@mui/icons-material';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Lightbulb } from 'lucide-react';
+import { userApi, apiService } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { Monitor, Users, Server, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react';
 
-// Role-based access control
-const USER_ROLES = {
-  ADMIN: 'admin',
-  EMPLOYEE: 'employee',
-  MANAGER: 'manager'
+const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
+const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
+const UI = { fontFamily: "'Outfit', sans-serif" };
+const PANEL = {
+  background: 'rgb(22, 20, 16)',
+  border: '1px solid rgba(42,40,32,0.9)',
+  borderRadius: '12px',
+  boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
 };
 
-const PERMISSIONS = {
-  VIEW_ALL_DEVICES: 'view_all_devices',
-  MANAGE_DEVICES: 'manage_devices',
-  VIEW_ANALYTICS: 'view_analytics',
-  MANAGE_USERS: 'manage_users',
-  SYSTEM_SETTINGS: 'system_settings',
-  VIEW_OWN_DEVICE: 'view_own_device'
-};
+export default function MultiRoleDashboard() {
+  const { role } = useAuth();
+  const [users, setUsers] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-const ROLE_PERMISSIONS = {
-  [USER_ROLES.ADMIN]: [
-    PERMISSIONS.VIEW_ALL_DEVICES,
-    PERMISSIONS.MANAGE_DEVICES,
-    PERMISSIONS.VIEW_ANALYTICS,
-    PERMISSIONS.MANAGE_USERS,
-    PERMISSIONS.SYSTEM_SETTINGS,
-    PERMISSIONS.VIEW_OWN_DEVICE
-  ],
-  [USER_ROLES.MANAGER]: [
-    PERMISSIONS.VIEW_ALL_DEVICES,
-    PERMISSIONS.VIEW_ANALYTICS,
-    PERMISSIONS.VIEW_OWN_DEVICE
-  ],
-  [USER_ROLES.EMPLOYEE]: [
-    PERMISSIONS.VIEW_OWN_DEVICE
-  ]
-};
+  useEffect(() => {
+    let mounted = true;
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const [usersData, devicesData] = await Promise.all([
+          role === 'admin' ? userApi.list().catch(() => []) : Promise.resolve([]),
+          apiService.getDevices().catch(() => [])
+        ]);
+        if (mounted) {
+          setUsers(Array.isArray(usersData) ? usersData : []);
+          setDevices(Array.isArray(devicesData) ? devicesData : []);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error(err);
+        if (mounted) setLoading(false);
+      }
+    };
+    fetchData();
+    return () => { mounted = false; };
+  }, [role]);
 
-// Mock data for demonstration
-const mockDevices = [
-  {
-    id: 'DEV001',
-    name: 'John-Laptop-Work',
-    type: 'laptop',
-    employee: 'John Smith',
-    department: 'Engineering',
-    status: 'healthy',
-    cpu: 45,
-    memory: 67,
-    disk: 23,
-    lastSeen: '2024-01-15T10:30:00Z',
-    ip: '192.168.1.101',
-    os: 'Windows 11 Pro'
-  },
-  {
-    id: 'DEV002',
-    name: 'Sarah-Desktop-Design',
-    type: 'desktop',
-    employee: 'Sarah Johnson',
-    department: 'Design',
-    status: 'warning',
-    cpu: 78,
-    memory: 89,
-    disk: 91,
-    lastSeen: '2024-01-15T10:25:00Z',
-    ip: '192.168.1.102',
-    os: 'macOS Ventura'
-  },
-  {
-    id: 'DEV003',
-    name: 'Mike-Laptop-Sales',
-    type: 'laptop',
-    employee: 'Mike Davis',
-    department: 'Sales',
-    status: 'critical',
-    cpu: 95,
-    memory: 94,
-    disk: 8,
-    lastSeen: '2024-01-15T09:45:00Z',
-    ip: '192.168.1.103',
-    os: 'Windows 10 Pro'
-  }
-];
-
-const mockUsers = [
-  {
-    id: 'USER001',
-    name: 'John Smith',
-    email: 'john.smith@company.com',
-    role: USER_ROLES.EMPLOYEE,
-    department: 'Engineering',
-    devices: ['DEV001'],
-    lastLogin: '2024-01-15T08:30:00Z',
-    active: true
-  },
-  {
-    id: 'USER002',
-    name: 'Sarah Johnson',
-    email: 'sarah.johnson@company.com',
-    role: USER_ROLES.MANAGER,
-    department: 'Design',
-    devices: ['DEV002'],
-    lastLogin: '2024-01-15T09:15:00Z',
-    active: true
-  },
-  {
-    id: 'USER003',
-    name: 'Mike Davis',
-    email: 'mike.davis@company.com',
-    role: USER_ROLES.EMPLOYEE,
-    department: 'Sales',
-    devices: ['DEV003'],
-    lastLogin: '2024-01-15T07:20:00Z',
-    active: false
-  }
-];
-
-// Utility functions
-const hasPermission = (userRole, permission) => {
-  return ROLE_PERMISSIONS[userRole]?.includes(permission) || false;
-};
-
-const getStatusColor = (status) => {
-  switch (status) {
-    case 'healthy': return '#4caf50';
-    case 'warning': return '#ff9800';
-    case 'critical': return '#f44336';
-    default: return '#9e9e9e';
-  }
-};
-
-const getStatusIcon = (status) => {
-  switch (status) {
-    case 'healthy': return <SuccessIcon />;
-    case 'warning': return <WarningIcon />;
-    case 'critical': return <ErrorIcon />;
-    default: return <DeviceIcon />;
-  }
-};
-
-// Admin Dashboard Component
-const AdminDashboard = ({ currentUser }) => {
-  const [devices, setDevices] = useState(mockDevices);
-  const [users, setUsers] = useState(mockUsers);
-  const [selectedTab, setSelectedTab] = useState(0);
-  const [addDeviceOpen, setAddDeviceOpen] = useState(false);
-  const [addUserOpen, setAddUserOpen] = useState(false);
-
-  const totalDevices = devices.length;
-  const healthyDevices = devices.filter(d => d.status === 'healthy').length;
-  const warningDevices = devices.filter(d => d.status === 'warning').length;
-  const criticalDevices = devices.filter(d => d.status === 'critical').length;
-
-  const DeviceOverview = () => (
-    <Grid container spacing={3}>
-      {/* Quick Stats */}
-      <Grid item xs={12} md={3}>
-        <Card sx={{ bgcolor: '#4caf50', color: 'white' }}>
-          <CardContent>
-            <Typography variant="h4">{totalDevices}</Typography>
-            <Typography variant="subtitle1">Total Devices</Typography>
-          </CardContent>
-        </Card>
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <Card sx={{ bgcolor: '#4caf50', color: 'white' }}>
-          <CardContent>
-            <Typography variant="h4">{healthyDevices}</Typography>
-            <Typography variant="subtitle1">Healthy</Typography>
-          </CardContent>
-        </Card>
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <Card sx={{ bgcolor: '#ff9800', color: 'white' }}>
-          <CardContent>
-            <Typography variant="h4">{warningDevices}</Typography>
-            <Typography variant="subtitle1">Warning</Typography>
-          </CardContent>
-        </Card>
-      </Grid>
-      <Grid item xs={12} md={3}>
-        <Card sx={{ bgcolor: '#f44336', color: 'white' }}>
-          <CardContent>
-            <Typography variant="h4">{criticalDevices}</Typography>
-            <Typography variant="subtitle1">Critical</Typography>
-          </CardContent>
-        </Card>
-      </Grid>
-
-      {/* Device Management Table */}
-      <Grid item xs={12}>
-        <Paper sx={{ p: 3 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Typography variant="h6">Device Management</Typography>
-            {hasPermission(currentUser.role, PERMISSIONS.MANAGE_DEVICES) && (
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={() => setAddDeviceOpen(true)}
-              >
-                Add Device
-              </Button>
-            )}
-          </Box>
-          
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Device</TableCell>
-                  <TableCell>Employee</TableCell>
-                  <TableCell>Department</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Performance</TableCell>
-                  <TableCell>Last Seen</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {devices.map((device) => (
-                  <TableRow key={device.id}>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <DeviceIcon />
-                        <Box>
-                          <Typography variant="subtitle2">{device.name}</Typography>
-                          <Typography variant="caption" color="textSecondary">
-                            {device.type} • {device.os}
-                          </Typography>
-                        </Box>
-                      </Box>
-                    </TableCell>
-                    <TableCell>{device.employee}</TableCell>
-                    <TableCell>{device.department}</TableCell>
-                    <TableCell>
-                      <Chip
-                        icon={getStatusIcon(device.status)}
-                        label={device.status}
-                        size="small"
-                        sx={{ bgcolor: getStatusColor(device.status), color: 'white' }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ width: 100 }}>
-                        <Typography variant="caption">CPU: {device.cpu}%</Typography>
-                        <Typography variant="caption" display="block">MEM: {device.memory}%</Typography>
-                        <Typography variant="caption" display="block">DISK: {device.disk}%</Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="caption">
-                        {new Date(device.lastSeen).toLocaleString()}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', gap: 1 }}>
-                        <Tooltip title="View Details">
-                          <IconButton size="small">
-                            <ViewIcon />
-                          </IconButton>
-                        </Tooltip>
-                        {hasPermission(currentUser.role, PERMISSIONS.MANAGE_DEVICES) && (
-                          <>
-                            <Tooltip title="Edit">
-                              <IconButton size="small">
-                                <EditIcon />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Remove">
-                              <IconButton size="small" color="error">
-                                <DeleteIcon />
-                              </IconButton>
-                            </Tooltip>
-                          </>
-                        )}
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-      </Grid>
-    </Grid>
-  );
-
-  const UserManagement = () => (
-    <Grid container spacing={3}>
-      <Grid item xs={12}>
-        <Paper sx={{ p: 3 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Typography variant="h6">User Management</Typography>
-            {hasPermission(currentUser.role, PERMISSIONS.MANAGE_USERS) && (
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={() => setAddUserOpen(true)}
-              >
-                Add User
-              </Button>
-            )}
-          </Box>
-
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>User</TableCell>
-                  <TableCell>Role</TableCell>
-                  <TableCell>Department</TableCell>
-                  <TableCell>Devices</TableCell>
-                  <TableCell>Last Login</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {users.map((user) => (
-                  <TableRow key={user.id}>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <Avatar>{user.name.charAt(0)}</Avatar>
-                        <Box>
-                          <Typography variant="subtitle2">{user.name}</Typography>
-                          <Typography variant="caption" color="textSecondary">
-                            {user.email}
-                          </Typography>
-                        </Box>
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={user.role}
-                        size="small"
-                        color={user.role === USER_ROLES.ADMIN ? 'error' : 
-                               user.role === USER_ROLES.MANAGER ? 'warning' : 'default'}
-                      />
-                    </TableCell>
-                    <TableCell>{user.department}</TableCell>
-                    <TableCell>
-                      <Badge badgeContent={user.devices.length} color="primary">
-                        <DeviceIcon />
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="caption">
-                        {new Date(user.lastLogin).toLocaleString()}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={user.active ? 'Active' : 'Inactive'}
-                        size="small"
-                        color={user.active ? 'success' : 'default'}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', gap: 1 }}>
-                        <Tooltip title="View Profile">
-                          <IconButton size="small">
-                            <ViewIcon />
-                          </IconButton>
-                        </Tooltip>
-                        {hasPermission(currentUser.role, PERMISSIONS.MANAGE_USERS) && (
-                          <>
-                            <Tooltip title="Edit User">
-                              <IconButton size="small">
-                                <EditIcon />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Deactivate">
-                              <IconButton size="small" color="error">
-                                <DeleteIcon />
-                              </IconButton>
-                            </Tooltip>
-                          </>
-                        )}
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-      </Grid>
-    </Grid>
-  );
-
-  const Analytics = () => (
-    <Grid container spacing={3}>
-      <Grid item xs={12} md={4}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>Department Overview</Typography>
-            <List dense>
-              <ListItem>
-                <ListItemText primary="Engineering" secondary="5 devices, 2 warnings" />
-              </ListItem>
-              <ListItem>
-                <ListItemText primary="Design" secondary="3 devices, 1 critical" />
-              </ListItem>
-              <ListItem>
-                <ListItemText primary="Sales" secondary="4 devices, all healthy" />
-              </ListItem>
-            </List>
-          </CardContent>
-        </Card>
-      </Grid>
-      <Grid item xs={12} md={4}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>Performance Trends</Typography>
-            <Typography variant="body2" color="textSecondary">
-              • Average CPU: 62%<br/>
-              • Average Memory: 74%<br/>
-              • Average Disk: 45%<br/>
-              • Uptime: 99.2%
-            </Typography>
-          </CardContent>
-        </Card>
-      </Grid>
-      <Grid item xs={12} md={4}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>Recent Alerts</Typography>
-            <List dense>
-              <ListItem>
-                <ListItemIcon>
-                  <ErrorIcon color="error" />
-                </ListItemIcon>
-                <ListItemText 
-                  primary="High Memory Usage" 
-                  secondary="Sarah-Desktop-Design"
-                />
-              </ListItem>
-              <ListItem>
-                <ListItemIcon>
-                  <WarningIcon color="warning" />
-                </ListItemIcon>
-                <ListItemText 
-                  primary="Low Disk Space" 
-                  secondary="Mike-Laptop-Sales"
-                />
-              </ListItem>
-            </List>
-          </CardContent>
-        </Card>
-      </Grid>
-    </Grid>
-  );
-
-  return (
-    <Box>
-      <Typography variant="h4" sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <AdminIcon color="error" />
-        Admin Dashboard
-      </Typography>
-
-      <Tabs value={selectedTab} onChange={(e, newValue) => setSelectedTab(newValue)} sx={{ mb: 3 }}>
-        <Tab label="Device Overview" />
-        {hasPermission(currentUser.role, PERMISSIONS.MANAGE_USERS) && (
-          <Tab label="User Management" />
-        )}
-        {hasPermission(currentUser.role, PERMISSIONS.VIEW_ANALYTICS) && (
-          <Tab label="Analytics" />
-        )}
-      </Tabs>
-
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={selectedTab}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -20 }}
-          transition={{ duration: 0.3 }}
-        >
-          {selectedTab === 0 && <DeviceOverview />}
-          {selectedTab === 1 && hasPermission(currentUser.role, PERMISSIONS.MANAGE_USERS) && <UserManagement />}
-          {selectedTab === 2 && hasPermission(currentUser.role, PERMISSIONS.VIEW_ANALYTICS) && <Analytics />}
-        </motion.div>
-      </AnimatePresence>
-
-      {/* Add Device Dialog */}
-      <Dialog open={addDeviceOpen} onClose={() => setAddDeviceOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>Add New Device</DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Device Name" />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Device Type" />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Employee" />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Department" />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField fullWidth label="IP Address" />
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setAddDeviceOpen(false)}>Cancel</Button>
-          <Button variant="contained">Add Device</Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Add User Dialog */}
-      <Dialog open={addUserOpen} onClose={() => setAddUserOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>Add New User</DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Full Name" />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Email" type="email" />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Role" select />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField fullWidth label="Department" />
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setAddUserOpen(false)}>Cancel</Button>
-          <Button variant="contained">Add User</Button>
-        </DialogActions>
-      </Dialog>
-    </Box>
-  );
-};
-
-// Employee Dashboard Component
-const EmployeeDashboard = ({ currentUser }) => {
-  const userDevices = mockDevices.filter(device => 
-    mockUsers.find(user => user.id === currentUser.id)?.devices.includes(device.id)
-  );
-
-  return (
-    <Box>
-      <Typography variant="h4" sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <EmployeeIcon color="primary" />
-        My Dashboard
-      </Typography>
-
-      <Grid container spacing={3}>
-        {/* Welcome Card */}
-        <Grid item xs={12}>
-          <Card sx={{ bgcolor: 'primary.main', color: 'primary.contrastText' }}>
-            <CardContent>
-              <Typography variant="h5" gutterBottom>
-                Welcome back, {currentUser.name}!
-              </Typography>
-              <Typography variant="body1">
-                Monitor your device performance and receive real-time insights.
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* My Devices */}
-        <Grid item xs={12}>
-          <Paper sx={{ p: 3 }}>
-            <Typography variant="h6" sx={{ mb: 3 }}>My Devices</Typography>
-            
-            {userDevices.length > 0 ? (
-              <Grid container spacing={2}>
-                {userDevices.map((device) => (
-                  <Grid item xs={12} md={6} lg={4} key={device.id}>
-                    <Card>
-                      <CardContent>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                          <Typography variant="h6">{device.name}</Typography>
-                          <Chip
-                            icon={getStatusIcon(device.status)}
-                            label={device.status}
-                            size="small"
-                            sx={{ bgcolor: getStatusColor(device.status), color: 'white' }}
-                          />
-                        </Box>
-                        
-                        <Typography variant="body2" color="textSecondary" gutterBottom>
-                          {device.type} • {device.os}
-                        </Typography>
-                        
-                        <Box sx={{ mt: 2 }}>
-                          <Typography variant="body2">CPU: {device.cpu}%</Typography>
-                          <Typography variant="body2">Memory: {device.memory}%</Typography>
-                          <Typography variant="body2">Disk: {device.disk}%</Typography>
-                        </Box>
-                        
-                        <Typography variant="caption" color="textSecondary" display="block" sx={{ mt: 2 }}>
-                          Last updated: {new Date(device.lastSeen).toLocaleString()}
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                ))}
-              </Grid>
-            ) : (
-              <Alert severity="info">
-                No devices assigned to your account. Contact your administrator for device setup.
-              </Alert>
-            )}
-          </Paper>
-        </Grid>
-
-        {/* Performance Summary */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>Performance Summary</Typography>
-              {userDevices.length > 0 ? (
-                <Box>
-                  <Typography variant="body2">
-                    Average CPU: {Math.round(userDevices.reduce((acc, d) => acc + d.cpu, 0) / userDevices.length)}%
-                  </Typography>
-                  <Typography variant="body2">
-                    Average Memory: {Math.round(userDevices.reduce((acc, d) => acc + d.memory, 0) / userDevices.length)}%
-                  </Typography>
-                  <Typography variant="body2">
-                    Average Disk: {Math.round(userDevices.reduce((acc, d) => acc + d.disk, 0) / userDevices.length)}%
-                  </Typography>
-                </Box>
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  No performance data available
-                </Typography>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Quick Actions */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>Quick Actions</Typography>
-              <List dense>
-                <ListItem button>
-                  <ListItemIcon>
-                    <NotificationsIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="View Alerts" />
-                </ListItem>
-                <ListItem button>
-                  <ListItemIcon>
-                    <ScheduleIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Schedule Maintenance" />
-                </ListItem>
-                <ListItem button>
-                  <ListItemIcon>
-                    <SettingsIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Device Settings" />
-                </ListItem>
-              </List>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-    </Box>
-  );
-};
-
-// Main Multi-Role Dashboard Component
-const MultiRoleDashboard = () => {
-  const [currentUser, setCurrentUser] = useState({
-    id: 'USER001',
-    name: 'John Smith',
-    email: 'john.smith@company.com',
-    role: USER_ROLES.ADMIN, // Change this to test different roles
-    department: 'Engineering'
-  });
-
-  const [roleSelectionOpen, setRoleSelectionOpen] = useState(false);
-
-  const handleRoleChange = (newRole) => {
-    setCurrentUser({ ...currentUser, role: newRole });
-    setRoleSelectionOpen(false);
+  const getStatusColor = (s) => {
+    const s2 = (s || '').toLowerCase();
+    if (s2 === 'online' || s2 === 'healthy') return '#2DD4BF';
+    if (s2 === 'warning') return '#F59E0B';
+    if (s2 === 'critical' || s2 === 'error') return '#F87171';
+    return '#6B6357';
   };
-
-  const getRoleDashboard = () => {
-    switch (currentUser.role) {
-      case USER_ROLES.ADMIN:
-      case USER_ROLES.MANAGER:
-        return <AdminDashboard currentUser={currentUser} />;
-      case USER_ROLES.EMPLOYEE:
-        return <EmployeeDashboard currentUser={currentUser} />;
-      default:
-        return <EmployeeDashboard currentUser={currentUser} />;
-    }
+  const getStatusIcon = (s) => {
+    const color = getStatusColor(s);
+    const s2 = (s || '').toLowerCase();
+    if (s2 === 'online' || s2 === 'healthy') return <CheckCircle2 size={16} color={color} />;
+    if (s2 === 'warning') return <AlertTriangle size={16} color={color} />;
+    if (s2 === 'critical' || s2 === 'error') return <AlertCircle size={16} color={color} />;
+    return <Monitor size={16} color={color} />;
   };
 
   return (
-    <Box sx={{ p: 3 }}>
-      {/* Multi-Role Portal Explanation */}
-      <Alert severity="info" sx={{ mb: 3 }}>
-        <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <SecurityIcon /> Multi-Role Portal Overview
-        </Typography>
-        <Typography variant="body2" sx={{ mb: 2 }}>
-          The Multi-Role Portal provides <strong>role-based access control</strong> for different user types within your organization. 
-          Each role has specific permissions and sees customized dashboards tailored to their responsibilities.
-        </Typography>
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={4}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-              <AdminIcon color="error" />
-              <Typography variant="subtitle2" color="error.main">Admin Role</Typography>
-            </Box>
-            <Typography variant="caption">
-              • Full system access and device management<br/>
-              • User management and security controls<br/>
-              • Analytics and system settings<br/>
-              • Company-wide device oversight
-            </Typography>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-              <GroupIcon color="primary" />
-              <Typography variant="subtitle2" color="primary.main">Manager Role</Typography>
-            </Box>
-            <Typography variant="caption">
-              • Department device visibility<br/>
-              • Team analytics and reports<br/>
-              • Employee device status<br/>
-              • Limited administrative access
-            </Typography>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-              <EmployeeIcon color="success" />
-              <Typography variant="subtitle2" color="success.main">Employee Role</Typography>
-            </Box>
-            <Typography variant="caption">
-              • Personal device management<br/>
-              • Self-service IT requests<br/>
-              • Own device performance monitoring<br/>
-              • Basic system notifications
-            </Typography>
-          </Grid>
-        </Grid>
-        <Typography variant="caption" sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 0.5, fontStyle: 'italic' }}>
-          <Lightbulb size={14} /> Use the "Change Role" button below to switch between different user perspectives and explore role-based features.
-        </Typography>
-      </Alert>
-
-      {/* Role Indicator */}
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
-        mb: 3,
-        p: 2,
-        bgcolor: 'background.paper',
-        borderRadius: 2,
-        border: '1px solid',
-        borderColor: 'divider'
-      }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Avatar sx={{ bgcolor: currentUser.role === USER_ROLES.ADMIN ? 'error.main' : 'primary.main' }}>
-            {currentUser.role === USER_ROLES.ADMIN ? <AdminIcon /> : <EmployeeIcon />}
-          </Avatar>
-          <Box>
-            <Typography variant="h6">{currentUser.name}</Typography>
-            <Typography variant="body2" color="textSecondary">
-              {currentUser.role.toUpperCase()} • {currentUser.department}
-            </Typography>
-          </Box>
-        </Box>
-        
-        <Button
-          variant="outlined"
-          onClick={() => setRoleSelectionOpen(true)}
-          startIcon={<SecurityIcon />}
-        >
-          Change Role (Demo)
-        </Button>
-      </Box>
-
-      {/* Role-based Dashboard */}
-      {getRoleDashboard()}
-
-      {/* Role Selection Dialog */}
-      <Dialog open={roleSelectionOpen} onClose={() => setRoleSelectionOpen(false)}>
-        <DialogTitle>Select Role (Demo Purpose)</DialogTitle>
-        <DialogContent>
-          <List>
-            <ListItem button onClick={() => handleRoleChange(USER_ROLES.ADMIN)}>
-              <ListItemIcon>
-                <AdminIcon color="error" />
-              </ListItemIcon>
-              <ListItemText 
-                primary="Administrator" 
-                secondary="Full access to all features and device management" 
-              />
-            </ListItem>
-            <Divider />
-            <ListItem button onClick={() => handleRoleChange(USER_ROLES.MANAGER)}>
-              <ListItemIcon>
-                <GroupIcon color="warning" />
-              </ListItemIcon>
-              <ListItemText 
-                primary="Manager" 
-                secondary="View all devices and analytics, limited management" 
-              />
-            </ListItem>
-            <Divider />
-            <ListItem button onClick={() => handleRoleChange(USER_ROLES.EMPLOYEE)}>
-              <ListItemIcon>
-                <EmployeeIcon color="primary" />
-              </ListItemIcon>
-              <ListItemText 
-                primary="Employee" 
-                secondary="View only personal devices and performance" 
-              />
-            </ListItem>
-          </List>
-        </DialogContent>
-      </Dialog>
-    </Box>
+    <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', color: '#F5F0E8', ...UI }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', margin: 0, lineHeight: 1 }}>
+            {role === 'admin' ? 'Users & Devices' : 'Devices'}
+          </h1>
+          <p style={{ ...MONO, fontSize: '11px', letterSpacing: '0.1em', color: '#4A443D', marginTop: '6px' }}>
+            RESOURCE MANAGEMENT
+          </p>
+        </div>
+      </div>
+      {loading ? (
+        <div style={{ ...MONO, color: '#F59E0B', fontSize: '12px' }} className="animate-pulse">
+          LOADING DATA...
+        </div>
+      ) : (
+        <div className={`grid grid-cols-1 ${role === 'admin' ? 'lg:grid-cols-2' : 'lg:grid-cols-1'} gap-5`}>
+          <div style={PANEL} className="flex flex-col">
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Server size={16} color="#2DD4BF" />
+              <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>FLEET STATUS</span>
+              <span style={{ marginLeft: 'auto', background: 'rgba(45,212,191,0.1)', color: '#2DD4BF', padding: '2px 8px', borderRadius: '12px', ...MONO, fontSize: '10px' }}>
+                {devices.length} TOTAL
+              </span>
+            </div>
+            <div style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {devices.length === 0 ? <p style={{ color: '#6B6357', fontSize: '13px' }}>No devices.</p> : devices.map((d, i) => (
+                <div key={d.id || i} style={{ background: 'rgba(42,40,32,0.3)', borderRadius: '8px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {getStatusIcon(d.status)}
+                      <span style={{ fontWeight: 500, fontSize: '15px' }}>{d.name}</span>
+                    </div>
+                    <span style={{ ...MONO, fontSize: '10px', color: getStatusColor(d.status), textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      {d.status}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[ 
+                      { l: 'CPU USAGE', v: d.cpu || 0, c: (d.cpu > 80 ? '#F87171' : '#F59E0B') },
+                      { l: 'MEMORY', v: d.memory || 0, c: (d.memory > 85 ? '#F87171' : '#2DD4BF') },
+                      { l: 'DISK', v: d.disk || 0, c: '#2DD4BF' }
+                    ].map(m => (
+                      <div key={m.l} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ ...MONO, fontSize: '9px', color: '#6B6357' }}>{m.l}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <div style={{ flex: 1, height: '4px', background: 'rgba(42,40,32,0.9)', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${m.v}%`, background: m.c }} />
+                          </div>
+                          <span style={{ ...MONO, fontSize: '11px', color: '#A89F8C' }}>{m.v}%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(42,40,32,0.5)', paddingTop: '10px', marginTop: '4px' }}>
+                    <span style={{ fontSize: '11px', color: '#6B6357' }}><span style={MONO}>OS:</span> {d.os || 'Unknown'}</span>
+                    <span style={{ fontSize: '11px', color: '#6B6357' }}><span style={MONO}>LAST SEEN:</span> {d.lastSeen ? new Date(d.lastSeen).toLocaleTimeString() : 'N/A'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {role === 'admin' && (
+            <div style={PANEL} className="flex flex-col">
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Users size={16} color="#F59E0B" />
+                <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>ACTIVE USERS</span>
+                <span style={{ marginLeft: 'auto', background: 'rgba(245,158,11,0.1)', color: '#F59E0B', padding: '2px 8px', borderRadius: '12px', ...MONO, fontSize: '10px' }}>
+                  {users.length} REGISTERED
+                </span>
+              </div>
+              <div style={{ padding: '20px', flex: 1, overflowY: 'auto' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['USER', 'ROLE', 'STATUS'].map((h, j) => <th key={j} style={{ paddingBottom: '12px', ...MONO, fontSize: '10px', color: '#6B6357', letterSpacing: '0.05em', borderBottom: '1px solid rgba(42,40,32,0.9)', textAlign: j===2?'right':'left' }}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.length === 0 ? (
+                      <tr><td colSpan={3} style={{ paddingTop: '20px', color: '#6B6357', fontSize: '13px', textAlign: 'center' }}>No users.</td></tr>
+                    ) : users.map((u, i) => (
+                      <tr key={u.id || i} style={{ borderBottom: '1px solid rgba(42,40,32,0.4)' }}>
+                        <td style={{ padding: '12px 0' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(245,158,11,0.1)', color: '#F59E0B', display: 'flex', alignItems: 'center', justifyContent: 'center', ...MONO, fontSize: '12px' }}>
+                              {(u.full_name || u.username || 'U').charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '13px', fontWeight: 500 }}>{u.full_name || u.username}</div>
+                              <div style={{ ...MONO, fontSize: '10px', color: '#6B6357' }}>{u.email}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ padding: '12px 0' }}>
+                          <span style={{ padding: '2px 8px', borderRadius: '12px', ...MONO, fontSize: '10px', background: u.role === 'admin' ? 'rgba(248,113,113,0.1)' : 'rgba(45,212,191,0.1)', color: u.role === 'admin' ? '#F87171' : '#2DD4BF' }}>
+                            {u.role ? u.role.toUpperCase() : 'USER'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '12px 0', textAlign: 'right' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: (u.is_active || u.is_active===undefined) ? '#2DD4BF' : '#6B6357' }} />
+                            <span style={{ ...MONO, fontSize: '10px', color: '#A89F8C' }}>{(u.is_active || u.is_active===undefined) ? 'ACTIVE' : 'INACTIVE'}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
-};
-
-export default MultiRoleDashboard;
+}

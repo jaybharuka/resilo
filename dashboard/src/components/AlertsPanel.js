@@ -1,498 +1,482 @@
-import React, { useState, useEffect, memo } from 'react';
-import { apiService, realTimeService, USE_MOCKS } from '../services/api';
+import React, { useState, useEffect, useCallback, memo } from 'react';
+import { apiService, realTimeService } from '../services/api';
 import {
-  Paper,
-  Box,
-  Typography,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Chip,
-  IconButton,
-  useTheme,
-  Card,
-  CardContent,
-  Collapse,
-  Grid,
-  Tooltip,
-  Badge,
-  Fab
-} from '@mui/material';
-import {
-  Error as ErrorIcon,
-  Warning as WarningIcon,
-  Info as InfoIcon,
-  CheckCircle as SuccessIcon,
-  Refresh as RefreshIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
-  NotificationsActive as AlertIcon,
-  Schedule as TimeIcon,
-  Source as SourceIcon
-} from '@mui/icons-material';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Lightbulb, BellRing, LayoutList, LayoutGrid } from 'lucide-react';
+  BellRing, LayoutList, LayoutGrid, RefreshCw,
+  ChevronDown, ChevronUp, AlertTriangle, Info,
+  CheckCircle, XCircle, Lightbulb, Clock, Server,
+  ShieldCheck,
+} from 'lucide-react';
 
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+const C = {
+  bg:           'rgb(14,13,11)',
+  surface:      'rgb(22,20,16)',
+  surface2:     'rgb(31,29,24)',
+  border:       'rgba(42,40,32,1)',
+  borderAmber:  'rgba(245,158,11,0.12)',
+  amber:        '#F59E0B',
+  amberDim:     '#D97706',
+  amberAlpha:   'rgba(245,158,11,0.1)',
+  red:          '#F87171',
+  redAlpha:     'rgba(248,113,113,0.12)',
+  teal:         '#2DD4BF',
+  tealAlpha:    'rgba(45,212,191,0.1)',
+  text1:        'rgb(245,240,232)',
+  text2:        'rgb(168,159,140)',
+  text3:        'rgb(107,99,87)',
+};
+
+// ---------------------------------------------------------------------------
+// Severity config
+// ---------------------------------------------------------------------------
+const SEV = {
+  critical: { color: '#F87171', alpha: 'rgba(248,113,113,0.12)', label: 'CRITICAL' },
+  error:    { color: '#F87171', alpha: 'rgba(248,113,113,0.08)', label: 'ERROR' },
+  warning:  { color: '#F59E0B', alpha: 'rgba(245,158,11,0.12)',  label: 'WARNING' },
+  info:     { color: '#2DD4BF', alpha: 'rgba(45,212,191,0.1)',   label: 'INFO' },
+  success:  { color: '#2DD4BF', alpha: 'rgba(45,212,191,0.1)',   label: 'OK' },
+};
+const STATUS = {
+  active:        { color: '#F87171', label: 'ACTIVE' },
+  investigating: { color: '#F59E0B', label: 'INVESTIGATING' },
+  resolved:      { color: '#2DD4BF', label: 'RESOLVED' },
+};
+
+function getSev(s)    { return SEV[s]    || SEV.info; }
+function getStatus(s) { return STATUS[s] || STATUS.active; }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function SeverityIcon({ s, size = 14 }) {
+  const col = getSev(s).color;
+  if (s === 'critical' || s === 'error')
+    return <XCircle size={size} style={{ color: col }} />;
+  if (s === 'warning')
+    return <AlertTriangle size={size} style={{ color: col }} />;
+  if (s === 'success')
+    return <CheckCircle size={size} style={{ color: col }} />;
+  return <Info size={size} style={{ color: col }} />;
+}
+
+function timeAgo(ts) {
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 0) return 'just now';
+  const m = Math.floor(diff / 60000);
+  const h = Math.floor(m / 60);
+  const d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h ago`;
+  if (h > 0) return `${h}h ${m % 60}m ago`;
+  if (m > 0) return `${m}m ago`;
+  return 'just now';
+}
+
+function mapAlert(a, idx) {
+  // Backend sends timestamp as Unix float (seconds)
+  const ts = a.timestamp
+    ? (typeof a.timestamp === 'number' ? a.timestamp * 1000 : new Date(a.timestamp).getTime())
+    : Date.now();
+  return {
+    id:               a.id ?? `alert-${idx}`,
+    severity:         a.severity || 'info',
+    message:          a.message || a.description || 'Alert',
+    source:           a.source || 'System Monitor',
+    timestamp:        new Date(ts),
+    status:           a.status || 'active',
+    details:          a.details || '',
+    category:         a.category || 'General',
+    affected_systems: Array.isArray(a.affected_systems) ? a.affected_systems : [],
+    recommendation:   a.recommendation || '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Card view
+// ---------------------------------------------------------------------------
+function AlertCard({ alert, expanded, onToggle }) {
+  const sev    = getSev(alert.severity);
+  const stat   = getStatus(alert.status);
+
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        background:   C.surface,
+        border:       `1px solid ${C.border}`,
+        borderLeft:   `3px solid ${sev.color}`,
+        borderRadius: 10,
+        overflow:     'hidden',
+        cursor:       'pointer',
+        transition:   'background 0.15s',
+      }}
+      onMouseEnter={e => e.currentTarget.style.background = C.surface2}
+      onMouseLeave={e => e.currentTarget.style.background = C.surface}
+    >
+      <div style={{ padding: '14px 16px' }}>
+        {/* Top row */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <SeverityIcon s={alert.severity} size={13} />
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
+              color: sev.color, background: sev.alpha,
+              padding: '2px 6px', borderRadius: 4,
+            }}>
+              {sev.label}
+            </span>
+            <span style={{
+              fontSize: 9, fontWeight: 600, letterSpacing: '0.06em',
+              color: stat.color, opacity: 0.85,
+              padding: '2px 6px', borderRadius: 4,
+              background: `${stat.color}15`,
+            }}>
+              {stat.label}
+            </span>
+          </div>
+          {expanded
+            ? <ChevronUp size={13} style={{ color: C.text3 }} />
+            : <ChevronDown size={13} style={{ color: C.text3 }} />}
+        </div>
+
+        {/* Message */}
+        <p style={{ fontSize: 13, fontWeight: 500, color: C.text1, margin: 0, lineHeight: 1.45 }}>
+          {alert.message}
+        </p>
+
+        {/* Meta */}
+        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: C.text3, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Server size={10} />{alert.source}
+          </span>
+          <span style={{ fontSize: 11, color: C.text3, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Clock size={10} />{timeAgo(alert.timestamp)}
+          </span>
+        </div>
+
+        {/* Expanded */}
+        {expanded && (
+          <div style={{
+            marginTop: 12, paddingTop: 12,
+            borderTop: `1px solid ${C.border}`,
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}>
+            {alert.details && (
+              <p style={{ fontSize: 12, color: C.text2, margin: 0, lineHeight: 1.55 }}>{alert.details}</p>
+            )}
+            {alert.affected_systems.length > 0 && (
+              <p style={{ fontSize: 11, color: C.text3, margin: 0 }}>
+                <span style={{ color: C.text2, fontWeight: 600 }}>Affected: </span>
+                {alert.affected_systems.join(', ')}
+              </p>
+            )}
+            {alert.recommendation && (
+              <div style={{
+                display: 'flex', alignItems: 'flex-start', gap: 8,
+                background: 'rgba(245,158,11,0.07)',
+                border: `1px solid rgba(245,158,11,0.15)`,
+                borderRadius: 6, padding: '8px 10px',
+              }}>
+                <Lightbulb size={11} style={{ color: C.amber, marginTop: 1, flexShrink: 0 }} />
+                <span style={{ fontSize: 11, color: C.text2, lineHeight: 1.5 }}>{alert.recommendation}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Table row
+// ---------------------------------------------------------------------------
+function AlertRow({ alert, expanded, onToggle, isLast }) {
+  const sev  = getSev(alert.severity);
+  const stat = getStatus(alert.status);
+
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        style={{ cursor: 'pointer', transition: 'background 0.12s' }}
+        onMouseEnter={e => e.currentTarget.style.background = C.surface2}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        {/* Severity */}
+        <td style={{ padding: '11px 16px', whiteSpace: 'nowrap', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: sev.color, flexShrink: 0, boxShadow: `0 0 6px ${sev.color}80` }} />
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: sev.color, background: sev.alpha, padding: '2px 6px', borderRadius: 4 }}>
+              {sev.label}
+            </span>
+          </div>
+        </td>
+
+        {/* Message */}
+        <td style={{ padding: '11px 16px', maxWidth: 340, borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 13, color: C.text1, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {alert.message}
+          </span>
+        </td>
+
+        {/* Category */}
+        <td style={{ padding: '11px 16px', whiteSpace: 'nowrap', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 11, color: C.text3, fontFamily: "'IBM Plex Mono', monospace" }}>{alert.category}</span>
+        </td>
+
+        {/* Source */}
+        <td style={{ padding: '11px 16px', whiteSpace: 'nowrap', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 11, color: C.text3 }}>{alert.source}</span>
+        </td>
+
+        {/* Status */}
+        <td style={{ padding: '11px 16px', whiteSpace: 'nowrap', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.06em', color: stat.color, background: `${stat.color}18`, padding: '2px 7px', borderRadius: 4 }}>
+            {stat.label}
+          </span>
+        </td>
+
+        {/* Time */}
+        <td style={{ padding: '11px 16px', whiteSpace: 'nowrap', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 11, color: C.text3, fontFamily: "'IBM Plex Mono', monospace" }}>{timeAgo(alert.timestamp)}</span>
+        </td>
+
+        {/* Expand */}
+        <td style={{ padding: '11px 12px', borderBottom: isLast && !expanded ? 'none' : `1px solid ${C.border}` }}>
+          {expanded
+            ? <ChevronUp size={13} style={{ color: C.text3 }} />
+            : <ChevronDown size={13} style={{ color: C.text3 }} />}
+        </td>
+      </tr>
+
+      {expanded && (
+        <tr>
+          <td colSpan={7} style={{ padding: '0 16px 14px 16px', background: C.surface2, borderBottom: isLast ? 'none' : `1px solid ${C.border}` }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+              {alert.details && (
+                <p style={{ fontSize: 12, color: C.text2, margin: 0, lineHeight: 1.55 }}>{alert.details}</p>
+              )}
+              {alert.affected_systems.length > 0 && (
+                <p style={{ fontSize: 11, color: C.text3, margin: 0 }}>
+                  <span style={{ color: C.text2, fontWeight: 600 }}>Affected: </span>
+                  {alert.affected_systems.join(', ')}
+                </p>
+              )}
+              {alert.recommendation && (
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                  background: 'rgba(245,158,11,0.07)',
+                  border: `1px solid rgba(245,158,11,0.15)`,
+                  borderRadius: 6, padding: '8px 10px',
+                }}>
+                  <Lightbulb size={11} style={{ color: C.amber, marginTop: 1, flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: C.text2, lineHeight: 1.5 }}>{alert.recommendation}</span>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton loader
+// ---------------------------------------------------------------------------
+function Skeleton() {
+  return (
+    <div style={{ padding: '4px 0' }}>
+      {[1, 2, 3].map(i => (
+        <div key={i} style={{
+          display: 'flex', gap: 12, padding: '14px 16px',
+          borderBottom: `1px solid ${C.border}`,
+        }}>
+          <div style={{ width: 70, height: 14, background: C.surface2, borderRadius: 4 }} />
+          <div style={{ flex: 1, height: 14, background: C.surface2, borderRadius: 4 }} />
+          <div style={{ width: 80, height: 14, background: C.surface2, borderRadius: 4 }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Empty state
+// ---------------------------------------------------------------------------
+function EmptyState() {
+  return (
+    <div style={{ padding: '48px 24px', textAlign: 'center' }}>
+      <ShieldCheck size={32} style={{ color: C.teal, margin: '0 auto 12px', opacity: 0.7 }} />
+      <p style={{ fontSize: 14, fontWeight: 600, color: C.text1, margin: '0 0 4px' }}>All systems healthy</p>
+      <p style={{ fontSize: 12, color: C.text3, margin: 0 }}>No active alerts — metrics are within normal thresholds</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 const AlertsPanel = memo(() => {
-  const theme = useTheme();
-  const [alerts, setAlerts] = useState([]);
+  const [alerts,   setAlerts]   = useState([]);
   const [expanded, setExpanded] = useState({});
-  const [viewMode, setViewMode] = useState('table'); // 'table' or 'cards'
+  const [viewMode, setViewMode] = useState('table');
+  const [loading,  setLoading]  = useState(true);
+  const [spinning, setSpinning] = useState(false);
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async () => {
     try {
       const list = await apiService.getAlerts();
-      // If backend returns anomalies, map to the expected rich shape minimally
-      if (Array.isArray(list) && list.length && list[0]?.description && list[0]?.severity) {
-        const mapped = list.map((a, idx) => ({
-          id: a.id || idx + 1,
-          severity: a.severity || 'info',
-          message: a.description || a.message || 'Alert',
-          source: a.source || 'System Monitor',
-          timestamp: new Date(a.timestamp || Date.now()),
-          status: a.status || 'active',
-          details: a.details || a.description || '',
-          category: a.category || 'General',
-          affected_systems: a.affected_systems || [],
-          recommendation: a.recommendation || ''
-        }));
-        setAlerts(mapped);
-        return;
+      if (Array.isArray(list)) {
+        setAlerts(list.map(mapAlert));
       }
-    } catch (e) {
-      console.warn('Alerts fetch failed, falling back to mocks if enabled');
-    }
-    if (USE_MOCKS) {
-      // Enhanced mock alerts data with more details
-      const mockAlerts = [
-      {
-        id: 1,
-        severity: 'critical',
-        message: 'High memory usage detected - System approaching critical threshold',
-        source: 'System Monitor',
-        timestamp: new Date(Date.now() - 2 * 60000), // 2 minutes ago
-        status: 'active',
-        details: 'Memory usage has reached 95% and may cause system instability. Consider closing unnecessary applications or adding more RAM.',
-        category: 'Performance',
-        affected_systems: ['Primary Server', 'Database'],
-        recommendation: 'Restart memory-intensive processes or scale up resources'
-      },
-      {
-        id: 2,
-        severity: 'warning',
-        message: 'CPU temperature exceeding safe operating range',
-        source: 'Hardware Monitor',
-        timestamp: new Date(Date.now() - 5 * 60000), // 5 minutes ago
-        status: 'investigating',
-        details: 'CPU temperature has reached 78°C, which is above the recommended 70°C threshold. This may lead to thermal throttling.',
-        category: 'Hardware',
-        affected_systems: ['CPU Core 1', 'CPU Core 2'],
-        recommendation: 'Check cooling system and ensure proper ventilation'
-      },
-      {
-        id: 3,
-        severity: 'info',
-        message: 'Automated backup completed successfully',
-        source: 'Backup Service',
-        timestamp: new Date(Date.now() - 15 * 60000), // 15 minutes ago
-        status: 'resolved',
-        details: 'Daily backup process completed without errors. All data has been successfully backed up to remote storage.',
-        category: 'Maintenance',
-        affected_systems: ['Backup Server'],
-        recommendation: 'No action required'
-      },
-      {
-        id: 4,
-        severity: 'error',
-        message: 'Database connection timeout detected',
-        source: 'Database Monitor',
-        timestamp: new Date(Date.now() - 30 * 60000), // 30 minutes ago
-        status: 'investigating',
-        details: 'Multiple connection timeouts detected on the primary database. This may indicate network issues or database overload.',
-        category: 'Database',
-        affected_systems: ['Primary DB', 'Application Server'],
-        recommendation: 'Check database performance and network connectivity'
-      },
-      {
-        id: 5,
-        severity: 'success',
-        message: 'System health check passed all diagnostics',
-        source: 'Health Monitor',
-        timestamp: new Date(Date.now() - 45 * 60000), // 45 minutes ago
-        status: 'resolved',
-        details: 'Comprehensive system health check completed successfully. All components are functioning within normal parameters.',
-        category: 'Monitoring',
-        affected_systems: ['All Systems'],
-        recommendation: 'Continue normal operations'
-      },
-      {
-        id: 6,
-        severity: 'warning',
-        message: 'Disk space on /var partition approaching limit',
-        source: 'Storage Monitor',
-        timestamp: new Date(Date.now() - 60 * 60000), // 1 hour ago
-        status: 'active',
-        details: 'Storage usage on /var partition has reached 85% capacity. Consider cleaning up log files or expanding storage.',
-        category: 'Storage',
-        affected_systems: ['File Server'],
-        recommendation: 'Clean up log files or expand storage capacity'
-      }
-      ];
-      setAlerts(mockAlerts);
-    } else {
+    } catch {
       setAlerts([]);
     }
+  }, []);
+
+  const handleRefresh = async () => {
+    setSpinning(true);
+    await fetchAlerts();
+    setTimeout(() => setSpinning(false), 600);
   };
 
   useEffect(() => {
-    fetchAlerts();
-    // subscribe to realtime polling for alerts
-    const unsubscribe = realTimeService.subscribe('alerts', (data) => {
-      if (Array.isArray(data)) {
-        // naive map; reuse mapping logic in fetch if needed
-        setAlerts((prev) => data.map((a, idx) => ({
-          id: a.id || idx + 1,
-          severity: a.severity || 'info',
-          message: a.description || a.message || 'Alert',
-          source: a.source || 'System Monitor',
-          timestamp: new Date(a.timestamp || Date.now()),
-          status: a.status || 'active',
-          details: a.details || a.description || '',
-          category: a.category || 'General',
-          affected_systems: a.affected_systems || [],
-          recommendation: a.recommendation || ''
-        })));
-      }
+    fetchAlerts().finally(() => setLoading(false));
+
+    const unsub = realTimeService.subscribe('alerts', (data) => {
+      if (Array.isArray(data)) setAlerts(data.map(mapAlert));
     });
-    const onGlobal = () => fetchAlerts();
-    try { window.addEventListener('aiops:refresh', onGlobal); } catch {}
-    return () => { unsubscribe(); try { window.removeEventListener('aiops:refresh', onGlobal); } catch {} };
-  }, []);
 
-  const toggleExpanded = (alertId) => {
-    setExpanded(prev => ({
-      ...prev,
-      [alertId]: !prev[alertId]
-    }));
-  };
+    const onRefresh = () => fetchAlerts();
+    window.addEventListener('aiops:refresh', onRefresh);
+    return () => { unsub(); window.removeEventListener('aiops:refresh', onRefresh); };
+  }, [fetchAlerts]);
 
-  const getSeverityIcon = (severity) => {
-    switch (severity) {
-      case 'critical':
-      case 'error':
-        return <ErrorIcon sx={{ color: '#ff6b6b' }} />;
-      case 'warning':
-        return <WarningIcon sx={{ color: '#ffd93d' }} />;
-      case 'info':
-        return <InfoIcon sx={{ color: '#4fc3f7' }} />;
-      case 'success':
-        return <SuccessIcon sx={{ color: '#00d4aa' }} />;
-      default:
-        return <InfoIcon sx={{ color: '#4fc3f7' }} />;
-    }
-  };
-
-  const getSeverityColor = (severity) => {
-    switch (severity) {
-      case 'critical': return '#ff6b6b';
-      case 'error': return '#ff6b6b';
-      case 'warning': return '#ffd93d';
-      case 'info': return '#4fc3f7';
-      case 'success': return '#00d4aa';
-      default: return '#4fc3f7';
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'active': return '#ff6b6b';
-      case 'investigating': return '#ffd93d';
-      case 'resolved': return '#00d4aa';
-      default: return '#4fc3f7';
-    }
-  };
-
-  const formatTimeAgo = (timestamp) => {
-    const diff = Date.now() - timestamp.getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    
-    if (days > 0) return `${days}d ${hours % 24}h ago`;
-    if (hours > 0) return `${hours}h ${minutes % 60}m ago`;
-    return `${minutes}m ago`;
-  };
-
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.05,
-        delayChildren: 0.1
-      }
-    }
-  };
-
-  const itemVariants = {
-    hidden: { x: -20, opacity: 0 },
-    visible: {
-      x: 0,
-      opacity: 1,
-      transition: {
-        type: "spring",
-        stiffness: 300,
-        damping: 24
-      }
-    }
-  };
+  const toggle = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
 
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
-  const warningCount = alerts.filter(a => a.severity === 'warning').length;
-  const activeCount = alerts.filter(a => a.status === 'active').length;
-
-  const CardView = () => (
-    <Grid container spacing={2}>
-      {alerts.map((alert) => (
-        <Grid item xs={12} md={6} lg={4} key={alert.id}>
-          <motion.div variants={itemVariants}>
-            <Card sx={{
-              background: theme.palette.mode === 'dark' 
-                ? 'rgba(255, 255, 255, 0.03)'
-                : 'rgba(0, 0, 0, 0.02)',
-              border: `1px solid ${theme.palette.divider}`,
-              borderLeft: `4px solid ${getSeverityColor(alert.severity)}`,
-              borderRadius: 2,
-              transition: 'all 0.3s ease',
-              '&:hover': {
-                transform: 'translateY(-4px)',
-                boxShadow: `0 8px 25px ${getSeverityColor(alert.severity)}20`
-              }
-            }}>
-              <CardContent sx={{ p: 2 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {getSeverityIcon(alert.severity)}
-                    <Chip 
-                      label={alert.severity.toUpperCase()}
-                      size="small"
-                      sx={{
-                        bgcolor: getSeverityColor(alert.severity),
-                        color: 'white',
-                        fontWeight: 600
-                      }}
-                    />
-                  </Box>
-                  <IconButton 
-                    size="small" 
-                    onClick={() => toggleExpanded(alert.id)}
-                  >
-                    {expanded[alert.id] ? <CollapseIcon /> : <ExpandIcon />}
-                  </IconButton>
-                </Box>
-                
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
-                  {alert.message}
-                </Typography>
-                
-                <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
-                  <Chip 
-                    label={alert.status}
-                    size="small"
-                    sx={{
-                      bgcolor: `${getStatusColor(alert.status)}20`,
-                      color: getStatusColor(alert.status),
-                      fontWeight: 500,
-                      textTransform: 'capitalize'
-                    }}
-                  />
-                  <Chip 
-                    label={alert.category}
-                    size="small"
-                    variant="outlined"
-                  />
-                </Box>
-                
-                <Typography variant="caption" color="textSecondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <TimeIcon fontSize="small" />
-                  {formatTimeAgo(alert.timestamp)}
-                </Typography>
-                
-                <Collapse in={expanded[alert.id]}>
-                  <Box sx={{ mt: 2, p: 2, bgcolor: 'background.default', borderRadius: 1 }}>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                      {alert.details}
-                    </Typography>
-                    <Typography variant="caption" color="textSecondary" display="block" sx={{ mb: 1 }}>
-                      <strong>Source:</strong> {alert.source}
-                    </Typography>
-                    <Typography variant="caption" color="textSecondary" display="block" sx={{ mb: 1 }}>
-                      <strong>Affected:</strong> {alert.affected_systems?.join(', ')}
-                    </Typography>
-                    <Box sx={{ mt: 1, p: 1, bgcolor: `${getSeverityColor(alert.severity)}10`, borderRadius: 1 }}>
-                      <Typography variant="caption" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                        <Lightbulb size={14} /> {alert.recommendation}
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Collapse>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </Grid>
-      ))}
-    </Grid>
-  );
-
-  const TableView = () => (
-    <TableContainer>
-      <Table>
-        <TableHead>
-          <TableRow>
-            <TableCell sx={{ fontWeight: 600 }}>Severity</TableCell>
-            <TableCell sx={{ fontWeight: 600 }}>Message</TableCell>
-            <TableCell sx={{ fontWeight: 600 }}>Source</TableCell>
-            <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
-            <TableCell sx={{ fontWeight: 600 }}>Time</TableCell>
-            <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <AnimatePresence>
-            {alerts.map((alert) => (
-              <motion.tr key={alert.id} variants={itemVariants}>
-                <TableRow
-                  sx={{
-                    '&:last-child td, &:last-child th': { border: 0 },
-                    transition: 'all 0.2s ease',
-                    '&:hover': {
-                      backgroundColor: theme.palette.mode === 'dark' 
-                        ? 'rgba(255, 255, 255, 0.02)'
-                        : 'rgba(0, 0, 0, 0.02)',
-                      transform: 'translateX(4px)'
-                    }
-                  }}
-                >
-                  <TableCell>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      {getSeverityIcon(alert.severity)}
-                      <Typography variant="body2" sx={{ textTransform: 'capitalize', fontWeight: 500 }}>
-                        {alert.severity}
-                      </Typography>
-                    </Box>
-                  </TableCell>
-                  <TableCell>
-                    <Typography variant="body2" sx={{ maxWidth: 300 }}>
-                      {alert.message}
-                    </Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      <SourceIcon fontSize="small" color="action" />
-                      <Typography variant="body2" color="textSecondary">
-                        {alert.source}
-                      </Typography>
-                    </Box>
-                  </TableCell>
-                  <TableCell>
-                    <Chip
-                      label={alert.status}
-                      size="small"
-                      sx={{
-                        background: `${getStatusColor(alert.status)}20`,
-                        color: getStatusColor(alert.status),
-                        fontWeight: 500,
-                        textTransform: 'capitalize'
-                      }}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Typography variant="body2" color="textSecondary">
-                      {formatTimeAgo(alert.timestamp)}
-                    </Typography>
-                  </TableCell>
-                  <TableCell>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => toggleExpanded(alert.id)}
-                    >
-                      {expanded[alert.id] ? <CollapseIcon /> : <ExpandIcon />}
-                    </IconButton>
-                  </TableCell>
-                </TableRow>
-              </motion.tr>
-            ))}
-          </AnimatePresence>
-        </TableBody>
-      </Table>
-    </TableContainer>
-  );
+  const warningCount  = alerts.filter(a => a.severity === 'warning').length;
+  const activeCount   = alerts.filter(a => a.status === 'active').length;
 
   return (
-    <Paper sx={{ 
-      p: 3,
-      background: theme.palette.mode === 'dark' 
-        ? 'linear-gradient(135deg, rgba(26, 31, 58, 0.8) 0%, rgba(45, 53, 97, 0.8) 100%)'
-        : 'linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 252, 0.9) 100%)',
-      backdropFilter: 'blur(20px)',
-      border: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)'}`,
-      borderRadius: 3,
-      boxShadow: theme.palette.mode === 'dark' 
-        ? '0 8px 32px rgba(0, 0, 0, 0.3)'
-        : '0 8px 32px rgba(0, 0, 0, 0.1)'
+    <div style={{
+      background:   C.surface,
+      border:       `1px solid ${C.borderAmber}`,
+      borderRadius: 12,
+      overflow:     'hidden',
     }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Typography variant="h6" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <BellRing size={20} /> Recent Alerts
-            <Badge badgeContent={activeCount} color="error">
-              <AlertIcon />
-            </Badge>
-          </Typography>
-          
-          <Box sx={{ display: 'flex', gap: 1 }}>
+      {/* Header */}
+      <div style={{
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'space-between',
+        padding:        '14px 18px',
+        borderBottom:   `1px solid ${C.border}`,
+        flexWrap:       'wrap',
+        gap:            10,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <BellRing size={15} style={{ color: C.amber }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text1 }}>Recent Alerts</span>
+            {activeCount > 0 && (
+              <span style={{
+                fontSize: 10, fontWeight: 700, color: '#F87171',
+                background: 'rgba(248,113,113,0.12)', padding: '2px 8px',
+                borderRadius: 999, letterSpacing: '0.04em',
+              }}>
+                {activeCount} active
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
             {criticalCount > 0 && (
-              <Chip 
-                label={`${criticalCount} Critical`}
-                size="small"
-                sx={{ bgcolor: '#ff6b6b', color: 'white', fontWeight: 600 }}
-              />
+              <span style={{ fontSize: 9, fontWeight: 700, color: '#F87171', background: 'rgba(248,113,113,0.1)', padding: '2px 7px', borderRadius: 4, letterSpacing: '0.07em' }}>
+                {criticalCount} CRITICAL
+              </span>
             )}
             {warningCount > 0 && (
-              <Chip 
-                label={`${warningCount} Warning`}
-                size="small"
-                sx={{ bgcolor: '#ffd93d', color: 'black', fontWeight: 600 }}
-              />
+              <span style={{ fontSize: 9, fontWeight: 700, color: C.amber, background: C.amberAlpha, padding: '2px 7px', borderRadius: 4, letterSpacing: '0.07em' }}>
+                {warningCount} WARNING
+              </span>
             )}
-          </Box>
-        </Box>
-        
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Toggle View">
-            <IconButton size="small" onClick={() => setViewMode(viewMode === 'table' ? 'cards' : 'table')}>
-              {viewMode === 'table' ? <LayoutList size={18} /> : <LayoutGrid size={18} />}
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Refresh Alerts">
-            <IconButton size="small" onClick={fetchAlerts}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
+          </div>
+        </div>
 
-      <motion.div
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-      >
-        {viewMode === 'cards' ? <CardView /> : <TableView />}
-      </motion.div>
-    </Paper>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button
+            onClick={() => setViewMode(v => v === 'table' ? 'cards' : 'table')}
+            title="Toggle view"
+            style={{
+              padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: 'transparent', color: C.text3, transition: 'color 0.15s, background 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = C.surface2; e.currentTarget.style.color = C.text1; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.text3; }}
+          >
+            {viewMode === 'table' ? <LayoutGrid size={14} /> : <LayoutList size={14} />}
+          </button>
+          <button
+            onClick={handleRefresh}
+            title="Refresh"
+            style={{
+              padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: 'transparent', color: C.text3, transition: 'color 0.15s, background 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = C.surface2; e.currentTarget.style.color = C.text1; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.text3; }}
+          >
+            <RefreshCw size={14} style={spinning ? { animation: 'spin 0.7s linear infinite' } : {}} />
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      {loading ? (
+        <Skeleton />
+      ) : alerts.length === 0 ? (
+        <EmptyState />
+      ) : viewMode === 'cards' ? (
+        <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {alerts.map(a => (
+            <AlertCard key={a.id} alert={a} expanded={!!expanded[a.id]} onToggle={() => toggle(a.id)} />
+          ))}
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                {['Severity', 'Message', 'Category', 'Source', 'Status', 'Time', ''].map(h => (
+                  <th key={h} style={{
+                    padding: '8px 16px',
+                    fontSize: 9, fontWeight: 700, letterSpacing: '0.09em',
+                    textAlign: 'left', color: C.text3, whiteSpace: 'nowrap',
+                    fontFamily: "'IBM Plex Mono', monospace",
+                  }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {alerts.map((a, i) => (
+                <AlertRow
+                  key={a.id}
+                  alert={a}
+                  expanded={!!expanded[a.id]}
+                  onToggle={() => toggle(a.id)}
+                  isLast={i === alerts.length - 1}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 });
 

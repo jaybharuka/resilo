@@ -27,6 +27,23 @@ export const API_BASE_URL = (() => {
   } catch {}
   return 'http://localhost:5000';
 })();
+
+// Auth API base URL — same Flask backend as API (port 5000)
+export const AUTH_BASE_URL = (() => {
+  try {
+    const override = (typeof window !== 'undefined') ? localStorage.getItem('aiops:authBase') : null;
+    if (override && override.trim()) return override.trim();
+  } catch {}
+  const env = process.env.REACT_APP_AUTH_API_URL;
+  if (env && env.trim()) return env.trim();
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      const { protocol, hostname } = window.location;
+      return `${protocol}//${hostname}:5000`;
+    }
+  } catch {}
+  return 'http://localhost:5000';
+})();
 const inferSocketUrl = () => {
   const env = process.env.REACT_APP_SOCKET_URL;
   if (env) return env;
@@ -44,16 +61,31 @@ const nodeApi = !DIRECT_MODE ? axios.create({ baseURL: NODE_BASE_URL, timeout: 1
 // Create axios instance with default config
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' }
+});
+
+// Auth API client — reuse main api instance (same Flask backend, port 5000)
+const authAxios = api;
+
+// Attach auth token to auth service requests too
+authAxios.interceptors.request.use(async (config) => {
+  let token = authToken;
+  if (_auth0GetToken) { try { token = await _auth0GetToken(); } catch {} }
+  if (token) { config.headers = config.headers || {}; config.headers['Authorization'] = `Bearer ${token}`; }
+  return config;
 });
 
 let authToken = null;
 let refreshToken = null;
 let refreshing = false;
 let refreshQueue = [];
+
+// Firebase token bridge — set by AuthContext after Firebase Auth initialises
+let _auth0GetToken = null;
+export function setTokenGetter(fn) { _auth0GetToken = fn; }
+/** @deprecated use setTokenGetter */
+export const setAuth0TokenGetter = setTokenGetter;
 
 // Helper to determine if a URL is an auth endpoint
 function isAuthEndpoint(urlLike) {
@@ -87,13 +119,17 @@ export function setRefreshTokenOnClient(token) {
   if (token) setLocal('aiops:refresh', token); else setLocal('aiops:refresh', null);
 }
 
-// Request interceptor
+// Request interceptor — prefers Auth0 token when available, falls back to legacy
 api.interceptors.request.use(
-  (config) => {
+  async (config) => {
     console.log(`🔌 API Request: ${config.method?.toUpperCase()} ${config.url}`);
-    if (authToken) {
+    let token = authToken;
+    if (_auth0GetToken) {
+      try { token = await _auth0GetToken(); } catch {}
+    }
+    if (token) {
       config.headers = config.headers || {};
-      config.headers['Authorization'] = `Bearer ${authToken}`;
+      config.headers['Authorization'] = `Bearer ${token}`;
     }
     return config;
   },
@@ -179,12 +215,12 @@ async function attemptRefreshAndReplay(originalConfig) {
 export const apiService = {
   // Config
   async getConfig() {
-    try { const res = await api.get('/config'); return res.data; } catch (e) { return { error: e?.message || String(e) }; }
+    try { const res = await api.get('/config', { timeout: 3000 }); return res.data; } catch (e) { return { error: e?.message || String(e) }; }
   },
   // Health check
   async checkHealth() {
     try {
-      const response = await api.get('/health');
+      const response = await api.get('/health', { timeout: 3000 });
       return response.data;
     } catch (error) {
       console.error('Health check failed:', error);
@@ -308,15 +344,63 @@ export const apiService = {
   },
 
   // Get performance data for charts
-  async getPerformanceData() {
+  async getPerformanceData(timeframe = '1hour') {
     try {
-      const response = await api.get('/performance');
+      const response = await api.get(`/performance?timeframe=${encodeURIComponent(timeframe)}&max_points=120`);
       return response.data;
     } catch (error) {
       console.error('Failed to fetch performance data:', error);
       return [];
     }
-  }
+  },
+
+  // Remediation
+  async getRemediationRules() {
+    try { return (await api.get('/api/remediation/rules')).data; }
+    catch (e) { console.error('getRemediationRules failed:', e?.message); return []; }
+  },
+  async getRemediationHistory() {
+    try { return (await api.get('/api/remediation/history')).data; }
+    catch (e) { console.error('getRemediationHistory failed:', e?.message); return []; }
+  },
+  async getRemediationStats() {
+    try { return (await api.get('/api/remediation/stats')).data; }
+    catch (e) { console.error('getRemediationStats failed:', e?.message); return null; }
+  },
+  async toggleRemediationRule(ruleId) {
+    return (await api.post(`/api/remediation/rules/${ruleId}/toggle`)).data;
+  },
+  async triggerRemediation(issueType = '') {
+    return (await api.post('/api/remediation/trigger', { issue_type: issueType })).data;
+  },
+  async getRemediationIssues() {
+    try { return (await api.get('/api/remediation/issues')).data; }
+    catch (e) { console.error('getRemediationIssues failed:', e?.message); return { issues: [], metrics: {} }; }
+  },
+  async setAutonomousMode(enabled) {
+    return (await api.post('/api/remediation/autonomous', { enabled })).data;
+  },
+  async getAutonomousMode() {
+    try { return (await api.get('/api/remediation/autonomous')).data; }
+    catch (e) { return { autonomous_mode: false }; }
+  },
+
+  // Security (admin only)
+  async getSecurityOverview() {
+    try { return (await api.get('/security/overview')).data; }
+    catch (e) { console.error('getSecurityOverview failed:', e?.message); return null; }
+  },
+  async getSecuritySessions() {
+    try { return (await api.get('/security/sessions')).data; }
+    catch (e) { console.error('getSecuritySessions failed:', e?.message); return []; }
+  },
+  async getLoginEvents() {
+    try { return (await api.get('/security/login-events')).data; }
+    catch (e) { console.error('getLoginEvents failed:', e?.message); return []; }
+  },
+  async revokeSession(session_id) {
+    return (await api.post('/security/revoke-session', { session_id })).data;
+  },
 };
 
 // Additional helpers aligned with Flask endpoints
@@ -356,20 +440,19 @@ export const systemApi = {
   getPredictive: async (timeframe = '1hour') => (await api.get(`/predictive-analytics?timeframe=${encodeURIComponent(timeframe)}`)).data,
 };
 
-// Authentication endpoints
+// Authentication endpoints — all routed to FastAPI auth service (port 5001)
 export const authApi = {
-  register: async ({ email, password, name, role }) => {
-    return (await api.post('/auth/register', { email, password, name, role })).data;
-  },
-  login: async ({ email, password, role }) => {
-    const res = (await api.post('/auth/login', { email, password, role })).data;
+  registerOrg: async ({ org_name, email, username, password, full_name }) =>
+    (await authAxios.post('/auth/register', { org_name, email, username, password, full_name })).data,
+  login: async ({ email, password }) => {
+    const res = (await authAxios.post('/auth/login', { email, password })).data;
     if (res?.token) setAuthTokenOnClient(res.token);
     if (res?.refresh_token) setRefreshTokenOnClient(res.refresh_token);
     return res;
   },
-  me: async () => (await api.get('/auth/me')).data,
+  me: async () => (await authAxios.get('/auth/me')).data,
   logout: async () => {
-    try { await api.post('/auth/logout', { refresh_token: refreshToken }); } finally {
+    try { await authAxios.post('/auth/logout', { refresh_token: refreshToken || '' }); } finally {
       setAuthTokenOnClient(null);
       setRefreshTokenOnClient(null);
     }
@@ -377,17 +460,41 @@ export const authApi = {
   },
   refresh: async () => {
     const body = refreshToken ? { refresh_token: refreshToken } : {};
-    const res = (await api.post('/auth/refresh', body)).data;
+    const res = (await authAxios.post('/auth/refresh', body)).data;
     if (res?.token) setAuthTokenOnClient(res.token);
     if (res?.refresh_token) setRefreshTokenOnClient(res.refresh_token);
     return res;
   },
-  createInvite: async ({ role = 'employee', email, ttl_seconds } = {}) => {
-    return (await api.post('/auth/invites', { role, email, ttl_seconds })).data;
-  },
-  redeemInvite: async ({ token, email, password, name }) => {
-    return (await api.post('/auth/redeem-invite', { token, email, password, name })).data;
-  },
+  // Password
+  changePassword: async (new_password) => (await authAxios.post('/auth/change-password', { new_password })).data,
+  forgotPassword: async (email) => (await authAxios.post('/auth/forgot-password', { email })).data,
+  resetPassword: async (token, new_password) => (await authAxios.post('/auth/reset-password', { token, new_password })).data,
+  // TOTP 2FA
+  get2faStatus: async () => (await authAxios.get('/auth/2fa/status')).data,
+  setup2fa: async () => (await authAxios.post('/auth/2fa/setup')).data,
+  enable2fa: async (code) => (await authAxios.post('/auth/2fa/enable', { code })).data,
+  verify2fa: async (temp_token, code) => (await authAxios.post('/auth/2fa/verify', { temp_token, code })).data,
+  disable2fa: async (code) => (await authAxios.post('/auth/2fa/disable', { code })).data,
+  // Invites
+  createInvite: async ({ role = 'employee', email, note, ttl_hours = 72 } = {}) =>
+    (await authAxios.post('/auth/invites', { role, email, note, ttl_hours })).data,
+  listInvites: async () => (await authAxios.get('/auth/invites')).data,
+  revokeInvite: async (token) => (await authAxios.delete(`/auth/invites/${token}`)).data,
+  acceptInvite: async ({ token, email, username, password, full_name }) =>
+    (await authAxios.post('/auth/accept-invite', { token, email, username, password, full_name })).data,
+};
+
+// User management — admin only, all routed to FastAPI auth service
+export const userApi = {
+  list: async () => (await authAxios.get('/users')).data,
+  create: async ({ email, username, password, role, full_name, must_change_password = true }) =>
+    (await authAxios.post('/users', { email, username, password, role, full_name, must_change_password })).data,
+  get: async (id) => (await authAxios.get(`/users/${id}`)).data,
+  update: async (id, { role, is_active, full_name }) =>
+    (await authAxios.put(`/users/${id}`, { role, is_active, full_name })).data,
+  deactivate: async (id) => (await authAxios.delete(`/users/${id}`)).data,
+  resetPassword: async (id, new_password, must_change_password = true) =>
+    (await authAxios.post(`/users/${id}/reset-password`, { new_password, must_change_password })).data,
 };
 
 // Action endpoints for system operations and AI controls
@@ -454,6 +561,15 @@ export const actionsApi = {
 };
 
 // Integrations endpoints
+export const agentApi = {
+  createToken:  async (label)                => (await api.post('/agents/token', { label })).data,
+  list:         async ()                     => { try { return (await api.get('/agents')).data; } catch { return []; } },
+  get:          async (id)                   => (await api.get(`/agents/${id}`)).data,
+  remove:       async (id)                   => (await api.delete(`/agents/${id}`)).data,
+  sendCommand:  async (id, action, params)   => (await api.post(`/agents/${id}/command`, { action, params: params || {} })).data,
+  getCommands:  async (id)                   => { try { return (await api.get(`/agents/${id}/commands`)).data; } catch { return { pending: [], history: [], actions: {} }; } },
+};
+
 export const integrationsApi = {
   testSlack: async (payload = {}) => (await api.post('/integrations/slack/test', payload)).data,
   testDiscord: async (payload = {}) => (await api.post('/integrations/discord/test', payload)).data,
