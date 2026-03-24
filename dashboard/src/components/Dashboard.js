@@ -1,170 +1,362 @@
 import React, { useState, useEffect } from 'react';
-import { apiService, systemApi } from '../services/api';
-import { realTimeService } from '../services/api';
+import { apiService, systemApi, realTimeService } from '../services/api';
+import { metricStatus } from '../utils/thresholds';
+import { useResiloStore } from '../store/useResiloStore';
 import ActionPanel from './ActionPanel';
-// Socket-based realtime is optional; we use polling-based realTimeService for reliability
-import { toast } from 'react-hot-toast';
-import { Cpu, Brain, HardDrive, ArrowDownToLine } from 'lucide-react';
+import MetricCard from './resilo/MetricCard';
+import InfoTip from './InfoTip';
+import AlertsTable from './resilo/AlertsTable';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Activity, Clock, Cpu, Server, Zap } from 'lucide-react';
 
-const Dashboard = () => {
+const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
+const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
+const UI      = { fontFamily: "'Outfit', sans-serif" };
+
+const PANEL = {
+  background: 'rgb(22, 20, 16)',
+  border: '1px solid rgba(42,40,32,0.9)',
+  borderRadius: '12px',
+  boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
+};
+
+export default function Dashboard() {
+  const { alerts, startPolling } = useResiloStore();
+
   const [systemData, setSystemData] = useState({
-    cpu: 0,
-    memory: 0,
-    disk: 0,
-    network_in: 0,
-    network_out: 0,
-    status: 'unknown',
-    temperature: null,
+    cpu: 0, memory: 0, disk: 0, network_in: 0, network_out: 0, status: 'unknown', temperature: null,
   });
-  const [systemInfo, setSystemInfo] = useState({ uptime: 'N/A', load_avg: 'N/A' });
-  const [actionLoading, setActionLoading] = useState({ restart: false, diag: false, export: false });
+  const [systemInfo, setSystemInfo] = useState({ uptime: 'N/A', load_avg: 'N/A', platform: 'N/A', cpu_cores: 'N/A' });
+  const [metricsHistory, setMetricsHistory] = useState([]);
 
   useEffect(() => {
     let mounted = true;
     let pollInterval = null;
     let infoInterval = null;
 
+    const stopResiloPolling = startPolling();
+
     const normalizeAndSet = (data) => {
       if (!mounted) return;
+      const cpu = data.cpu ?? 0;
+      const mem = data.memory ?? 0;
+      const disk = data.disk ?? data.storage ?? 0;
+
       setSystemData({
-        cpu: data.cpu ?? 0,
-        memory: data.memory ?? 0,
-        disk: data.disk ?? data.storage ?? 0,
-        network_in: data.network_in ?? data.network?.received ?? 0,
+        cpu, memory: mem, disk,
+        network_in:  data.network_in  ?? data.network?.received ?? 0,
         network_out: data.network_out ?? data.network?.sent ?? 0,
         status: data.status || 'unknown',
         temperature: data.temperature ?? null,
       });
+
+      setMetricsHistory(prev => {
+        const now = new Date();
+        const h = now.getHours().toString().padStart(2, '0');
+        const m = now.getMinutes().toString().padStart(2, '0');
+        const s = now.getSeconds().toString().padStart(2, '0');
+        const newEntry = { time: `${h}:${m}:${s}`, cpu, memory: mem };
+        const updated = [...prev, newEntry];
+        return updated.length > 20 ? updated.slice(updated.length - 20) : updated;
+      });
     };
 
-    // Realtime subscription
-  const unsub = realTimeService.subscribe('system', normalizeAndSet);
+    const unsub = realTimeService.subscribe('system', normalizeAndSet);
 
-    // Fallback polling if socket not connected within 1s
     const fetchOnce = async () => {
-      try {
-        const data = await apiService.getSystemData();
-        normalizeAndSet(data);
-      } catch {}
+      try { const data = await apiService.getSystemData(); normalizeAndSet(data); } catch {}
     };
     const fetchInfo = async () => {
-      try {
-        const info = await systemApi.getSystemInfo();
-        if (info) setSystemInfo(info);
-      } catch {}
+      try { const info = await systemApi.getSystemInfo(); if (info && mounted) setSystemInfo(info); } catch {}
     };
 
-    const ensurePolling = async () => {
-      // Always do an initial fetch to avoid empty UI on first load
+    const ensureData = async () => {
       await Promise.all([fetchOnce(), fetchInfo()]);
-      // If sockets are not connected, keep frequent polling
-      // Polling service already runs; still do a lightweight interval to force faster UI ticks
       pollInterval = setInterval(fetchOnce, 4000);
-      // Refresh system info less frequently
       infoInterval = setInterval(fetchInfo, 5000);
     };
-    const timer = setTimeout(ensurePolling, 1000);
+
+    const timer = setTimeout(ensureData, 100);
 
     return () => {
       mounted = false;
+      stopResiloPolling();
       clearTimeout(timer);
       if (pollInterval) clearInterval(pollInterval);
       if (infoInterval) clearInterval(infoInterval);
       unsub && unsub();
     };
-  }, []);
+  }, [startPolling]);
 
-  const MetricCard = ({ title, value, unit, color, icon }) => (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 transition-shadow duration-200 hover:shadow-md">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-gray-700 text-sm font-medium">{title}</h3>
-        <span className="flex items-center">{icon}</span>
-      </div>
-      <div className="flex items-end space-x-2">
-        <span className={`text-3xl font-bold ${color}`}>{value == null ? 'N/A' : value}</span>
-        {value != null && <span className="text-gray-500 text-sm mb-1">{unit}</span>}
-      </div>
-      <div className="w-full bg-gray-100 rounded-full h-2 mt-3">
-        {value != null && (
-          <div
-            className={`h-2 rounded-full transition-all duration-500 ${color.replace('text', 'bg')}`}
-            style={{ width: `${Math.min(value, 100)}%` }}
-          ></div>
-        )}
-      </div>
-    </div>
-  );
+  const displayMetrics = metricsHistory.length > 2 ? metricsHistory : [{ time: '...', cpu: 0, memory: 0 }];
+
+  const overallStatus = systemData.status === 'healthy' ? 'healthy'
+    : systemData.status === 'warning' ? 'warning'
+    : systemData.status === 'unknown' ? 'warning'
+    : 'critical';
+
+  const statusColor = { healthy: '#2DD4BF', warning: '#F59E0B', critical: '#F87171' }[overallStatus] || '#6B6357';
 
   return (
-    <div className="p-6">
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">System Dashboard</h2>
-        <p className="text-gray-600">Real-time system performance monitoring</p>
+    <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* Page header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', color: '#F5F0E8', margin: 0, lineHeight: 1 }}>
+            System Overview
+          </h1>
+          <p style={{ ...MONO, fontSize: '11px', letterSpacing: '0.1em', color: '#4A443D', marginTop: '6px' }}>
+            RESILO OPERATIONS DASHBOARD
+          </p>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '7px 14px',
+            borderRadius: '20px',
+            background: 'rgba(22,20,16,0.8)',
+            border: '1px solid rgba(42,40,32,0.9)',
+            ...MONO,
+            fontSize: '11px',
+            letterSpacing: '0.1em',
+            color: '#2DD4BF',
+          }}
+        >
+          <span
+            style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: '#2DD4BF',
+              boxShadow: '0 0 8px rgba(45,212,191,0.6)',
+              animation: 'pulse 2s infinite',
+              display: 'inline-block',
+            }}
+          />
+          LIVE
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      {/* Metrics grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
         <MetricCard
           title="CPU Usage"
           value={systemData.cpu}
           unit="%"
-          color="text-blue-400"
-          icon={<Cpu size={22} className="text-blue-400" />}
+          status={metricStatus('cpu', systemData.cpu)}
+          trend={0}
+          info="Percentage of CPU time spent on non-idle processes, sampled via psutil. Thresholds are configurable in Settings — warn and critical levels trigger alerts and auto-remediation rules."
         />
         <MetricCard
           title="Memory Usage"
           value={systemData.memory}
           unit="%"
-          color="text-green-400"
-          icon={<Brain size={22} className="text-green-400" />}
+          status={metricStatus('mem', systemData.memory)}
+          trend={0}
+          info="RAM utilisation as a percentage of total installed memory. Includes all user-space processes. High values may indicate memory leaks or insufficient capacity."
         />
         <MetricCard
           title="Disk Usage"
           value={systemData.disk}
           unit="%"
-          color="text-yellow-400"
-          icon={<HardDrive size={22} className="text-yellow-400" />}
+          status={metricStatus('disk', systemData.disk)}
+          trend={0}
+          info="Percentage of disk space used on the primary partition. Approaching 100% can cause write failures and service crashes. Log rotation and cleanup rules fire automatically."
         />
         <MetricCard
           title="Network In"
-          value={Math.round((systemData.network_in || 0) / 1024 / 1024)}
+          value={(systemData.network_in / 1024 / 1024).toFixed(1)}
           unit="MB/s"
-          color="text-purple-400"
-          icon={<ArrowDownToLine size={22} className="text-purple-400" />}
+          status="healthy"
+          trend={0}
+          info="Inbound network throughput in megabytes per second, summed across all interfaces. Spikes may indicate backup jobs, deployments, or unexpected traffic."
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white border border-gray-200 rounded-xl p-6">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">System Health</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Overall Status</span>
-              <div className="flex items-center space-x-2">
-                <div className={`w-3 h-3 rounded-full animate-pulse ${
-                  systemData.status === 'healthy' ? 'bg-green-400' : systemData.status === 'warning' ? 'bg-yellow-400' : 'bg-red-400'
-                }`}></div>
-                <span className={`font-medium capitalize ${
-                  systemData.status === 'healthy' ? 'text-green-600' : systemData.status === 'warning' ? 'text-yellow-600' : 'text-red-600'
-                }`}>
+      {/* Charts + Actions */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+        {/* Time-series chart */}
+        <div className="col-span-2" style={PANEL}>
+          <div style={{ padding: '20px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Activity size={16} color="#F59E0B" />
+            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
+              SYSTEM PERFORMANCE
+            </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '16px' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', ...UI, fontSize: '12px', color: '#6B6357' }}>
+                <span style={{ width: '24px', height: '2px', background: '#F59E0B', display: 'inline-block', borderRadius: '1px' }} />
+                CPU
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', ...UI, fontSize: '12px', color: '#6B6357' }}>
+                <span style={{ width: '24px', height: '2px', background: '#2DD4BF', display: 'inline-block', borderRadius: '1px' }} />
+                Memory
+              </span>
+            </div>
+          </div>
+          <div style={{ padding: '20px 22px', height: '280px' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={displayMetrics}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(42,40,32,0.8)" vertical={false} />
+                <XAxis
+                  dataKey="time"
+                  stroke="#3A342D"
+                  tick={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace", fill: '#4A443D' }}
+                />
+                <YAxis
+                  stroke="#3A342D"
+                  tick={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace", fill: '#4A443D' }}
+                  domain={[0, 100]}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'rgb(31,29,24)',
+                    borderColor: 'rgba(42,40,32,0.9)',
+                    borderRadius: '8px',
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    fontSize: '11px',
+                  }}
+                  labelStyle={{ color: '#A89F8C' }}
+                  itemStyle={{ color: '#F5F0E8' }}
+                />
+                <Line type="monotone" dataKey="cpu"    stroke="#F59E0B" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="memory" stroke="#2DD4BF" strokeWidth={2} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Action panel */}
+        <div className="col-span-1" style={{ ...PANEL, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '20px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Zap size={16} color="#F59E0B" />
+            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
+              SYSTEM ACTIONS
+            </span>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+            <ActionPanel />
+          </div>
+        </div>
+
+      </div>
+
+      {/* Alerts + System Health */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+        {/* Active alerts */}
+        <div style={{ ...PANEL, overflow: 'hidden' }}>
+          <div style={{ padding: '18px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: '#F87171',
+                boxShadow: '0 0 8px rgba(248,113,113,0.5)',
+                display: 'inline-block',
+              }}
+            />
+            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
+              ACTIVE ALERTS & INCIDENTS
+            </span>
+            {alerts?.length > 0 && (
+              <span
+                style={{
+                  marginLeft: 'auto',
+                  ...MONO,
+                  fontSize: '10px',
+                  letterSpacing: '0.08em',
+                  color: '#F87171',
+                  background: 'rgba(248,113,113,0.1)',
+                  border: '1px solid rgba(248,113,113,0.2)',
+                  borderRadius: '10px',
+                  padding: '2px 8px',
+                }}
+              >
+                {alerts.length}
+              </span>
+            )}
+          </div>
+          <AlertsTable alerts={alerts || []} />
+        </div>
+
+        {/* System health */}
+        <div style={{ ...PANEL, padding: '22px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px' }}>
+            <Server size={16} color="#F59E0B" />
+            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
+              SYSTEM HEALTH
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+            {/* Overall status */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C' }}>Overall Status</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span
+                  style={{
+                    width: '7px',
+                    height: '7px',
+                    borderRadius: '50%',
+                    background: statusColor,
+                    boxShadow: `0 0 8px ${statusColor}80`,
+                    display: 'inline-block',
+                    animation: 'pulse 2s infinite',
+                  }}
+                />
+                <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.08em', color: statusColor, textTransform: 'uppercase' }}>
                   {systemData.status || 'unknown'}
                 </span>
               </div>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Uptime</span>
-              <span className="text-blue-600 font-medium">{systemInfo.boot_time ? new Date(systemInfo.boot_time).toLocaleString() : 'N/A'}</span>
+
+            {/* Uptime */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Clock size={13} color="#6B6357" /> Uptime
+                <InfoTip size={13} info="Time elapsed since the system last booted. Resets on restart or crash. Long uptimes indicate stability; short uptimes may signal recent unexpected reboots." />
+              </span>
+              <span style={{ ...MONO, fontSize: '12px', color: '#F59E0B', letterSpacing: '0.04em' }}>
+                {systemData.uptime || systemInfo.boot_time || 'N/A'}
+              </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-700">Load Average</span>
-              <span className="text-yellow-600 font-medium">{systemInfo.load_avg || 'N/A'}</span>
+
+            {/* Load avg */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Cpu size={13} color="#6B6357" /> Load Average
+                <InfoTip size={13} info="1-minute CPU load average — the average number of processes waiting for CPU time. Values above the core count indicate CPU contention." />
+              </span>
+              <span style={{ ...MONO, fontSize: '12px', color: '#A89F8C', letterSpacing: '0.04em' }}>
+                {systemInfo.load_avg || 'N/A'}
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div style={{ borderTop: '1px solid rgba(42,40,32,0.9)', paddingTop: '16px', marginTop: '4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <div>
+                <div style={{ ...MONO, fontSize: '10px', letterSpacing: '0.12em', color: '#4A443D', marginBottom: '6px' }}>PLATFORM</div>
+                <div style={{ ...UI, fontSize: '14px', fontWeight: 600, color: '#F5F0E8' }}>
+                  {systemInfo.platform || 'N/A'}
+                </div>
+              </div>
+              <div>
+                <div style={{ ...MONO, fontSize: '10px', letterSpacing: '0.12em', color: '#4A443D', marginBottom: '6px' }}>CPU CORES</div>
+                <div style={{ ...DISPLAY, fontSize: '2rem', letterSpacing: '0.04em', color: '#F5F0E8', lineHeight: 1 }}>
+                  {systemInfo.cpu_cores || 'N/A'}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-
-        <ActionPanel />
       </div>
+
     </div>
   );
-};
-
-export default Dashboard;
+}

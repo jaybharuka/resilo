@@ -9,18 +9,42 @@ const { Server } = require('socket.io');
 const axios = require('axios');
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
-});
+
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
-// Host binding: default to 127.0.0.1 but allow override (set HOST=0.0.0.0 for broader binding)
 const HOST = (process.env.HOST || '127.0.0.1').trim();
 const CHAT_API_URL = process.env.CHAT_API_URL || 'http://localhost:5000/chat';
 const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || 'http://localhost:5000/chat/stream';
 const FLASK_BASE_URL = process.env.FLASK_BASE_URL || 'http://localhost:5000';
 
-// Enable CORS for all origins
-app.use(cors());
+// Wildcard CORS ('*') allows any site to make requests to this server —
+// including with credentials if the browser allows it.  Use an explicit list.
+const _rawOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001').split(',').map(o => o.trim()).filter(Boolean);
+
+const io = new Server(server, {
+  cors: { origin: _rawOrigins, methods: ['GET', 'POST'], credentials: true },
+});
+
+const _corsOptions = {
+  origin(origin, cb) {
+    // Allow same-origin requests (no Origin header) and listed origins
+    if (!origin || _rawOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin '${origin}' not allowed`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After'],
+};
+
+app.use(cors(_corsOptions));
+
+// Security headers — defence-in-depth (Nginx adds these too, but belt-and-suspenders)
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 app.use(express.json());
 
 // Cache for system data to reduce load (kept minimal, no synthetic defaults in Option A mode)
@@ -442,7 +466,7 @@ io.on('connection', (socket) => {
   });
 
   // Chat streaming: prefer Flask SSE /chat/stream, fallback to /chat full response
-  socket.on('chat:send', async ({ message, streamId }) => {
+  socket.on('chat:send', async ({ message, streamId, token }) => {
     if (!message || !streamId) return;
     // Cleanup any prior stream with same id
     const prev = activeChatStreams.get(streamId);
@@ -452,6 +476,8 @@ io.on('connection', (socket) => {
       activeChatStreams.delete(streamId);
     }
 
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
     // Try SSE streaming first
     try {
       const controller = new AbortController();
@@ -459,7 +485,7 @@ io.on('connection', (socket) => {
 
       const res = await axios.post(CHAT_STREAM_URL, { message }, {
         responseType: 'stream',
-        headers: { Accept: 'text/event-stream' },
+        headers: { Accept: 'text/event-stream', ...authHeaders },
         signal: controller.signal,
         // Increase timeout for long generations
         timeout: 0,
@@ -523,7 +549,7 @@ io.on('connection', (socket) => {
 
     // Fallback: call /chat for full response and simulate streaming
     try {
-      const res = await axios.post(CHAT_API_URL, { message });
+      const res = await axios.post(CHAT_API_URL, { message }, { headers: authHeaders, timeout: 60000 });
       const text = (res.data && (res.data.response || res.data.text || res.data.answer)) || '';
       const words = text.split(/(\s+)/);
       let i = 0;

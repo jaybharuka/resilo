@@ -2,28 +2,26 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { actionsApi, jobsApi } from '../services/api';
 import { toast } from 'react-hot-toast';
+import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 
-// Utility to safely stringify results for display
+const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
+const UI   = { fontFamily: "'Outfit', sans-serif" };
+
 function formatPayload(obj) {
   try {
     if (!obj) return 'No response';
-    return JSON.stringify(obj, null, 2).slice(0, 2000); // cap length
+    return JSON.stringify(obj, null, 2).slice(0, 2000);
   } catch (e) {
     return String(obj);
   }
 }
 
-/**
- * ActionPanel
- * Provides real system & AI action buttons backed by Flask / Node proxy endpoints.
- * Shows granular feedback + last result payload for transparency.
- */
 export default function ActionPanel() {
   const { role } = useAuth();
-  const [loading, setLoading] = useState({});
+  const [loading, setLoading]       = useState({});
   const [lastAction, setLastAction] = useState(null);
-  const [result, setResult] = useState(null);
-  const [showJSON, setShowJSON] = useState(false);
+  const [result, setResult]         = useState(null);
+  const [showResult, setShowResult] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [options, setOptions] = useState({
     aggressive: false,
@@ -31,27 +29,24 @@ export default function ActionPanel() {
     trimWorkingSets: false,
     dryRun: true,
   });
-  const [history, setHistory] = useState([]); // keep last N action results
+  const [history, setHistory] = useState([]);
 
   const run = async (key, fn, friendlyName, meta = {}) => {
     setLoading(l => ({ ...l, [key]: true }));
-    const t = toast.loading(`${friendlyName}...`);
+    const t = toast.loading(`${friendlyName}…`);
     try {
       const res = await fn();
       setLastAction({ key, friendlyName, at: new Date().toISOString() });
       setResult(res);
+      setShowResult(true);
       setHistory(h => [{ id: Date.now(), key, friendlyName, at: new Date().toISOString(), response: res, meta }, ...h].slice(0, 25));
       const msg = res?.message || res?.status || 'Done';
-      // Special-case forbidden (403) style hint message
       if (res?.status === 'forbidden') {
         toast.error(res?.message || 'Action not permitted', { id: t });
       } else {
         toast.success(msg, { id: t });
       }
-      // If a job was started, poll its status and logs until completion
-      if (res?.job_id) {
-        await pollJob(res.job_id, setResult);
-      }
+      if (res?.job_id) await pollJob(res.job_id, setResult);
     } catch (e) {
       console.error(`${friendlyName} failed:`, e);
       toast.error(`${friendlyName} failed`, { id: t });
@@ -61,23 +56,16 @@ export default function ActionPanel() {
   };
 
   const pollJob = async (jobId, onUpdate) => {
-    let done = false;
     let attempts = 0;
-    while (!done && attempts < 120) { // up to ~2 minutes
+    while (attempts < 120) {
       await new Promise(r => setTimeout(r, 1000));
       attempts++;
       try {
         const status = await jobsApi.get(jobId);
-        const logs = await jobsApi.logs(jobId);
-        const combined = { ...(status || {}), ...(logs || {}) };
-        onUpdate && onUpdate(combined);
-        if (status?.status === 'succeeded' || status?.status === 'failed') {
-          done = true;
-          break;
-        }
-      } catch (e) {
-        break;
-      }
+        const logs   = await jobsApi.logs(jobId);
+        onUpdate?.({ ...(status || {}), ...(logs || {}) });
+        if (status?.status === 'succeeded' || status?.status === 'failed') break;
+      } catch { break; }
     }
   };
 
@@ -86,192 +74,350 @@ export default function ActionPanel() {
     run(key, fn, friendlyName);
   };
 
-  const actions = [
-    { key: 'memory', label: options.dryRun ? 'Memory Preview' : 'Memory Cleanup', color: options.dryRun ? 'gray' : 'blue', adminOnly: true, onClick: () => {
-        const opts = { 
-          aggressive: options.aggressive,
-          includeBrowserCache: options.browserCache,
-          trimWorkingSets: options.trimWorkingSets,
-          dryRun: options.dryRun
-        };
+  const isAdmin = role === 'admin';
+
+  const systemActions = [
+    {
+      key: 'memory', danger: false, adminOnly: true,
+      label: options.dryRun ? 'Memory Preview' : 'Memory Cleanup',
+      onClick: () => {
+        const opts = { aggressive: options.aggressive, includeBrowserCache: options.browserCache, trimWorkingSets: options.trimWorkingSets, dryRun: options.dryRun };
         run('memory', () => actionsApi.memoryCleanup(opts), options.dryRun ? 'Memory Cleanup (Preview)' : 'Memory Cleanup', opts);
-      } },
-    { key: 'disk', label: options.dryRun ? 'Disk Preview' : 'Disk Cleanup', color: options.dryRun ? 'gray' : 'amber', adminOnly: true, onClick: () => {
-        const opts = { dryRun: options.dryRun };
-        run('disk', () => actionsApi.diskCleanup(opts), options.dryRun ? 'Disk Cleanup (Preview)' : 'Disk Cleanup', opts);
-      } },
-    { key: 'process', label: 'Process Snapshot', color: 'indigo', adminOnly: false, onClick: () => run('process', actionsApi.processMonitor, 'Process Monitor') },
-    { key: 'emergency', label: 'Emergency Stop (Top CPU)', color: 'rose', adminOnly: true, onClick: () => confirmAndRun('emergency', () => actionsApi.emergencyStop(), 'Emergency Stop', 'This will terminate a top CPU process (if allowed). Continue?') },
+      },
+    },
+    {
+      key: 'disk', danger: false, adminOnly: true,
+      label: options.dryRun ? 'Disk Preview' : 'Disk Cleanup',
+      onClick: () => run('disk', () => actionsApi.diskCleanup({ dryRun: options.dryRun }), options.dryRun ? 'Disk Cleanup (Preview)' : 'Disk Cleanup'),
+    },
+    {
+      key: 'process', danger: false, adminOnly: false,
+      label: 'Process Snapshot',
+      onClick: () => run('process', actionsApi.processMonitor, 'Process Monitor'),
+    },
+    {
+      key: 'emergency', danger: true, adminOnly: true,
+      label: 'Emergency Stop',
+      onClick: () => confirmAndRun('emergency', () => actionsApi.emergencyStop(), 'Emergency Stop', 'This will terminate a top CPU process (if allowed). Continue?'),
+    },
   ];
 
   const aiActions = [
-    { key: 'diag', label: 'AI Diagnostics', color: 'green', adminOnly: false, onClick: () => run('diag', actionsApi.runDiagnostics, 'AI Diagnostics') },
-    { key: 'retrain', label: 'Retrain Models', color: 'purple', adminOnly: true, onClick: () => run('retrain', actionsApi.retrainModels, 'Retrain Models') },
-    { key: 'export', label: 'Export Insights', color: 'cyan', adminOnly: true, onClick: () => run('export', actionsApi.exportInsights, 'Export Insights') },
-    { key: 'updateParams', label: 'Update Parameters', color: 'orange', adminOnly: true, onClick: () => {
-        const sample = '{"learning_rate": 0.001}';
-        const input = window.prompt('Enter JSON parameters to update', sample);
-        if (input === null) return; // cancelled
+    { key: 'diag',         danger: false, adminOnly: false, label: 'AI Diagnostics',    onClick: () => run('diag',    actionsApi.runDiagnostics,  'AI Diagnostics') },
+    { key: 'retrain',      danger: false, adminOnly: true,  label: 'Retrain Models',    onClick: () => run('retrain', actionsApi.retrainModels,   'Retrain Models') },
+    { key: 'export',       danger: false, adminOnly: true,  label: 'Export Insights',   onClick: () => run('export',  actionsApi.exportInsights,  'Export Insights') },
+    {
+      key: 'updateParams', danger: false, adminOnly: true, label: 'Update Parameters',
+      onClick: () => {
+        const input = window.prompt('Enter JSON parameters to update', '{"learning_rate": 0.001}');
+        if (input === null) return;
         let payload;
-        try {
-          payload = JSON.parse(input || '{}');
-        } catch (e) {
-          toast.error('Invalid JSON');
-          return;
-        }
+        try { payload = JSON.parse(input || '{}'); } catch { toast.error('Invalid JSON'); return; }
         run('updateParams', () => actionsApi.updateParameters(payload), 'Update Parameters');
-      } },
+      },
+    },
   ];
 
-  const pillClasses = (color) => `w-full px-4 py-2 rounded-md border text-sm font-medium shadow-sm disabled:opacity-60 disabled:cursor-not-allowed transition-colors
-    border-${color}-300 text-${color}-700 bg-white hover:bg-${color}-50 focus:outline-none focus:ring-2 focus:ring-${color}-400/40`;
+  const ActionRow = ({ action, isLast }) => {
+    const busy     = !!loading[action.key];
+    const locked   = action.adminOnly && !isAdmin;
+    const disabled = busy || locked;
 
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-xl font-semibold text-gray-900">System & AI Actions</h3>
-        {lastAction && (
-          <button
-            onClick={() => setShowJSON(s => !s)}
-            className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 text-gray-600"
-          >
-            {showJSON ? 'Hide Result' : 'Show Result'}
-          </button>
-        )}
-      </div>
-      <p className="text-xs text-gray-500 mb-4">Actions call live backend endpoints. System actions require backend started with ALLOW_SYSTEM_ACTIONS.</p>
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '9px 0',
+          borderBottom: isLast ? 'none' : '1px solid rgba(42,40,32,0.6)',
+          opacity: locked ? 0.35 : 1,
+        }}
+      >
+        {/* Label */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span
+            style={{
+              width: '5px',
+              height: '5px',
+              borderRadius: '50%',
+              flexShrink: 0,
+              background: action.danger ? '#F87171'
+                : locked ? '#4A443D'
+                : '#F59E0B',
+              boxShadow: action.danger ? '0 0 6px rgba(248,113,113,0.4)'
+                : locked ? 'none'
+                : '0 0 6px rgba(245,158,11,0.35)',
+            }}
+          />
+          <span style={{ ...UI, fontSize: '13px', color: action.danger ? '#F87171' : '#A89F8C' }}>
+            {action.label}
+          </span>
+          {action.adminOnly && (
+            <span style={{ ...MONO, fontSize: '9px', letterSpacing: '0.1em', color: '#F59E0B', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.18)', borderRadius: '4px', padding: '1px 5px' }}>
+              ADMIN
+            </span>
+          )}
+        </div>
 
-      {/* Advanced options toggle */}
-      <div className="mb-4">
+        {/* Run button */}
         <button
-          type="button"
-          onClick={() => setAdvancedOpen(o => !o)}
-          className="text-xs font-medium text-blue-700 hover:underline"
+          onClick={action.onClick}
+          disabled={disabled}
+          style={{
+            ...MONO,
+            fontSize: '10px',
+            letterSpacing: '0.1em',
+            padding: '4px 10px',
+            borderRadius: '5px',
+            background: 'transparent',
+            border: action.danger
+              ? '1px solid rgba(248,113,113,0.25)'
+              : '1px solid rgba(42,40,32,0.9)',
+            color: busy
+              ? '#F59E0B'
+              : action.danger
+                ? '#F87171'
+                : '#6B6357',
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            transition: 'all 0.15s',
+            whiteSpace: 'nowrap',
+          }}
+          onMouseEnter={e => {
+            if (!disabled) {
+              e.currentTarget.style.borderColor = action.danger ? 'rgba(248,113,113,0.5)' : 'rgba(245,158,11,0.4)';
+              e.currentTarget.style.color = action.danger ? '#F87171' : '#F59E0B';
+            }
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = action.danger ? 'rgba(248,113,113,0.25)' : 'rgba(42,40,32,0.9)';
+            e.currentTarget.style.color = busy ? '#F59E0B' : action.danger ? '#F87171' : '#6B6357';
+          }}
         >
-          {advancedOpen ? 'Hide Advanced Options' : 'Show Advanced Options'}
+          {busy ? 'RUNNING…' : 'RUN'}
         </button>
       </div>
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+
+      {/* ── System section ── */}
+      <SectionLabel>SYSTEM</SectionLabel>
+      <div style={{ marginBottom: '16px' }}>
+        {systemActions.map((a, i) => (
+          <ActionRow key={a.key} action={a} isLast={i === systemActions.length - 1} />
+        ))}
+      </div>
+
+      {/* ── AI section ── */}
+      <SectionLabel>AI / ML</SectionLabel>
+      <div style={{ marginBottom: '16px' }}>
+        {aiActions.map((a, i) => (
+          <ActionRow key={a.key} action={a} isLast={i === aiActions.length - 1} />
+        ))}
+      </div>
+
+      {/* ── Advanced options toggle ── */}
+      <button
+        type="button"
+        onClick={() => setAdvancedOpen(o => !o)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '5px',
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '4px 0',
+          marginBottom: advancedOpen ? '10px' : '0',
+          color: '#4A443D',
+          ...MONO,
+          fontSize: '10px',
+          letterSpacing: '0.1em',
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = '#F59E0B'; }}
+        onMouseLeave={e => { e.currentTarget.style.color = '#4A443D'; }}
+      >
+        {advancedOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        CLEANUP OPTIONS
+      </button>
+
       {advancedOpen && (
-        <div className="mb-6 border rounded-lg p-4 bg-gray-50">
-          <h4 className="text-sm font-semibold mb-3 text-gray-700">Memory & Disk Cleanup Options</h4>
-          <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3 mb-3 text-xs">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-blue-600" checked={options.dryRun} onChange={e => setOptions(o => ({ ...o, dryRun: e.target.checked }))} />
-              <span>Dry Run (Preview)</span>
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '14px',
+            borderRadius: '8px',
+            border: '1px solid rgba(42,40,32,0.9)',
+            background: 'rgba(255,255,255,0.02)',
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '10px',
+          }}
+        >
+          {[
+            { key: 'dryRun',          label: 'Dry Run',           disabled: false },
+            { key: 'aggressive',      label: 'Aggressive',        disabled: false },
+            { key: 'browserCache',    label: 'Browser Cache',     disabled: !options.aggressive },
+            { key: 'trimWorkingSets', label: 'Working Sets',      disabled: !options.aggressive },
+          ].map(({ key, label, disabled }) => (
+            <label
+              key={key}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                opacity: disabled ? 0.3 : 1,
+                userSelect: 'none',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={options[key]}
+                disabled={disabled}
+                onChange={e => setOptions(o => ({ ...o, [key]: e.target.checked }))}
+                style={{ accentColor: '#F59E0B', width: '12px', height: '12px' }}
+              />
+              <span style={{ ...UI, fontSize: '12px', color: '#6B6357' }}>{label}</span>
             </label>
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-blue-600" checked={options.aggressive} onChange={e => setOptions(o => ({ ...o, aggressive: e.target.checked }))} />
-              <span>Aggressive Mode</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-blue-600" checked={options.browserCache} disabled={!options.aggressive} onChange={e => setOptions(o => ({ ...o, browserCache: e.target.checked }))} />
-              <span>Include Browser Cache</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-blue-600" checked={options.trimWorkingSets} disabled={!options.aggressive} onChange={e => setOptions(o => ({ ...o, trimWorkingSets: e.target.checked }))} />
-              <span>Trim Working Sets (Win)</span>
-            </label>
-          </div>
-          <p className="text-[10px] text-gray-500 leading-snug">
-            Dry Run previews what could be cleaned without deleting. Aggressive mode adds system & browser temp paths (permission dependent).
-            Working set trim attempts to reduce RAM of large non-critical processes (Windows only). Disable Dry Run to perform real cleanup.
-          </p>
+          ))}
         </div>
       )}
 
-      <div className="grid sm:grid-cols-2 gap-3 mb-6">
-        {actions.map(a => {
-          const isAdmin = role === 'admin';
-          const showBadge = a.adminOnly;
-          return (
-            <div key={a.key} className="relative">
-              <button
-                onClick={a.onClick}
-                disabled={!!loading[a.key] || (a.adminOnly && !isAdmin)}
-                className={pillClasses(a.color)}
-                title={a.adminOnly ? (isAdmin ? 'Admin-only action' : 'Only admins can perform this action') : undefined}
-              >
-                {loading[a.key] ? 'Working…' : a.label}
-              </button>
-              {showBadge && (
-                <span className={`absolute top-1 right-2 text-[10px] px-2 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300 font-semibold ${isAdmin ? '' : 'opacity-60'}`}
-                  title={isAdmin ? 'Admin-only action' : 'Only admins can perform this action'}>
-                  Admin
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* ── Result panel ── */}
+      {lastAction && (
+        <div>
+          <button
+            onClick={() => setShowResult(s => !s)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '4px 0',
+              marginBottom: showResult ? '10px' : '0',
+              color: '#4A443D',
+              ...MONO,
+              fontSize: '10px',
+              letterSpacing: '0.1em',
+              transition: 'color 0.15s',
+              width: '100%',
+              textAlign: 'left',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#F59E0B'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#4A443D'; }}
+          >
+            {showResult ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            LAST RESULT
+            <span style={{ marginLeft: '6px', color: '#3A342D' }}>·</span>
+            <span style={{ color: '#3A342D', marginLeft: '2px' }}>{lastAction.friendlyName}</span>
+          </button>
 
-      <div className="grid sm:grid-cols-3 gap-3 mb-4">
-        {aiActions.map(a => {
-          const isAdmin = role === 'admin';
-          const showBadge = a.adminOnly;
-          return (
-            <div key={a.key} className="relative">
-              <button
-                onClick={a.onClick}
-                disabled={!!loading[a.key] || (a.adminOnly && !isAdmin)}
-                className={pillClasses(a.color)}
-                title={a.adminOnly ? (isAdmin ? 'Admin-only action' : 'Only admins can perform this action') : undefined}
-              >
-                {loading[a.key] ? 'Running…' : a.label}
-              </button>
-              {showBadge && (
-                <span className={`absolute top-1 right-2 text-[10px] px-2 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300 font-semibold ${isAdmin ? '' : 'opacity-60'}`}
-                  title={isAdmin ? 'Admin-only action' : 'Only admins can perform this action'}>
-                  Admin
+          {showResult && (
+            <div
+              style={{
+                borderRadius: '8px',
+                border: '1px solid rgba(42,40,32,0.9)',
+                background: 'rgba(14,13,11,0.8)',
+                padding: '14px',
+                ...MONO,
+                fontSize: '11px',
+                color: '#6B6357',
+                overflow: 'auto',
+                maxHeight: '200px',
+              }}
+            >
+              {/* Header row */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <span style={{ color: '#F59E0B', letterSpacing: '0.06em', fontSize: '10px' }}>
+                  {lastAction.friendlyName}
                 </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                <span style={{ color: '#3A342D', fontSize: '10px' }}>
+                  {new Date(lastAction.at).toLocaleTimeString()}
+                </span>
+              </div>
 
-      {lastAction && showJSON && (
-        <div className="mt-4 border rounded-lg bg-gray-50 p-3 text-xs font-mono overflow-auto max-h-80">
-          <div className="mb-2 text-gray-600 flex items-center justify-between">
-            <span>Last: {lastAction.friendlyName} @ {new Date(lastAction.at).toLocaleTimeString()}</span>
-            {result?.status === 'forbidden' && (
-              <span className="text-amber-600 font-semibold">(Enable ALLOW_SYSTEM_ACTIONS to activate)</span>
-            )}
-          </div>
-          <pre className="whitespace-pre-wrap break-all">{formatPayload(result)}</pre>
-          {result?.artifact && (
-            <div className="mt-3">
-              <a
-                className="text-blue-700 hover:underline"
-                href={jobsApi.downloadUrl(result.id || result.job_id)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Download Export
-              </a>
-            </div>
-          )}
-          {history.length > 1 && (
-            <div className="mt-4">
-              <h5 className="font-semibold text-gray-700 mb-2">Recent History</h5>
-              <ul className="space-y-1 max-h-40 overflow-auto pr-1">
-                {history.slice(0,10).map(h => (
-                  <li key={h.id} className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      className="text-left flex-1 truncate text-blue-700 hover:underline"
-                      onClick={() => { setResult(h.response); setLastAction({ key: h.key, friendlyName: h.friendlyName, at: h.at }); }}
-                      title="Show this result"
-                    >
-                      {h.friendlyName} • {new Date(h.at).toLocaleTimeString()} • {h.response?.status}
-                    </button>
-                    <span className="text-[10px] text-gray-500">{h.meta?.dryRun ? 'preview' : 'live'}</span>
-                  </li>
-                ))}
-              </ul>
+              {result?.status === 'forbidden' && (
+                <div style={{ color: '#F87171', marginBottom: '8px', fontSize: '10px', letterSpacing: '0.06em' }}>
+                  ⚠ Enable ALLOW_SYSTEM_ACTIONS
+                </div>
+              )}
+
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#A89F8C', margin: 0 }}>
+                {formatPayload(result)}
+              </pre>
+
+              {result?.artifact && (
+                <a
+                  href={jobsApi.downloadUrl(result.id || result.job_id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '10px', color: '#F59E0B', textDecoration: 'none', fontSize: '10px' }}
+                >
+                  <ExternalLink size={10} /> Download Export
+                </a>
+              )}
+
+              {/* History */}
+              {history.length > 1 && (
+                <div style={{ marginTop: '12px', borderTop: '1px solid rgba(42,40,32,0.6)', paddingTop: '10px' }}>
+                  <div style={{ color: '#4A443D', fontSize: '10px', letterSpacing: '0.1em', marginBottom: '6px' }}>HISTORY</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '100px', overflowY: 'auto' }}>
+                    {history.slice(0, 10).map(h => (
+                      <button
+                        key={h.id}
+                        type="button"
+                        onClick={() => { setResult(h.response); setLastAction({ key: h.key, friendlyName: h.friendlyName, at: h.at }); }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          padding: '2px 0',
+                          ...MONO,
+                          fontSize: '10px',
+                          color: '#4A443D',
+                          transition: 'color 0.1s',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.color = '#F59E0B'; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = '#4A443D'; }}
+                      >
+                        <span style={{ color: '#3A342D' }}>›</span>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {h.friendlyName}
+                        </span>
+                        <span style={{ color: '#3A342D', flexShrink: 0 }}>
+                          {new Date(h.at).toLocaleTimeString()}
+                        </span>
+                        <span style={{ color: '#3A342D', flexShrink: 0 }}>
+                          {h.meta?.dryRun ? 'preview' : 'live'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: '10px', letterSpacing: '0.14em', color: '#3A342D', marginBottom: '4px' }}>
+      {children}
     </div>
   );
 }

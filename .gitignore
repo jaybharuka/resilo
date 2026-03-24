@@ -9,6 +9,15 @@ __pycache__/
 # Logs and cache
 *.log
 *.cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+*.tmp
+*.temp
+*.bak
+*.orig
 
 # Temporary Claude working directory files
 tmpclaude-*-cwd

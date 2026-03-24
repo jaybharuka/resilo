@@ -1,0 +1,20 @@
+# Production overrides — higher replicas, stricter resource limits
+namespace: production
+
+services:
+  apiGateway:
+    replicas: 3
+    hpa:
+      minReplicas: 3
+      maxReplicas: 10
+  orchestrator:
+    replicas: 2
+    resources:
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+  analyticsEngine:
+    replicas: 2

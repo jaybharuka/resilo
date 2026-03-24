@@ -2,6 +2,10 @@
 import realtime from './realtime';
 import { v4 as uuidv4 } from 'uuid';
 
+function getStoredToken() {
+  try { return localStorage.getItem('aiops:token') || null; } catch { return null; }
+}
+
 class ChatStreamClient {
   constructor() {
     this.listeners = new Map(); // streamId -> { onToken, onDone, onError }
@@ -37,7 +41,7 @@ class ChatStreamClient {
     this.bindSocket();
     const streamId = uuidv4();
     this.listeners.set(streamId, { onToken, onDone, onError });
-    socket.emit('chat:send', { message, streamId });
+    socket.emit('chat:send', { message, streamId, token: getStoredToken() });
     return {
       streamId,
       cancel: () => {

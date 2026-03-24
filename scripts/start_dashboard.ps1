@@ -1,6 +1,6 @@
 param(
   [int]$Port = 3001,
-  [string]$Host = "127.0.0.1",
+  [string]$BindAddress = "127.0.0.1",
   [switch]$BuildIfNeeded,
   [switch]$KillExisting
 )
@@ -11,30 +11,29 @@ $dashDir = Join-Path $repoRoot 'dashboard'
 Set-Location $dashDir
 
 function Test-Port([int]$p) {
-  try { $c = Get-NetTCPConnection -LocalPort $p -ErrorAction Stop; return $true } catch { return $false }
+  try { Get-NetTCPConnection -LocalPort $p -ErrorAction Stop | Out-Null; return $true } catch { return $false }
 }
 
 if ($KillExisting) {
   foreach ($p in @($Port, 3001, 3000)) {
     try {
       $conns = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
-      foreach ($c in $conns) {
-        if ($c.OwningProcess) {
-          try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } catch {}
+      foreach ($conn in $conns) {
+        if ($conn.OwningProcess) {
+          try { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue } catch {}
         }
       }
     } catch {}
   }
 }
 
-if ($BuildIfNeeded -or -not (Test-Path (Join-Path $dashDir 'build\index.html'))) {
-  Write-Host "Building React app..."
+if ($BuildIfNeeded -or -not (Test-Path (Join-Path $dashDir 'node_modules'))) {
+  Write-Host "Installing React dependencies..."
   if (-not (Test-Path (Join-Path $dashDir 'node_modules'))) { npm ci }
-  npm run build
 }
 
-# Start in a new window so it stays up, with env vars set
-$envCmd = "$env:PORT=$Port; $env:HOST=$Host; cd `"$dashDir`"; node server.js"
+# Start the interactive dev server using start-all (nodemon + webpack-dev-server)
+$envCmd = "cd `"$dashDir`"; `$env:HOST='$BindAddress'; npm run start-all"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command","$envCmd" -WorkingDirectory $dashDir | Out-Null
 
 # Probe primary and fallback ports

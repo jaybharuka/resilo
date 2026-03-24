@@ -2,8 +2,8 @@
 # Add your API keys here to enable full AI capabilities
 
 google_cloud:
-  # Gemini Pro API key configured
-  api_key: "AIzaSyCg-bOAACJXm3pXV1iouUH8L3jjCAlv4z4"
+  # API key is loaded from the GOOGLE_API_KEY environment variable (see .env)
+  api_key: "${GOOGLE_API_KEY}"
   project_id: "aiops-chatbot"
   
   # Gemini Pro Configuration

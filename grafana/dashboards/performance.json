@@ -1,0 +1,177 @@
+{
+  "id": null,
+  "uid": "aiops-performance",
+  "title": "Performance",
+  "tags": ["aiops", "performance"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "15s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Throughput vs Error Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 9 },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Error %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Throughput" },
+            "properties": [{ "id": "unit", "value": "reqps" }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "app_throughput_requests_per_sec",
+          "legendFormat": "Throughput",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "app_error_rate_percent",
+          "legendFormat": "Error %",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "CPU vs Response Time Correlation",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 9 },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Response Time (s)" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "CPU %" },
+            "properties": [{ "id": "unit", "value": "percent" }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "system_cpu_usage_percent",
+          "legendFormat": "CPU %",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "app_response_time_seconds",
+          "legendFormat": "Response Time (s)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Business Transactions (total)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 9, "w": 12, "h": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(business_transactions_total[1m]) * 60",
+          "legendFormat": "Transactions/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Revenue & User Sessions",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 9, "w": 12, "h": 9 },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Sessions" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Revenue ($)" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "business_revenue_dollars",
+          "legendFormat": "Revenue ($)",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "user_sessions_active",
+          "legendFormat": "Sessions",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "System Resources Overview",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "system_cpu_usage_percent",
+          "legendFormat": "CPU %",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "system_memory_usage_percent",
+          "legendFormat": "Memory %",
+          "refId": "B"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "system_disk_usage_percent",
+          "legendFormat": "Disk %",
+          "refId": "C"
+        }
+      ]
+    }
+  ]
+}

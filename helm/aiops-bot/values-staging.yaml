@@ -1,0 +1,16 @@
+# Staging overrides
+namespace: staging
+
+services:
+  apiGateway:
+    replicas: 1
+    hpa:
+      maxReplicas: 4
+  orchestrator:
+    replicas: 1
+  analyticsEngine:
+    replicas: 1
+    resources:
+      limits:
+        cpu: "750m"
+        memory: "1Gi"

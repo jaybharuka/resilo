@@ -1,56 +1,91 @@
-﻿/* eslint-disable unicode-bom */
+/* eslint-disable unicode-bom */
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
-import Systems from './components/Systems';
-import AiInsights from './components/AiInsights';
 import AIAssistant from './components/AIAssistant';
 import Settings from './components/Settings';
 import Alerts from './components/Alerts';
 import Security from './components/Security';
 import Register from './components/Register';
-import Invites from './components/Invites';
 import RedeemInvite from './components/RedeemInvite';
 import Forbidden from './components/Forbidden';
+import Insights from './components/Insights';
+import Remediation from './components/Remediation';
 import Analytics from './components/Analytics';
+import TeamAndDevices from './components/TeamAndDevices';
+import MultiRoleDashboard from './components/MultiRoleDashboard';
+import NotificationSettings from './components/resilo/NotificationSettings';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './components/Login';
-import ThemeToggle from './components/ThemeToggle';
+import ForgotPassword from './components/ForgotPassword';
+import ResetPassword from './components/ResetPassword';
+import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
+import { RefreshCw } from 'lucide-react';
+
+const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
+const UI   = { fontFamily: "'Outfit', sans-serif" };
 
 function Topbar() {
-  const { user, role, logout, isAuthenticated } = useAuth();
+  const { user, role, isAuthenticated } = useAuth();
   const [refreshing, setRefreshing] = React.useState(false);
+
   const triggerRefresh = React.useCallback(() => {
     if (refreshing) return;
     setRefreshing(true);
-    try {
-      window.dispatchEvent(new CustomEvent('aiops:refresh'));
-    } catch {}
+    try { window.dispatchEvent(new CustomEvent('aiops:refresh')); } catch {}
     setTimeout(() => setRefreshing(false), 800);
   }, [refreshing]);
 
+  if (!isAuthenticated) return null;
+
   return (
-    <div className="mb-4 flex items-center justify-end gap-3">
-      {isAuthenticated && (
-        <span className="inline-flex items-center gap-2 text-sm text-gray-600">
-          <span className={`px-2 py-0.5 rounded-full border text-xs ${role === 'admin' ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-emerald-300 bg-emerald-50 text-emerald-800'}`}>
-            {role === 'admin' ? 'Admin' : 'Employee'}
-          </span>
-          {user?.email && <span className="hidden sm:inline text-gray-700">{user.email}</span>}
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '20px', gap: '8px' }}>
+      {user?.email && (
+        <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.06em', color: '#4A443D' }}>
+          {user.email}
         </span>
       )}
-      <button onClick={triggerRefresh} className={`text-sm px-3 py-1.5 rounded-md border border-gray-200 ${refreshing ? 'opacity-60' : 'hover:bg-gray-50'}`}>
-        {refreshing ? 'Refreshing…' : 'Refresh'}
+      <span
+        style={{
+          ...MONO,
+          fontSize: '10px',
+          letterSpacing: '0.1em',
+          padding: '3px 9px',
+          borderRadius: '10px',
+          ...(role === 'admin'
+            ? { background: 'rgba(245,158,11,0.1)', color: '#F59E0B', border: '1px solid rgba(245,158,11,0.2)' }
+            : { background: 'rgba(245,240,232,0.05)', color: '#6B6357', border: '1px solid rgba(42,40,32,0.9)' }
+          ),
+        }}
+      >
+        {role === 'admin' ? 'ADMIN' : 'EMPLOYEE'}
+      </span>
+      <button
+        onClick={triggerRefresh}
+        style={{
+          padding: '6px',
+          borderRadius: '6px',
+          background: 'transparent',
+          border: '1px solid rgba(42,40,32,0.9)',
+          color: '#4A443D',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          opacity: refreshing ? 0.5 : 1,
+          transition: 'color 0.15s, border-color 0.15s',
+        }}
+        title="Refresh data"
+        onMouseEnter={e => { e.currentTarget.style.color = '#F59E0B'; e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; }}
+        onMouseLeave={e => { e.currentTarget.style.color = '#4A443D'; e.currentTarget.style.borderColor = 'rgba(42,40,32,0.9)'; }}
+      >
+        <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
       </button>
-      <ThemeToggle />
-      {isAuthenticated && (
-        <button onClick={logout} className="ml-2 text-sm text-gray-600 hover:text-gray-900 px-3 py-1.5 border border-gray-200 rounded-md">Logout</button>
-      )}
     </div>
   );
 }
@@ -58,32 +93,38 @@ function Topbar() {
 function AppShell() {
   const { isAuthenticated } = useAuth();
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'rgb(var(--bg))', color: 'rgb(var(--text))' }}>
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 p-6">
-          <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
-          <Topbar />
-          {isAuthenticated && <HealthRibbon />}
-          <Routes>
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-            <Route path="/systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
-            <Route path="/ai-insights" element={<ProtectedRoute><AiInsights /></ProtectedRoute>} />
-            <Route path="/assistant" element={<ProtectedRoute><AIAssistant /></ProtectedRoute>} />
-            <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
-            <Route path="/security" element={<ProtectedRoute requireRole="admin"><Security /></ProtectedRoute>} />
-            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            <Route path="/invites" element={<ProtectedRoute requireRole="admin"><Invites /></ProtectedRoute>} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/redeem" element={<RedeemInvite />} />
-            <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/forbidden" element={<Forbidden />} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </main>
-      </div>
+    <div className="min-h-screen flex" style={{ backgroundColor: 'rgb(var(--bg))', color: 'rgb(var(--text))' }}>
+      <Sidebar />
+      <main className="flex-1 min-w-0 px-6 py-5 overflow-y-auto" style={{ background: 'rgb(var(--bg))' }}>
+        <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
+        <Topbar />
+        {isAuthenticated && <HealthRibbon />}
+        <Routes>
+          <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
+
+          <Route path="/insights"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Insights failed to load"><Insights /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/alerts"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Alerts failed to load"><Alerts /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/remediation" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Remediation failed to load"><Remediation /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/security"    element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Security failed to load"><Security /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/analytics"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Analytics failed to load"><Analytics /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/devices"       element={<ProtectedRoute><ErrorBoundary fallbackTitle="Team & Devices failed to load"><TeamAndDevices /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/users"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Users & Devices failed to load"><MultiRoleDashboard /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/remote-agents" element={<Navigate to="/devices" replace />} />
+          <Route path="/invites"       element={<Navigate to="/users" replace />} />
+          <Route path="/notifications" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Notifications failed to load"><NotificationSettings /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/register"    element={<Register />} />
+          <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />
+          <Route path="/accept-invite"   element={<AcceptInvite />} />
+          <Route path="/login"            element={<Login />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password"  element={<ResetPassword />} />
+          <Route path="/forbidden"       element={<Forbidden />} />
+          <Route path="/"            element={<Navigate to="/dashboard" replace />} />
+          <Route path="*"            element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </main>
     </div>
   );
 }
