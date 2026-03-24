@@ -1,6 +1,21 @@
-# Node modules and environment files
+# Node modules
 node_modules/
+
+# NEVER commit real env files — use .env.example instead
 .env
+.env.local
+.env.development
+.env.production
+.env.staging
+dashboard/.env
+dashboard/.env.local
+dashboard/.env.development
+dashboard/.env.production
+dashboard/.env.staging
+
+# Secret replacement artifacts
+expressions.txt
+
 __pycache__/
 *.pyc
 .venv/
@@ -34,8 +49,12 @@ exports/
 *.key
 *.p12
 *.crt
+# Block all .env variants except .env.example templates
 .env*
+!.env.example
+!dashboard/.env.example
 *secret*.yml
+!.github/workflows/*secret*.yml
 *secret*.json
 *secret*.yaml
 api_config.json

@@ -1,0 +1,40 @@
+# gitleaks configuration
+# Docs: https://github.com/gitleaks/gitleaks
+
+title = "AIOps Bot Secret Scanner"
+
+[extend]
+# Use the default ruleset as a base
+useDefault = true
+
+[[rules]]
+id = "nvidia-api-key"
+description = "NVIDIA NIM API Key"
+regex = '''nvapi-[0-9A-Za-z\-_]{50,}'''
+tags = ["nvidia", "api-key"]
+
+[[rules]]
+id = "firebase-api-key"
+description = "Firebase/Google API Key"
+regex = '''AIzaSy[0-9A-Za-z\-_]{33}'''
+tags = ["firebase", "google", "api-key"]
+
+[[rules]]
+id = "slack-webhook"
+description = "Slack Webhook URL"
+regex = '''https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+'''
+tags = ["slack", "webhook"]
+
+[[rules]]
+id = "jwt-secret"
+description = "Long random JWT/session secret (>=32 chars)"
+regex = '''(JWT_SECRET|SECRET_KEY|SESSION_SECRET)\s*=\s*['""]?[A-Za-z0-9\-_]{32,}['""]?'''
+tags = ["jwt", "secret"]
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  '''.env\.example$''',
+  '''dashboard/\.env\.example$''',
+  '''\.gitleaks\.toml$''',
+]
