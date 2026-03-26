@@ -1,14 +1,29 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { setTokenGetter, authApi } from '../services/api';
-import { clearMetricsConsent } from '../components/MetricsConsent';
+import { startMetricsPush, stopMetricsPush } from '../services/browserMetrics';
+import { resiloApi } from '../services/resiloApi';
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(undefined); // undefined = loading
   const [role, setRole] = useState('employee');
-  const [authError, setAuthError] = useState(null); 
-  
+  const [authError, setAuthError] = useState(null);
+  const metricsPushing = useRef(false);
+
+  function _startMetrics(u) {
+    if (!u?.org_id || metricsPushing.current) return;
+    metricsPushing.current = true;
+    startMetricsPush(async (metrics) => {
+      try { await resiloApi.pushBrowserMetrics(u.org_id, metrics); } catch {}
+    }, 15_000);
+  }
+
+  function _stopMetrics() {
+    stopMetricsPush();
+    metricsPushing.current = false;
+  }
+
   useEffect(() => {
     async function initAuth() {
       const storedToken = localStorage.getItem('aiops:token');
@@ -22,6 +37,7 @@ export function AuthProvider({ children }) {
             setUser(u);
             setRole(u.role || 'employee');
             try { localStorage.setItem('aiops:user', JSON.stringify(u)); } catch {}
+            _startMetrics(u);
           } else {
             setUser(null);
             try { localStorage.removeItem('aiops:user'); } catch {}
@@ -56,6 +72,7 @@ export function AuthProvider({ children }) {
         setTokenGetter(() => res.token);
         setUser(res.user);
         setRole(res.user.role || 'employee');
+        _startMetrics(res.user);
         return { ok: true };
       } else {
         throw new Error('Invalid response from server.');
@@ -75,7 +92,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     try { await authApi.logout(); } catch {}
-    clearMetricsConsent(user?.id);
+    _stopMetrics();
     setTokenGetter(null);
     localStorage.removeItem('aiops:token');
     localStorage.removeItem('aiops:refresh');
