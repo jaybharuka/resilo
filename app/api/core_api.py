@@ -432,8 +432,10 @@ async def dashboard_snapshot(
         snap = await _latest_snap(browser_agent.id)
         if snap and _age(snap) < 60:
             source = (snap.extra or {}).get("source", "browser") if snap.extra else "browser"
-            # Only use if it has real values (local-agent) or non-zero metrics
-            if source == "local-agent" or (snap.cpu and snap.cpu > 0) or (snap.memory and snap.memory > 0):
+            # Only use browser agent data when it came from the real local psutil agent.
+            # Browser-API estimates (cpu from JS benchmark, memory often null/0) are not
+            # reliable enough to replace the server's own psutil readings.
+            if source == "local-agent":
                 return _build(snap)
 
     # ── Priority 2: server's own psutil agent (always available) ─────────────
