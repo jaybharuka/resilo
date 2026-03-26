@@ -28,7 +28,6 @@ import MetricsConsent from './components/MetricsConsent';
 import { RefreshCw } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
-const UI   = { fontFamily: "'Outfit', sans-serif" };
 
 function Topbar() {
   const { user, role, isAuthenticated } = useAuth();

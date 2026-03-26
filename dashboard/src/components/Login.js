@@ -8,7 +8,7 @@ const UI   = { fontFamily: "'Outfit', sans-serif" };
 const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
 
 export default function Login() {
-  const { login, loginWithGoogle, loading, authError } = useAuth();
+  const { login, loading, authError } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from || '/dashboard';
@@ -29,19 +29,6 @@ export default function Login() {
       navigate(from, { replace: true });
     } catch (err) {
       setError(err?.message || 'Sign-in failed.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleGoogle = async () => {
-    setError('');
-    setSubmitting(true);
-    try {
-      await loginWithGoogle();
-      navigate(from, { replace: true });
-    } catch (err) {
-      setError(err?.message || 'Google sign-in failed.');
     } finally {
       setSubmitting(false);
     }
