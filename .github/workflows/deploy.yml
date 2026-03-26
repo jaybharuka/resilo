@@ -33,6 +33,7 @@ jobs:
         working-directory: dashboard
         env:
           CI: false
+          REACT_APP_API_BASE_URL: https://resilo-ai.web.app
           REACT_APP_AUTH_API_URL: https://resilo-ai.web.app
           REACT_APP_CORE_API_URL: https://resilo-ai.web.app
           REACT_APP_SOCKET_URL:   https://resilo-ai.web.app
