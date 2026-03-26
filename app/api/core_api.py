@@ -247,7 +247,7 @@ async def _local_metrics_loop():
     import socket
     hostname = socket.gethostname()
     interval = int(os.getenv("ANOMALY_POLL_INTERVAL", "30"))
-    await asyncio.sleep(5)  # let the DB settle on first startup
+    await asyncio.sleep(2)  # let the DB settle on first startup
     while True:
         try:
             metrics = await _collect_local_metrics()
@@ -350,113 +350,124 @@ async def dashboard_snapshot(
     """Aggregated system snapshot for the authenticated user's org.
 
     Priority:
-      1. The user's own browser/local-agent (browser-{user_id[:8]}) — most relevant
-      2. Average across all agents if no browser agent exists
-
-    Called by the frontend Dashboard component instead of the legacy Flask
-    /dashboard-snapshot endpoint.
+      1. User's local psutil agent (browser-{user_id[:8]} with source=local-agent, fresh <60s)
+      2. Server's psutil agent (local-server) — always running, real data
+      3. Average across all agents (last resort)
     """
     org_id  = token.org_id
     user_id = token.sub
 
-    # ── Try user's own browser agent first ──────────────────────────────────
-    browser_label = f"browser-{user_id[:8]}"
-    browser_agent_result = await db.execute(
-        select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
-    )
-    browser_agent = browser_agent_result.scalar_one_or_none()
+    # Resolve org_id from DB when JWT pre-dates org support
+    if not org_id:
+        u_res = await db.execute(select(User).where(User.id == user_id))
+        u_obj = u_res.scalar_one_or_none()
+        if u_obj:
+            org_id = u_obj.org_id
+    if not org_id:
+        return {
+            "cpu": 0, "memory": 0, "disk": 0, "network_in": 0, "network_out": 0,
+            "status": "no_org", "temperature": None, "uptime_secs": None,
+            "processes": None, "agents_count": 0, "open_alerts": 0,
+            "last_updated": datetime.now(timezone.utc).isoformat(), "source": "core-api",
+        }
 
-    if browser_agent:
-        snap_result = await db.execute(
+    # Shared counts used in every response path
+    agents_count = (await db.execute(
+        select(sqlfunc.count()).select_from(Agent).where(Agent.org_id == org_id)
+    )).scalar() or 0
+    open_alerts = (await db.execute(
+        select(sqlfunc.count()).select_from(AlertRecord).where(
+            AlertRecord.org_id == org_id, AlertRecord.status == "open"
+        )
+    )).scalar() or 0
+
+    now_utc = datetime.now(timezone.utc)
+
+    def _age(snap):
+        ts = snap.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now_utc - ts).total_seconds()
+
+    def _build(s, src=None):
+        cpu, mem, disk = s.cpu or 0, s.memory or 0, s.disk or 0
+        st = "healthy"
+        if cpu > 90 or mem > 90 or disk > 90:
+            st = "critical"
+        elif cpu > 75 or mem > 80 or disk > 80:
+            st = "warning"
+        source = src or ((s.extra or {}).get("source", "server") if s.extra else "server")
+        return {
+            "cpu":          round(cpu, 1),
+            "memory":       round(mem, 1),
+            "disk":         round(disk, 1) if disk else None,
+            "network_in":   round((s.network_in  or 0) / (1024 * 1024), 2),
+            "network_out":  round((s.network_out or 0) / (1024 * 1024), 2),
+            "status":       st,
+            "temperature":  s.temperature,
+            "uptime_secs":  s.uptime_secs,
+            "processes":    s.processes,
+            "agents_count": agents_count,
+            "open_alerts":  open_alerts,
+            "last_updated": s.timestamp.isoformat(),
+            "source":       source,
+        }
+
+    async def _latest_snap(agent_id):
+        r = await db.execute(
             select(MetricSnapshot)
-            .where(MetricSnapshot.org_id == org_id, MetricSnapshot.agent_id == browser_agent.id)
+            .where(MetricSnapshot.org_id == org_id, MetricSnapshot.agent_id == agent_id)
             .order_by(desc(MetricSnapshot.timestamp))
             .limit(1)
         )
-        browser_snap = snap_result.scalar_one_or_none()
-        if browser_snap:
-            # How fresh is the snapshot?
-            age_secs = (datetime.now(timezone.utc) - browser_snap.timestamp.replace(tzinfo=timezone.utc)
-                        if browser_snap.timestamp.tzinfo is None
-                        else (datetime.now(timezone.utc) - browser_snap.timestamp)).total_seconds()
-            if age_secs < 60:  # fresh within 60 s
-                # Fetch counts for the metadata fields
-                agents_result = await db.execute(
-                    select(sqlfunc.count()).select_from(Agent).where(Agent.org_id == org_id)
-                )
-                open_alerts_result = await db.execute(
-                    select(sqlfunc.count()).select_from(AlertRecord).where(
-                        AlertRecord.org_id == org_id, AlertRecord.status == "open"
-                    )
-                )
-                s = browser_snap
-                cpu, mem, disk = s.cpu or 0, s.memory or 0, s.disk or 0
-                status = "healthy"
-                if cpu > 90 or mem > 90 or disk > 90:
-                    status = "critical"
-                elif cpu > 75 or mem > 80 or disk > 80:
-                    status = "warning"
-                return {
-                    "cpu":          round(cpu, 1),
-                    "memory":       round(mem, 1),
-                    "disk":         round(disk, 1) if disk else None,
-                    "network_in":   round((s.network_in  or 0) / (1024 * 1024), 2),
-                    "network_out":  round((s.network_out or 0) / (1024 * 1024), 2),
-                    "status":       status,
-                    "temperature":  s.temperature,
-                    "uptime_secs":  s.uptime_secs,
-                    "processes":    s.processes,
-                    "agents_count": agents_result.scalar() or 0,
-                    "open_alerts":  open_alerts_result.scalar() or 0,
-                    "last_updated": s.timestamp.isoformat(),
-                    "source":       (s.extra or {}).get("source", "browser") if s.extra else "browser",
-                }
+        return r.scalar_one_or_none()
 
-    # ── Fall back: average across all agents ────────────────────────────────
-    # Latest snapshot per agent
+    # ── Priority 1: user's own local psutil agent (real data, fresh) ─────────
+    browser_label = f"browser-{user_id[:8]}"
+    ba_res = await db.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
+    )
+    browser_agent = ba_res.scalar_one_or_none()
+    if browser_agent:
+        snap = await _latest_snap(browser_agent.id)
+        if snap and _age(snap) < 60:
+            source = (snap.extra or {}).get("source", "browser") if snap.extra else "browser"
+            # Only use if it has real values (local-agent) or non-zero metrics
+            if source == "local-agent" or (snap.cpu and snap.cpu > 0) or (snap.memory and snap.memory > 0):
+                return _build(snap)
+
+    # ── Priority 2: server's own psutil agent (always available) ─────────────
+    sa_res = await db.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.label == "local-server")
+    )
+    server_agent = sa_res.scalar_one_or_none()
+    if server_agent:
+        snap = await _latest_snap(server_agent.id)
+        if snap:
+            return _build(snap, src="server")
+
+    # ── Priority 3: average across all agents ────────────────────────────────
     sub = (
-        select(
-            MetricSnapshot.agent_id,
-            sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"),
-        )
+        select(MetricSnapshot.agent_id, sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"))
         .where(MetricSnapshot.org_id == org_id)
         .group_by(MetricSnapshot.agent_id)
         .subquery()
     )
-    result = await db.execute(
+    snapshots = (await db.execute(
         select(MetricSnapshot).join(
             sub,
             (MetricSnapshot.agent_id == sub.c.agent_id)
             & (MetricSnapshot.timestamp == sub.c.max_ts),
         )
-    )
-    snapshots = result.scalars().all()
-
-    # Agent count
-    agents_result = await db.execute(
-        select(sqlfunc.count()).select_from(Agent).where(Agent.org_id == org_id)
-    )
-    agents_count = agents_result.scalar() or 0
-
-    # Open alert count
-    alerts_result = await db.execute(
-        select(sqlfunc.count()).select_from(AlertRecord).where(
-            AlertRecord.org_id == org_id,
-            AlertRecord.status == "open",
-        )
-    )
-    open_alerts = alerts_result.scalar() or 0
+    )).scalars().all()
 
     if not snapshots:
         return {
             "cpu": 0, "memory": 0, "disk": 0,
             "network_in": 0, "network_out": 0,
             "status": "no_agents",
-            "temperature": None,
-            "uptime_secs": None,
-            "processes": None,
-            "agents_count": agents_count,
-            "open_alerts": open_alerts,
+            "temperature": None, "uptime_secs": None, "processes": None,
+            "agents_count": agents_count, "open_alerts": open_alerts,
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "source": "core-api",
         }
@@ -467,21 +478,18 @@ async def dashboard_snapshot(
     net_in   = sum((s.network_in  or 0) / (1024 * 1024) for s in snapshots)
     net_out  = sum((s.network_out or 0) / (1024 * 1024) for s in snapshots)
 
-    status = "healthy"
-    if cpu_avg > 90 or mem_avg > 90 or disk_avg > 90:
-        status = "critical"
-    elif cpu_avg > 75 or mem_avg > 80 or disk_avg > 80:
-        status = "warning"
+    st = "healthy"
+    if cpu_avg > 90 or mem_avg > 90 or disk_avg > 90:   st = "critical"
+    elif cpu_avg > 75 or mem_avg > 80 or disk_avg > 80: st = "warning"
 
     latest = max(snapshots, key=lambda s: s.timestamp or datetime.min.replace(tzinfo=timezone.utc))
-
     return {
         "cpu":          round(cpu_avg, 1),
         "memory":       round(mem_avg, 1),
         "disk":         round(disk_avg, 1),
         "network_in":   round(net_in,  2),
         "network_out":  round(net_out, 2),
-        "status":       status,
+        "status":       st,
         "temperature":  latest.temperature,
         "uptime_secs":  latest.uptime_secs,
         "processes":    latest.processes,
@@ -1002,6 +1010,12 @@ async def browser_metrics(
         log.info("Browser agent created (org=%s, user=%s)", org_id[:8], user_id[:8])
 
     m = body.metrics
+
+    # Discard pure browser-API estimates that carry no real signal (cpu=0, memory=0).
+    # Real local-agent data always has non-zero cpu or memory.
+    if m.source == "browser" and not (m.cpu or m.memory):
+        return {"ok": True, "skipped": True, "reason": "no real metrics from browser API"}
+
     now = datetime.now(timezone.utc)
 
     snap = MetricSnapshot(
