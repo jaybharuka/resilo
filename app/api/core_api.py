@@ -422,31 +422,65 @@ async def dashboard_snapshot(
         )
         return r.scalar_one_or_none()
 
-    # ── Priority 1: user's own local psutil agent (real data, fresh) ─────────
+    # ── Priority 1: user's real local psutil agent (local_agent.py) ──────────
     browser_label = f"browser-{user_id[:8]}"
     ba_res = await db.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
     )
     browser_agent = ba_res.scalar_one_or_none()
+    browser_snap = None
     if browser_agent:
-        snap = await _latest_snap(browser_agent.id)
-        if snap and _age(snap) < 60:
-            source = (snap.extra or {}).get("source", "browser") if snap.extra else "browser"
-            # Only use browser agent data when it came from the real local psutil agent.
-            # Browser-API estimates (cpu from JS benchmark, memory often null/0) are not
-            # reliable enough to replace the server's own psutil readings.
+        browser_snap = await _latest_snap(browser_agent.id)
+        if browser_snap and _age(browser_snap) < 60:
+            source = (browser_snap.extra or {}).get("source", "browser") if browser_snap.extra else "browser"
             if source == "local-agent":
-                return _build(snap)
+                # Full real psutil data from user's machine — use directly
+                return _build(browser_snap)
 
-    # ── Priority 2: server's own psutil agent (always available) ─────────────
+    # ── Priority 2: server psutil (always running) ────────────────────────────
     sa_res = await db.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.label == "local-server")
     )
     server_agent = sa_res.scalar_one_or_none()
+    server_snap = None
     if server_agent:
-        snap = await _latest_snap(server_agent.id)
-        if snap:
-            return _build(snap, src="server")
+        server_snap = await _latest_snap(server_agent.id)
+
+    # ── Merge: server as baseline + override with any fresh browser values ────
+    # Browser API gives partial data (cpu estimate, memory on Chrome).
+    # Server gives full psutil. Combine: prefer non-zero browser values.
+    if server_snap:
+        base = server_snap
+        if browser_snap and _age(browser_snap) < 60:
+            cpu  = (browser_snap.cpu    or 0) if (browser_snap.cpu    and browser_snap.cpu    > 0) else (base.cpu    or 0)
+            mem  = (browser_snap.memory or 0) if (browser_snap.memory and browser_snap.memory > 0) else (base.memory or 0)
+            disk = base.disk
+            net_in, net_out = base.network_in, base.network_out
+            temp, uptime, procs = base.temperature, base.uptime_secs, base.processes
+            ts  = browser_snap.timestamp
+            src = (browser_snap.extra or {}).get("source", "browser") if browser_snap.extra else "browser"
+        else:
+            cpu, mem, disk = base.cpu or 0, base.memory or 0, base.disk or 0
+            net_in, net_out = base.network_in, base.network_out
+            temp, uptime, procs, ts, src = base.temperature, base.uptime_secs, base.processes, base.timestamp, "server"
+        st = "healthy"
+        if cpu > 90 or mem > 90 or (disk or 0) > 90:   st = "critical"
+        elif cpu > 75 or mem > 80 or (disk or 0) > 80: st = "warning"
+        return {
+            "cpu":          round(cpu, 1),
+            "memory":       round(mem, 1),
+            "disk":         round(disk, 1) if disk else None,
+            "network_in":   round((net_in  or 0) / (1024 * 1024), 2),
+            "network_out":  round((net_out or 0) / (1024 * 1024), 2),
+            "status":       st,
+            "temperature":  temp,
+            "uptime_secs":  uptime,
+            "processes":    procs,
+            "agents_count": agents_count,
+            "open_alerts":  open_alerts,
+            "last_updated": ts.isoformat() if ts else datetime.now(timezone.utc).isoformat(),
+            "source":       src,
+        }
 
     # ── Priority 3: average across all agents ────────────────────────────────
     sub = (
@@ -1012,11 +1046,6 @@ async def browser_metrics(
         log.info("Browser agent created (org=%s, user=%s)", org_id[:8], user_id[:8])
 
     m = body.metrics
-
-    # Discard pure browser-API estimates that carry no real signal (cpu=0, memory=0).
-    # Real local-agent data always has non-zero cpu or memory.
-    if m.source == "browser" and not (m.cpu or m.memory):
-        return {"ok": True, "skipped": True, "reason": "no real metrics from browser API"}
 
     now = datetime.now(timezone.utc)
 
