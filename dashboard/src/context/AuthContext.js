@@ -99,7 +99,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('aiops:user');
     setUser(null);
     setRole('employee');
-  }, [user?.id]);
+  }, []);
 
   const value = useMemo(() => ({
     user,
