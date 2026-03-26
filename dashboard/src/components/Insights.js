@@ -3,7 +3,7 @@ import { apiService, systemApi, actionsApi } from '../services/api';
 import { toast } from 'react-hot-toast';
 import {
   Bot, AlertTriangle, Sparkles, BarChart3, Target, TrendingUp,
-  Cpu, Activity, HardDrive, ChevronDown, ChevronUp, Zap, RefreshCw, Shield,
+  Cpu, Activity, HardDrive, ChevronDown, ChevronUp, Zap, RefreshCw,
 } from 'lucide-react';
 
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
