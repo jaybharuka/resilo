@@ -24,7 +24,6 @@ import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
 import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
-import MetricsConsent from './components/MetricsConsent';
 import { RefreshCw } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -97,7 +96,6 @@ function AppShell() {
         <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
         <Topbar />
         {isAuthenticated && <HealthRibbon />}
-        {isAuthenticated && <MetricsConsent />}
         <Routes>
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
 
