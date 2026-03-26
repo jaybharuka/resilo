@@ -160,8 +160,20 @@ def _setup_logging():
 _setup_logging()
 logger = logging.getLogger("aiops.api")
 
-# Add the current directory to the Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add the current directory and sibling app subdirs to the Python path
+_api_dir = os.path.dirname(os.path.abspath(__file__))
+_app_dir = os.path.dirname(_api_dir)          # app/
+_repo_dir = os.path.dirname(_app_dir)         # repo root
+for _p in [_api_dir, _app_dir, _repo_dir,
+           os.path.join(_app_dir, 'auth'),
+           os.path.join(_app_dir, 'core'),
+           os.path.join(_app_dir, 'integrations'),
+           os.path.join(_app_dir, 'monitoring'),
+           os.path.join(_app_dir, 'security'),
+           os.path.join(_app_dir, 'analytics'),
+           os.path.join(_app_dir, 'remediation')]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # --- Load .env file if present ---
 try:

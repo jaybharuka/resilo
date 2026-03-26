@@ -66,7 +66,7 @@ class EnhancedAIOpsBot:
             # Initialize Google Gemini if available
             if GEMINI_AVAILABLE:
                 print("🧠 Initializing NVIDIA OpenAI Client...")
-                nvidia_api_key = os.getenv('NVIDIA_API_KEY') or "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"
+                nvidia_api_key = os.getenv('NVIDIA_API_KEY') or "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"
                 if nvidia_api_key:
                     self.gemini_model = OpenAI(
                         base_url="https://integrate.api.nvidia.com/v1",
@@ -218,7 +218,7 @@ Rules:
 - Keep response under 300 words. Use HTML formatting."""
 
             response = self.gemini_model.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
+                model="abacusai/dracarys-llama-3.1-70b-instruct",
                 messages=[{"role": "user", "content": system_context}],
                 temperature=1,
                 top_p=1,

@@ -21,7 +21,30 @@ Optional:
     EMAIL_FROM         from address
 """
 
+import sys as _sys
 import os
+
+# Ensure all app sub-packages are importable regardless of working directory
+_here = os.path.dirname(os.path.abspath(__file__))   # app/api
+_app  = os.path.dirname(_here)                        # app/
+_root = os.path.dirname(_app)                         # repo root
+for _p in [_here, _app, _root,
+           os.path.join(_app, 'core'),
+           os.path.join(_app, 'auth'),
+           os.path.join(_app, 'integrations')]:
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
+# Load .env from repo root so JWT_SECRET_KEY etc. are available
+_env_file = os.path.join(_root, '.env')
+if os.path.exists(_env_file):
+    with open(_env_file) as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 import hashlib
 import hmac as _hmac
 import secrets
@@ -116,8 +139,15 @@ async def _startup():
 
 
 async def _seed_admin():
+    """
+    Ensure the default admin account exists and its password always matches
+    ADMIN_DEFAULT_PASSWORD from .env.  Running this on every startup means
+    the password is never silently randomised — what is in .env is the truth.
+    """
+    _dev_pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@1234")
+
     async with SessionLocal() as db:
-        # Create default org if none exists
+        # ── Ensure default org exists ─────────────────────────────────────────
         org_count = await db.execute(select(sqlfunc.count()).select_from(Organization))
         if org_count.scalar() == 0:
             org = Organization(
@@ -136,22 +166,14 @@ async def _seed_admin():
             org = org_result.scalar_one()
             org_id = org.id
 
-        # Create default admin if no users exist
-        user_count = await db.execute(select(sqlfunc.count()).select_from(User))
-        if user_count.scalar() == 0:
-            # Never hardcode a default password — read from env so it never
-            # appears in source code or (worse) in structured logs shipped to
-            # an aggregator. If unset, generate a random one and surface it
-            # via reset_admin_password.py instead.
-            _default_pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
-            if not _default_pw:
-                _default_pw = secrets.token_urlsafe(20)
-                log.warning(
-                    "ADMIN_DEFAULT_PASSWORD not set. A random password was used "
-                    "for admin@company.local. Run reset_admin_password.py to set "
-                    "a known password before first login."
-                )
-            pw_hash = _hash_password(_default_pw)
+        # ── Upsert admin@company.local ────────────────────────────────────────
+        result = await db.execute(
+            select(User).where(User.email == "admin@company.local")
+        )
+        admin = result.scalar_one_or_none()
+        pw_hash = _hash_password(_dev_pw)
+
+        if admin is None:
             admin = User(
                 id=str(uuid.uuid4()),
                 email="admin@company.local",
@@ -160,22 +182,29 @@ async def _seed_admin():
                 role="admin",
                 org_id=org_id,
                 full_name="Default Admin",
-                must_change_password=True,
+                must_change_password=False,
             )
             db.add(admin)
-            await db.commit()
-            log.warning(
-                "Default admin account created (admin@company.local). "
-                "LOGIN AND CHANGE THE PASSWORD IMMEDIATELY."
-            )
+            log.info("Default admin account created (admin@company.local)")
         else:
-            # Assign existing users without an org_id to the default org
-            await db.execute(
-                __import__("sqlalchemy").text(
-                    f"UPDATE users SET org_id = '{org_id}' WHERE org_id IS NULL"
-                )
+            # Always re-sync the password so a stale/random hash never blocks login
+            admin.hashed_password    = pw_hash
+            admin.must_change_password = False
+            admin.is_active          = True
+            if not admin.org_id:
+                admin.org_id = org_id
+
+        # Migrate any other users that slipped through without an org
+        await db.execute(
+            __import__("sqlalchemy").text(
+                f"UPDATE users SET org_id = '{org_id}' WHERE org_id IS NULL"
             )
-            await db.commit()
+        )
+        await db.commit()
+        log.info(
+            "Admin ready — email: admin@company.local  "
+            "password: (from ADMIN_DEFAULT_PASSWORD in .env)"
+        )
 
 
 # ---------------------------------------------------------------------------

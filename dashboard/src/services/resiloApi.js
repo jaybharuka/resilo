@@ -1,5 +1,5 @@
 /**
- * resiloApi.js — Core API client (port 8000)
+ * resiloApi.js — Core API client (port 8001)
  *
  * All endpoints are org-scoped: data is automatically filtered to the
  * authenticated user's org_id (read from their JWT via /auth/me).
@@ -17,10 +17,10 @@ const CORE_BASE_URL = (() => {
   try {
     if (typeof window !== 'undefined' && window.location) {
       const { protocol, hostname } = window.location;
-      return `${protocol}//${hostname}:8000`;
+      return `${protocol}//${hostname}:8001`;
     }
   } catch {}
-  return 'http://localhost:8000';
+  return 'http://localhost:8001';
 })();
 
 const coreAxios = axios.create({
@@ -57,6 +57,21 @@ function getOrgId() {
 function orgPath(orgId) {
   return `/api/orgs/${orgId}`;
 }
+
+// ── Browser metrics push ──────────────────────────────────────────────────────
+
+export const resiloApi = {
+  /** Push metrics collected from the user's browser / local agent to the backend. */
+  pushBrowserMetrics: async (orgId, metrics) => {
+    const oid = orgId || getOrgId();
+    if (!oid) return;
+    const res = await coreAxios.post('/api/ingest/browser-metrics', {
+      org_id: oid,
+      metrics,
+    });
+    return res.data;
+  },
+};
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
 
@@ -123,6 +138,52 @@ export const agentsApi = {
   sendCommand: async (orgId, agentId, action, params = {}) => {
     const oid = orgId || getOrgId();
     const res = await coreAxios.post(`${orgPath(oid)}/agents/${agentId}/command`, { action, params });
+    return res.data;
+  },
+
+  patch: async (orgId, agentId, body) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.patch(`${orgPath(oid)}/agents/${agentId}`, body);
+    return res.data;
+  },
+};
+
+// ── WMI Agentless Polling ─────────────────────────────────────────────────────
+
+export const wmiApi = {
+  list: async (orgId) => {
+    const oid = orgId || getOrgId();
+    if (!oid) return [];
+    const res = await coreAxios.get(`${orgPath(oid)}/wmi-targets`);
+    return res.data;
+  },
+
+  create: async (orgId, body) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.post(`${orgPath(oid)}/wmi-targets`, body);
+    return res.data;
+  },
+
+  test: async (orgId, targetId) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.post(`${orgPath(oid)}/wmi-targets/${targetId}/test`);
+    return res.data;
+  },
+
+  remove: async (orgId, targetId) => {
+    const oid = orgId || getOrgId();
+    await coreAxios.delete(`${orgPath(oid)}/wmi-targets/${targetId}`);
+  },
+
+  createInvite: async (orgId) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.post(`${orgPath(oid)}/wmi-invite`, {});
+    return res.data;
+  },
+
+  pollInvite: async (orgId, inviteId) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.get(`${orgPath(oid)}/wmi-invite/${inviteId}/status`);
     return res.data;
   },
 };

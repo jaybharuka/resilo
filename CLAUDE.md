@@ -124,4 +124,4 @@ Copy `.env.example` to `.env`. Key variables:
 - `SLACK_WEBHOOK_URL`, `SLACK_BOT_TOKEN`
 - `EMAIL_SMTP_SERVER`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`
 - `LOG_LEVEL` (default: INFO)
-- `DEMO_MODE` (enable/disable demo features)
+- `DEMO_MODE` (enable/disable demo features)when

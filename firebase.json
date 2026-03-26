@@ -8,6 +8,32 @@
     ],
     "rewrites": [
       {
+        "source": "/connect.ps1",
+        "function": "connectPs1",
+        "region": "us-central1"
+      },
+      {
+        "source": "/api/**",
+        "run": {
+          "serviceId": "core-api",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/auth/**",
+        "run": {
+          "serviceId": "auth-api",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/users/**",
+        "run": {
+          "serviceId": "auth-api",
+          "region": "us-central1"
+        }
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
@@ -28,5 +54,9 @@
         ]
       }
     ]
+  },
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs22"
   }
 }

@@ -36,8 +36,10 @@ from sqlalchemy import select
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import or_
+
 from database import (
-    SessionLocal, Organization, Agent,
+    SessionLocal, Organization, Agent, User,
     MetricSnapshot, AlertRecord,
     NotificationChannel, NotificationLog,
 )
@@ -64,16 +66,54 @@ async def dispatch_alert_notification(
     agent_label: str,
 ) -> None:
     """
-    Look up all enabled NotificationChannels for this org and send
-    alert notifications to channels whose severity filter matches.
-    Runs channel dispatches concurrently; logs each attempt.
+    Send alert notifications to the right people:
+      1. The device owner's personal channels (agent.owner_user_id / alert.owner_user_id)
+      2. Every admin's personal channels in the org
+      3. Org-wide channels (user_id IS NULL)
+
+    Channels are filtered per-channel severity list before dispatch.
+    Runs all dispatches concurrently; logs each attempt.
     """
-    channels_result = await db.execute(
-        select(NotificationChannel).where(
-            NotificationChannel.org_id == org_id,
-            NotificationChannel.enabled == True,
+    # ── Compute target user IDs (owner + all admins) ─────────────────────────
+    target_user_ids: set[str] = set()
+
+    # Device owner from the alert record (set at alert creation time)
+    if alert.owner_user_id:
+        target_user_ids.add(alert.owner_user_id)
+
+    # Fallback: look up current owner from the agent row (handles manual alerts)
+    if alert.agent_id:
+        agent_r = await db.execute(select(Agent).where(Agent.id == alert.agent_id))
+        ag = agent_r.scalar_one_or_none()
+        if ag and ag.owner_user_id:
+            target_user_ids.add(ag.owner_user_id)
+
+    # All active admins in the org
+    admin_r = await db.execute(
+        select(User).where(
+            User.org_id == org_id,
+            User.role == "admin",
+            User.is_active == True,
         )
     )
+    for admin in admin_r.scalars().all():
+        target_user_ids.add(admin.id)
+
+    # ── Fetch relevant channels ───────────────────────────────────────────────
+    # Include: org-wide (user_id IS NULL) + target users' personal channels
+    chan_q = select(NotificationChannel).where(
+        NotificationChannel.org_id == org_id,
+        NotificationChannel.enabled == True,
+    )
+    if target_user_ids:
+        chan_q = chan_q.where(
+            or_(
+                NotificationChannel.user_id == None,  # noqa: E711
+                NotificationChannel.user_id.in_(target_user_ids),
+            )
+        )
+
+    channels_result = await db.execute(chan_q)
     channels = list(channels_result.scalars().all())
     if not channels:
         return

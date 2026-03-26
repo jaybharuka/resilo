@@ -52,6 +52,10 @@ protobuf>=5.0,<6.0
 # ── Optional Redis (response caching) ────────────────────────────────────────
 # redis>=5.0.0
 
+# ── WMI Agentless Polling (Windows remote metrics via WinRM) ─────────────────
+pywinrm>=0.4.3                 # WinRM client for Python (server polls Windows machines)
+# pywinrm[kerberos]            # uncomment for Active Directory / domain auth
+
 # ── Dev / Test ────────────────────────────────────────────────────────────────
 # pytest==8.2.2
 # pytest-asyncio==0.23.7
