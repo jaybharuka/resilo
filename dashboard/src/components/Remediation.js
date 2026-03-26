@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import {
   Wrench, CheckCircle, XCircle, Play, RefreshCw,
   Cpu, MemoryStick, HardDrive, Zap, Clock,
-  ChevronDown, ChevronUp, AlertTriangle, ShieldCheck,
+  ChevronDown, ChevronUp, ShieldCheck,
   Bot, Activity, Radio, Shield,
 } from 'lucide-react';
 import { apiService } from '../services/api';
@@ -54,13 +54,6 @@ function fmt(ts) {
     : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function timeAgo(ts) {
-  if (!ts) return '';
-  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
-  if (s < 60)  return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  return `${Math.floor(s/3600)}h ago`;
-}
 
 // Parse a simple "metric_name > 80" trigger pattern → { key, op, threshold }
 function parseTrigger(pattern) {

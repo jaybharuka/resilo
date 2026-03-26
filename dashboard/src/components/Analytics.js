@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { apiService, systemApi } from '../services/api';
 import {
   LineChart, Line, AreaChart, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { TrendingUp, Activity, Server, Wifi, AlertTriangle, RefreshCw } from 'lucide-react';
 import InfoTip from './InfoTip';
