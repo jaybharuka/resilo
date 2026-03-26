@@ -6,7 +6,7 @@ import json
 class GeminiAIAssistant:
     def __init__(self, api_key: Optional[str] = None):
         """Initialize AI Assistant with API key"""
-        self.api_key = api_key or os.getenv('NVIDIA_API_KEY') or "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"
+        self.api_key = api_key or os.getenv('NVIDIA_API_KEY') or "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"
         
         # Configure OpenAI Client for Nvidia endpoint
         self.client = OpenAI(
@@ -82,7 +82,7 @@ class GeminiAIAssistant:
             
             # Generate response
             completion = self.client.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
+                model="abacusai/dracarys-llama-3.1-70b-instruct",
                 messages=messages,
                 temperature=1,
                 top_p=1,

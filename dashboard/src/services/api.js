@@ -65,10 +65,14 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
-// Auth API client — reuse main api instance (same Flask backend, port 5000)
-const authAxios = api;
+// Auth API client — dedicated instance pointing at FastAPI auth service (port 5001)
+const authAxios = axios.create({
+  baseURL: AUTH_BASE_URL,
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+});
 
-// Attach auth token to auth service requests too
+// Attach auth token to auth service requests
 authAxios.interceptors.request.use(async (config) => {
   let token = authToken;
   if (_auth0GetToken) { try { token = await _auth0GetToken(); } catch {} }
@@ -228,8 +232,14 @@ export const apiService = {
     }
   },
 
-  // Get system metrics (prefers cached snapshot)
+  // Get system metrics (prefers core API snapshot, falls back to Flask)
   async getSystemData() {
+    // Production path: core API proxied via Firebase /api/** rewrite
+    try {
+      const response = await api.get('/api/dashboard-snapshot', { timeout: 5000 });
+      return response.data;
+    } catch (_coreErr) {}
+    // Legacy Flask snapshot
     try {
       const response = await api.get('/dashboard-snapshot');
       return response.data;

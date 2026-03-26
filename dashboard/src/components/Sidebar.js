@@ -5,7 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 import {
   LayoutDashboard, Lightbulb, MessageSquare, BellRing,
   Shield, Settings, Wrench, Activity, Palette, LogOut,
-  BarChart2, Monitor, Bell
+  BarChart2, Bell, Layers
 } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -20,7 +20,7 @@ const Sidebar = () => {
     { to: '/insights',    icon: <Lightbulb size={15} />,       label: 'Insights' },
     { to: '/assistant',   icon: <MessageSquare size={15} />,   label: 'AI Assistant' },
     { to: '/analytics',   icon: <BarChart2 size={15} />,       label: 'Analytics' },
-    { to: role === 'admin' ? '/users' : '/devices', icon: <Monitor size={15} />, label: role === 'admin' ? 'Users & Devices' : 'Devices' },
+    { to: '/infra', icon: <Layers size={15} />, label: role === 'admin' ? 'Infra Hub' : 'Devices' },
   ];
   const secondary = [
     { to: '/alerts',        icon: <BellRing size={15} />,  label: 'Alerts' },

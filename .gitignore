@@ -16,6 +16,12 @@ dashboard/.env.staging
 # Secret replacement artifacts
 expressions.txt
 
+# CI/CD service account keys — never commit
+*-key.json
+*-cicd-key.json
+gcp-cicd-key.json
+firebase-cicd-key.json
+
 __pycache__/
 *.pyc
 .venv/

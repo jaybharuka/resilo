@@ -19,10 +19,35 @@ Environment variables:
     ANOMALY_POLL_INTERVAL  seconds (default: 30)
 """
 
+import sys as _sys
+import os
+
+# Ensure all app sub-packages are importable regardless of working directory
+_here = os.path.dirname(os.path.abspath(__file__))   # app/api
+_app  = os.path.dirname(_here)                        # app/
+_root = os.path.dirname(_app)                         # repo root
+for _p in [_here, _app, _root,
+           os.path.join(_app, 'core'),
+           os.path.join(_app, 'auth'),
+           os.path.join(_app, 'analytics'),
+           os.path.join(_app, 'integrations')]:
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
+# Load .env from repo root so DATABASE_URL, JWT_SECRET_KEY etc. are available
+_env_file = os.path.join(_root, '.env')
+if os.path.exists(_env_file):
+    with open(_env_file) as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 import asyncio
 import hashlib
 import logging
-import os
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -45,7 +70,7 @@ from database import (
     init_db, get_db, SessionLocal,
     Organization, User, Agent, MetricSnapshot,
     AlertRecord, RemediationRecord, AuditLog,
-    NotificationChannel, AlertRule, NotificationLog,
+    NotificationChannel, AlertRule, NotificationLog, WMITarget, WmiInvite,
 )
 from rbac import (
     TokenPayload, get_token_payload, get_current_user,
@@ -131,6 +156,7 @@ async def _startup():
     asyncio.create_task(start_anomaly_engine())
     asyncio.create_task(start_daily_summary_scheduler())
     asyncio.create_task(_local_metrics_loop())
+    asyncio.create_task(_wmi_polling_loop())
     log.info("Core API started")
 
 
@@ -316,6 +342,156 @@ async def health():
     return {"status": "ok", "service": "core-api", "version": "1.0.0"}
 
 
+@app.get("/api/dashboard-snapshot")
+async def dashboard_snapshot(
+    token: TokenPayload = Depends(require_permission("metrics:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregated system snapshot for the authenticated user's org.
+
+    Priority:
+      1. The user's own browser/local-agent (browser-{user_id[:8]}) — most relevant
+      2. Average across all agents if no browser agent exists
+
+    Called by the frontend Dashboard component instead of the legacy Flask
+    /dashboard-snapshot endpoint.
+    """
+    org_id  = token.org_id
+    user_id = token.sub
+
+    # ── Try user's own browser agent first ──────────────────────────────────
+    browser_label = f"browser-{user_id[:8]}"
+    browser_agent_result = await db.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
+    )
+    browser_agent = browser_agent_result.scalar_one_or_none()
+
+    if browser_agent:
+        snap_result = await db.execute(
+            select(MetricSnapshot)
+            .where(MetricSnapshot.org_id == org_id, MetricSnapshot.agent_id == browser_agent.id)
+            .order_by(desc(MetricSnapshot.timestamp))
+            .limit(1)
+        )
+        browser_snap = snap_result.scalar_one_or_none()
+        if browser_snap:
+            # How fresh is the snapshot?
+            age_secs = (datetime.now(timezone.utc) - browser_snap.timestamp.replace(tzinfo=timezone.utc)
+                        if browser_snap.timestamp.tzinfo is None
+                        else (datetime.now(timezone.utc) - browser_snap.timestamp)).total_seconds()
+            if age_secs < 60:  # fresh within 60 s
+                # Fetch counts for the metadata fields
+                agents_result = await db.execute(
+                    select(sqlfunc.count()).select_from(Agent).where(Agent.org_id == org_id)
+                )
+                open_alerts_result = await db.execute(
+                    select(sqlfunc.count()).select_from(AlertRecord).where(
+                        AlertRecord.org_id == org_id, AlertRecord.status == "open"
+                    )
+                )
+                s = browser_snap
+                cpu, mem, disk = s.cpu or 0, s.memory or 0, s.disk or 0
+                status = "healthy"
+                if cpu > 90 or mem > 90 or disk > 90:
+                    status = "critical"
+                elif cpu > 75 or mem > 80 or disk > 80:
+                    status = "warning"
+                return {
+                    "cpu":          round(cpu, 1),
+                    "memory":       round(mem, 1),
+                    "disk":         round(disk, 1) if disk else None,
+                    "network_in":   round((s.network_in  or 0) / (1024 * 1024), 2),
+                    "network_out":  round((s.network_out or 0) / (1024 * 1024), 2),
+                    "status":       status,
+                    "temperature":  s.temperature,
+                    "uptime_secs":  s.uptime_secs,
+                    "processes":    s.processes,
+                    "agents_count": agents_result.scalar() or 0,
+                    "open_alerts":  open_alerts_result.scalar() or 0,
+                    "last_updated": s.timestamp.isoformat(),
+                    "source":       (s.extra or {}).get("source", "browser") if s.extra else "browser",
+                }
+
+    # ── Fall back: average across all agents ────────────────────────────────
+    # Latest snapshot per agent
+    sub = (
+        select(
+            MetricSnapshot.agent_id,
+            sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"),
+        )
+        .where(MetricSnapshot.org_id == org_id)
+        .group_by(MetricSnapshot.agent_id)
+        .subquery()
+    )
+    result = await db.execute(
+        select(MetricSnapshot).join(
+            sub,
+            (MetricSnapshot.agent_id == sub.c.agent_id)
+            & (MetricSnapshot.timestamp == sub.c.max_ts),
+        )
+    )
+    snapshots = result.scalars().all()
+
+    # Agent count
+    agents_result = await db.execute(
+        select(sqlfunc.count()).select_from(Agent).where(Agent.org_id == org_id)
+    )
+    agents_count = agents_result.scalar() or 0
+
+    # Open alert count
+    alerts_result = await db.execute(
+        select(sqlfunc.count()).select_from(AlertRecord).where(
+            AlertRecord.org_id == org_id,
+            AlertRecord.status == "open",
+        )
+    )
+    open_alerts = alerts_result.scalar() or 0
+
+    if not snapshots:
+        return {
+            "cpu": 0, "memory": 0, "disk": 0,
+            "network_in": 0, "network_out": 0,
+            "status": "no_agents",
+            "temperature": None,
+            "uptime_secs": None,
+            "processes": None,
+            "agents_count": agents_count,
+            "open_alerts": open_alerts,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "source": "core-api",
+        }
+
+    cpu_avg  = sum(s.cpu    or 0 for s in snapshots) / len(snapshots)
+    mem_avg  = sum(s.memory or 0 for s in snapshots) / len(snapshots)
+    disk_avg = sum(s.disk   or 0 for s in snapshots) / len(snapshots)
+    net_in   = sum((s.network_in  or 0) / (1024 * 1024) for s in snapshots)
+    net_out  = sum((s.network_out or 0) / (1024 * 1024) for s in snapshots)
+
+    status = "healthy"
+    if cpu_avg > 90 or mem_avg > 90 or disk_avg > 90:
+        status = "critical"
+    elif cpu_avg > 75 or mem_avg > 80 or disk_avg > 80:
+        status = "warning"
+
+    latest = max(snapshots, key=lambda s: s.timestamp or datetime.min.replace(tzinfo=timezone.utc))
+
+    return {
+        "cpu":          round(cpu_avg, 1),
+        "memory":       round(mem_avg, 1),
+        "disk":         round(disk_avg, 1),
+        "network_in":   round(net_in,  2),
+        "network_out":  round(net_out, 2),
+        "status":       status,
+        "temperature":  latest.temperature,
+        "uptime_secs":  latest.uptime_secs,
+        "processes":    latest.processes,
+        "agents_count": agents_count,
+        "open_alerts":  open_alerts,
+        "last_updated": latest.timestamp.isoformat() if latest.timestamp else datetime.now(timezone.utc).isoformat(),
+        "source":       "core-api",
+    }
+
+
 @app.get("/api/whoami")
 async def whoami(request: Request):
     """Debug: decode the Bearer token without enforcing permissions."""
@@ -432,6 +608,7 @@ async def _fetch_org(db: AsyncSession, org_id: str) -> Organization:
 
 class CreateAgentRequest(BaseModel):
     label: str
+    owner_user_id: Optional[str] = None  # user whose machine this agent monitors
 
 
 class SendCommandRequest(BaseModel):
@@ -459,7 +636,45 @@ async def list_agents(
         .order_by(Agent.created_at.desc())
     )
     agents = result.scalars().all()
-    return [_agent_out(a) for a in agents]
+
+    # Fetch latest snapshot for every agent in one query (avoids N+1 calls)
+    if agents:
+        sub = (
+            select(
+                MetricSnapshot.agent_id,
+                sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"),
+            )
+            .where(MetricSnapshot.org_id == org_id)
+            .group_by(MetricSnapshot.agent_id)
+            .subquery()
+        )
+        snap_result = await db.execute(
+            select(MetricSnapshot).join(
+                sub,
+                (MetricSnapshot.agent_id == sub.c.agent_id)
+                & (MetricSnapshot.timestamp == sub.c.max_ts),
+            )
+        )
+        snap_map = {s.agent_id: s for s in snap_result.scalars().all()}
+    else:
+        snap_map = {}
+
+    out = []
+    for a in agents:
+        snap = snap_map.get(a.id)
+        row = _agent_out(a)
+        row["metrics"] = {
+            "cpu":         snap.cpu         if snap else None,
+            "memory":      snap.memory      if snap else None,
+            "disk":        snap.disk        if snap else None,
+            "network_in":  snap.network_in  if snap else None,
+            "network_out": snap.network_out if snap else None,
+            "processes":   snap.processes   if snap else None,
+            "uptime_secs": snap.uptime_secs if snap else None,
+            "timestamp":   snap.timestamp.isoformat() if snap and snap.timestamp else None,
+        }
+        out.append(row)
+    return out
 
 
 @app.post("/api/orgs/{org_id}/agents", status_code=201)
@@ -479,6 +694,7 @@ async def create_agent(
         label=body.label,
         key_hash=key_hash,
         created_by=token.sub,
+        owner_user_id=body.owner_user_id,
     )
     db.add(agent)
     await db.commit()
@@ -520,6 +736,32 @@ async def get_agent(
     )
     snap = snap_result.scalar_one_or_none()
     return {**_agent_out(agent), "latest_metrics": _snap_out(snap) if snap else None}
+
+
+class PatchAgentRequest(BaseModel):
+    owner_user_id: Optional[str] = None
+    label: Optional[str] = None
+
+
+@app.patch("/api/orgs/{org_id}/agents/{agent_id}")
+async def patch_agent(
+    org_id: str,
+    agent_id: str,
+    body: PatchAgentRequest,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update mutable agent fields (label, owner_user_id)."""
+    agent = await _fetch_agent(db, org_id, agent_id)
+    if body.label is not None:
+        agent.label = body.label
+    if body.owner_user_id is not None:
+        agent.owner_user_id = body.owner_user_id
+    await db.commit()
+    await db.refresh(agent)
+    await _audit(db, org_id, token.sub, "agent.updated", "agent", agent_id,
+                 {"owner_user_id": body.owner_user_id})
+    return _agent_out(agent)
 
 
 @app.delete("/api/orgs/{org_id}/agents/{agent_id}")
@@ -595,6 +837,7 @@ async def get_agent_commands(
 def _agent_out(a: Agent) -> dict:
     return {
         "id": a.id, "org_id": a.org_id, "label": a.label,
+        "owner_user_id": a.owner_user_id,
         "status": a.status, "is_active": a.is_active,
         "platform_info": a.platform_info,
         "last_seen": a.last_seen.isoformat() if a.last_seen else None,
@@ -685,6 +928,111 @@ async def agent_heartbeat(
     await db.commit()
 
     return {"agent_id": agent.id, "commands": pending, "received_at": now.isoformat()}
+
+
+class BrowserMetricsPayload(BaseModel):
+    cpu: Optional[float] = None
+    memory: Optional[float] = None
+    disk: Optional[float] = None
+    network_in: Optional[float] = None
+    network_out: Optional[float] = None
+    temperature: Optional[float] = None
+    processes: Optional[int] = None
+    uptime_secs: Optional[int] = None
+    cpu_cores: Optional[int] = None
+    device_memory_gb: Optional[float] = None
+    platform: Optional[str] = None
+    source: Optional[str] = "browser"
+    battery: Optional[dict] = None
+    effective_type: Optional[str] = None
+
+
+class BrowserMetricsBody(BaseModel):
+    org_id: str
+    metrics: BrowserMetricsPayload
+
+
+@app.post("/api/ingest/browser-metrics")
+@limiter.limit("30/minute")
+async def browser_metrics(
+    request: Request,
+    body: BrowserMetricsBody,
+    token: TokenPayload = Depends(require_permission("metrics:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Receive metrics pushed from the user's browser (or local psutil agent).
+    Each authenticated user gets a dedicated 'browser-{user_id}' agent that
+    represents their machine. Metrics are stored as normal MetricSnapshots so
+    the dashboard can display them without any special-casing.
+    """
+    org_id = token.org_id or body.org_id
+    user_id = token.sub
+
+    # Ensure org isolation
+    if token.role != "admin" and token.org_id and token.org_id != body.org_id:
+        raise HTTPException(403, "Organization access denied")
+
+    # Find or create a browser agent for this user
+    browser_label = f"browser-{user_id[:8]}"
+    result = await db.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        from rbac import generate_agent_key
+        _, key_hash = generate_agent_key()
+        agent = Agent(
+            id=str(uuid.uuid4()),
+            org_id=org_id,
+            label=browser_label,
+            key_hash=key_hash,
+            status="live",
+            pending_cmds=[],
+            platform_info={
+                "type": "browser",
+                "platform": body.metrics.platform,
+                "cpu_cores": body.metrics.cpu_cores,
+                "device_memory_gb": body.metrics.device_memory_gb,
+                "source": body.metrics.source,
+            },
+        )
+        db.add(agent)
+        await db.flush()
+        log.info("Browser agent created (org=%s, user=%s)", org_id[:8], user_id[:8])
+
+    m = body.metrics
+    now = datetime.now(timezone.utc)
+
+    snap = MetricSnapshot(
+        id=str(uuid.uuid4()),
+        org_id=org_id,
+        agent_id=agent.id,
+        timestamp=now,
+        cpu=m.cpu or 0.0,
+        memory=m.memory or 0.0,
+        disk=m.disk or 0.0,
+        network_in=int((m.network_in or 0) * 1024),   # KB → bytes
+        network_out=int((m.network_out or 0) * 1024),
+        temperature=m.temperature,
+        processes=m.processes,
+        uptime_secs=m.uptime_secs,
+        extra={
+            "source": m.source,
+            "platform": m.platform,
+            "cpu_cores": m.cpu_cores,
+            "device_memory_gb": m.device_memory_gb,
+            "battery": m.battery,
+            "effective_type": m.effective_type,
+        },
+    )
+    db.add(snap)
+
+    agent.status = "live"
+    agent.last_seen = now
+
+    await db.commit()
+    return {"ok": True, "agent_id": agent.id, "source": m.source}
 
 
 @app.post("/ingest/command-result")
@@ -939,6 +1287,7 @@ async def update_alert(
 def _alert_out(a: AlertRecord) -> dict:
     return {
         "id": a.id, "org_id": a.org_id, "agent_id": a.agent_id,
+        "owner_user_id": a.owner_user_id,
         "severity": a.severity, "category": a.category,
         "title": a.title, "detail": a.detail,
         "metric_value": a.metric_value, "threshold": a.threshold,
@@ -1547,3 +1896,417 @@ async def _send_summary_bg(org_id: str) -> None:
         log.info("On-demand daily summary dispatched: org=%s", org_id[:8])
     except Exception as exc:
         log.error("On-demand daily summary failed: org=%s: %s", org_id[:8], exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WMI AGENTLESS POLLING  (server-side, zero client touch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _wmi_polling_loop():
+    """Load all active WMI targets from DB on startup, then start the poller."""
+    from wmi_poller import wmi_poller, decrypt_password
+    interval = int(os.getenv("WMI_POLL_INTERVAL", "30"))
+    await asyncio.sleep(8)   # let DB settle
+
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(WMITarget).where(WMITarget.is_active == True)
+        )
+        targets = result.scalars().all()
+        for t in targets:
+            try:
+                wmi_poller.load_target(
+                    target_id=t.id, org_id=t.org_id, label=t.label,
+                    host=t.host, username=t.username,
+                    password_plain=decrypt_password(t.enc_password),
+                    agent_id=t.agent_id, port=t.port,
+                )
+            except Exception as exc:
+                log.warning("Could not load WMI target %s: %s", t.label, exc)
+
+    log.info("WMI poller loaded %d target(s)", len(targets))
+    await wmi_poller.run(SessionLocal, interval=interval)
+
+
+def _wmi_target_out(t: WMITarget) -> dict:
+    return {
+        "id":          t.id,
+        "org_id":      t.org_id,
+        "agent_id":    t.agent_id,
+        "label":       t.label,
+        "host":        t.host,
+        "port":        t.port,
+        "username":    t.username,
+        "is_active":   t.is_active,
+        "last_polled": t.last_polled.isoformat() if t.last_polled else None,
+        "last_status": t.last_status,
+        "last_error":  t.last_error,
+        "created_at":  t.created_at.isoformat(),
+    }
+
+
+class CreateWMITargetRequest(BaseModel):
+    label: str
+    host: str
+    port: int = 5985
+    username: str
+    password: str
+
+
+@app.get("/api/orgs/{org_id}/wmi-targets")
+@limiter.limit("60/minute")
+async def list_wmi_targets(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("agents:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all WMI polling targets for this org."""
+    await _fetch_org(db, org_id)
+    result = await db.execute(
+        select(WMITarget)
+        .where(WMITarget.org_id == org_id)
+        .order_by(WMITarget.created_at)
+    )
+    return [_wmi_target_out(t) for t in result.scalars().all()]
+
+
+@app.post("/api/orgs/{org_id}/wmi-targets", status_code=201)
+@limiter.limit("20/minute")
+async def create_wmi_target(
+    request: Request,
+    org_id: str,
+    body: CreateWMITargetRequest,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Add a Windows machine for agentless WMI polling.
+    The server will poll the machine every WMI_POLL_INTERVAL seconds (default 30s).
+
+    One-time setup on the target machine (admin sends to user):
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck
+    """
+    from wmi_poller import wmi_poller, encrypt_password, decrypt_password
+
+    await _fetch_org(db, org_id)
+
+    # Create a synthetic Agent record so metrics flow through the existing pipeline
+    _, key_hash = generate_agent_key()
+    agent = Agent(
+        org_id=org_id,
+        label=body.label,
+        key_hash=key_hash,
+        created_by=token.sub,
+        status="pending",
+        platform_info={"source": "wmi", "host": body.host, "os": "Windows"},
+        pending_cmds=[],
+    )
+    db.add(agent)
+    await db.flush()   # get agent.id
+
+    target = WMITarget(
+        org_id=org_id,
+        agent_id=agent.id,
+        label=body.label,
+        host=body.host,
+        port=body.port,
+        username=body.username,
+        enc_password=encrypt_password(body.password),
+        created_by=token.sub,
+    )
+    db.add(target)
+    await db.commit()
+    await db.refresh(target)
+
+    # Register with live poller
+    wmi_poller.load_target(
+        target_id=target.id, org_id=org_id, label=body.label,
+        host=body.host, username=body.username,
+        password_plain=body.password,
+        agent_id=agent.id, port=body.port,
+    )
+
+    await _audit(db, org_id, token.sub, "wmi_target.created", "wmi_target", target.id,
+                 {"label": body.label, "host": body.host})
+
+    return {
+        **_wmi_target_out(target),
+        "setup_guide": (
+            "Run this ONE-TIME command on the target Windows machine:\n\n"
+            "    Enable-PSRemoting -Force -SkipNetworkProfileCheck\n\n"
+            "Then use the 'Test Connection' button to verify."
+        ),
+    }
+
+
+@app.post("/api/orgs/{org_id}/wmi-targets/{target_id}/test")
+@limiter.limit("10/minute")
+async def test_wmi_target(
+    request: Request,
+    org_id: str,
+    target_id: str,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test WinRM connectivity to the target machine."""
+    from wmi_poller import wmi_poller, decrypt_password
+
+    await _fetch_org(db, org_id)
+    result = await db.execute(
+        select(WMITarget).where(WMITarget.id == target_id, WMITarget.org_id == org_id)
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(404, "WMI target not found")
+
+    password = decrypt_password(target.enc_password)
+    loop = asyncio.get_event_loop()
+    ok, message = await loop.run_in_executor(
+        None,
+        wmi_poller.test_connection_sync,
+        target.host, target.username, password, target.port,
+    )
+
+    target.last_polled = datetime.now(timezone.utc)
+    target.last_status = "ok" if ok else "error"
+    target.last_error  = None if ok else message
+    await db.commit()
+
+    return {"success": ok, "message": message, "host": target.host}
+
+
+@app.delete("/api/orgs/{org_id}/wmi-targets/{target_id}", status_code=204)
+async def delete_wmi_target(
+    org_id: str,
+    target_id: str,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a WMI target and stop polling it."""
+    from wmi_poller import wmi_poller
+
+    await _fetch_org(db, org_id)
+    result = await db.execute(
+        select(WMITarget).where(WMITarget.id == target_id, WMITarget.org_id == org_id)
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(404, "WMI target not found")
+
+    wmi_poller.unload_target(target_id)
+    await db.delete(target)
+    await db.commit()
+    await _audit(db, org_id, token.sub, "wmi_target.deleted", "wmi_target", target_id, {})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WMI BOOTSTRAP INVITE  (zero-input onboarding)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CreateWmiInviteRequest(BaseModel):
+    pass  # no body needed; org + auth from path/token
+
+
+@app.post("/api/orgs/{org_id}/wmi-invite", status_code=201)
+@limiter.limit("10/minute")
+async def create_wmi_invite(
+    request: Request,
+    org_id: str,
+    token: TokenPayload = Depends(require("agents:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Generate a one-time bootstrap invite token.
+    Returns a PowerShell one-liner the admin pastes or sends to the end user.
+    The user runs it as Administrator; the machine self-registers automatically.
+    Token expires in 30 minutes and is single-use.
+    """
+    await _fetch_org(db, org_id)
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+    invite = WmiInvite(
+        org_id=org_id,
+        token_hash=token_hash,
+        created_by=token.sub,
+        expires_at=expires_at,
+    )
+    db.add(invite)
+    await db.commit()
+    await db.refresh(invite)
+
+    dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:3001")
+    connect_command = f"irm {dashboard_url}/connect.ps1?token={raw_token} | iex"
+
+    return {
+        "invite_id": invite.id,
+        "expires_at": expires_at.isoformat(),
+        "connect_command": connect_command,
+    }
+
+
+class WmiRegisterRequest(BaseModel):
+    token: str
+    hostname: str
+    ip: Optional[str] = None
+    os: str
+    arch: Optional[str] = None
+    username: str
+    password: str   # plaintext — caller must use HTTPS/internal network
+    port: int = 5985
+
+
+@app.post("/api/wmi-register")
+@limiter.limit("30/minute")
+async def wmi_register(
+    request: Request,
+    body: WmiRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public endpoint: Windows machine self-registers using a bootstrap token.
+    No auth header — the token IS the credential (hashed, single-use, expiring).
+    Creates a WMI target + synthetic agent and starts polling immediately.
+    """
+    from wmi_poller import wmi_poller, encrypt_password
+
+    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+
+    result = await db.execute(
+        select(WmiInvite).where(
+            WmiInvite.token_hash == token_hash,
+            WmiInvite.used == False,
+            WmiInvite.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    invite = result.scalar_one_or_none()
+    if not invite:
+        raise HTTPException(400, "Invalid or expired invite token")
+
+    host = body.ip or body.hostname
+    label = f"{body.hostname}"
+    os_tag = body.os or "Windows"
+
+    # Create synthetic Agent record (metrics flow through existing pipeline)
+    _, key_hash = generate_agent_key()
+    agent = Agent(
+        org_id=invite.org_id,
+        label=label,
+        key_hash=key_hash,
+        status="pending",
+        platform_info={
+            "source": "wmi",
+            "host": host,
+            "os": os_tag,
+            "arch": body.arch or "",
+            "hostname": body.hostname,
+        },
+        pending_cmds=[],
+    )
+    db.add(agent)
+    await db.flush()
+
+    target = WMITarget(
+        org_id=invite.org_id,
+        agent_id=agent.id,
+        label=label,
+        host=host,
+        port=body.port,
+        username=body.username,
+        enc_password=encrypt_password(body.password),
+        created_by=invite.created_by,
+    )
+    db.add(target)
+    await db.flush()
+
+    # Consume invite
+    invite.used = True
+    invite.used_at = datetime.now(timezone.utc)
+    invite.registered_agent_id = agent.id
+    invite.machine_label = label
+
+    await db.commit()
+
+    # Register with live poller so monitoring starts immediately
+    try:
+        wmi_poller.load_target(
+            target_id=target.id, org_id=invite.org_id, label=label,
+            host=host, username=body.username,
+            password_plain=body.password,
+            agent_id=agent.id, port=body.port,
+        )
+    except Exception as exc:
+        log.warning("Could not hot-load WMI target after bootstrap: %s", exc)
+
+    await _audit(db, invite.org_id, invite.created_by or "bootstrap",
+                 "wmi_target.bootstrap_registered", "wmi_target", target.id,
+                 {"label": label, "host": host, "invite_id": invite.id})
+
+    return {"success": True, "agent_id": agent.id, "label": label}
+
+
+@app.get("/api/orgs/{org_id}/wmi-invite/{invite_id}/status")
+@limiter.limit("120/minute")
+async def get_wmi_invite_status(
+    request: Request,
+    org_id: str,
+    invite_id: str,
+    token: TokenPayload = Depends(require("agents:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll for invite completion. Frontend calls this every 3s after generating the invite."""
+    await _fetch_org(db, org_id)
+    result = await db.execute(
+        select(WmiInvite).where(WmiInvite.id == invite_id, WmiInvite.org_id == org_id)
+    )
+    invite = result.scalar_one_or_none()
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+
+    expired = invite.expires_at < datetime.now(timezone.utc)
+
+    return {
+        "invite_id": invite.id,
+        "used": invite.used,
+        "expired": expired and not invite.used,
+        "machine_label": invite.machine_label,
+        "registered_agent_id": invite.registered_agent_id,
+        "expires_at": invite.expires_at.isoformat(),
+    }
+
+
+# ── User-facing setup guide (no auth — safe to share) ─────────────────────────
+
+@app.get("/api/wmi/setup-guide")
+async def wmi_setup_guide():
+    """
+    Returns the PowerShell command the end-user needs to run ONCE on their
+    Windows machine to allow WinRM polling from the AIOps server.
+    Admins can copy and send this to users via email/Slack/Teams.
+    """
+    return {
+        "title": "Enable Remote Monitoring (One-Time Setup)",
+        "steps": [
+            {
+                "step": 1,
+                "description": "Open PowerShell as Administrator on your Windows machine",
+            },
+            {
+                "step": 2,
+                "description": "Run the following command:",
+                "command": "Enable-PSRemoting -Force -SkipNetworkProfileCheck",
+            },
+            {
+                "step": 3,
+                "description": "That's it! Your machine is now ready to be monitored.",
+            },
+        ],
+        "note": (
+            "This enables Windows Remote Management (WinRM) on port 5985. "
+            "Your IT admin will need your machine's IP address or hostname. "
+            "No software is installed — this is a built-in Windows feature."
+        ),
+    }
