@@ -9,7 +9,7 @@
  * backend and dashboard can treat them identically.
  */
 
-const LOCAL_AGENT_URL = 'http://localhost:9090/metrics';
+const LOCAL_AGENT_URL = process.env.REACT_APP_LOCAL_AGENT_URL || 'http://localhost:9090/metrics';
 const LOCAL_AGENT_TIMEOUT_MS = 1500;
 
 // ── Local agent probe ─────────────────────────────────────────────────────────
