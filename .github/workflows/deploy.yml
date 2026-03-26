@@ -39,13 +39,13 @@ jobs:
           REACT_APP_USE_MOCKS:    false
           REACT_APP_DIRECT_MODE:  false
 
-      - name: Deploy to Firebase
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken:              ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          channelId:              live
-          projectId:              resilo-ai
+      - name: Deploy to Firebase Hosting
+        run: |
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > /tmp/firebase-sa.json
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-sa.json
+          npm install -g firebase-tools --quiet
+          firebase deploy --only hosting --project resilo-ai --non-interactive
+          rm /tmp/firebase-sa.json
 
   # ── 2. Core API → Cloud Run ─────────────────────────────────────────────────
   deploy-core-api:
