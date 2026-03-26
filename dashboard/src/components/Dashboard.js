@@ -168,7 +168,7 @@ export default function Dashboard() {
         />
         <MetricCard
           title="Network In"
-          value={(systemData.network_in / 1024 / 1024).toFixed(1)}
+          value={(systemData.network_in / 1024).toFixed(2)}
           unit="MB/s"
           status="healthy"
           trend={0}

@@ -418,7 +418,7 @@ export default function Settings() {
   };
 
   const currentApiUrl = (() => {
-    try { return localStorage.getItem('aiops:apiBase') || `${window.location.protocol}//${window.location.hostname}:5000`; } catch { return 'http://localhost:5000'; }
+    try { return localStorage.getItem('aiops:apiBase') || window.location.origin; } catch { return window.location.origin; }
   })();
 
   /* ── theme label ── */
