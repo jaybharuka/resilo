@@ -8,13 +8,11 @@ import Settings from './components/Settings';
 import Alerts from './components/Alerts';
 import Security from './components/Security';
 import Register from './components/Register';
-import RedeemInvite from './components/RedeemInvite';
 import Forbidden from './components/Forbidden';
 import Insights from './components/Insights';
 import Remediation from './components/Remediation';
 import Analytics from './components/Analytics';
-import TeamAndDevices from './components/TeamAndDevices';
-import MultiRoleDashboard from './components/MultiRoleDashboard';
+import InfraHub from './components/InfraHub';
 import NotificationSettings from './components/resilo/NotificationSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
@@ -26,6 +24,7 @@ import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
 import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
+import MetricsConsent from './components/MetricsConsent';
 import { RefreshCw } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -99,6 +98,7 @@ function AppShell() {
         <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
         <Topbar />
         {isAuthenticated && <HealthRibbon />}
+        {isAuthenticated && <MetricsConsent />}
         <Routes>
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
 
@@ -109,10 +109,11 @@ function AppShell() {
           <Route path="/security"    element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Security failed to load"><Security /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/analytics"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Analytics failed to load"><Analytics /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/devices"       element={<ProtectedRoute><ErrorBoundary fallbackTitle="Team & Devices failed to load"><TeamAndDevices /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/users"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Users & Devices failed to load"><MultiRoleDashboard /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/remote-agents" element={<Navigate to="/devices" replace />} />
-          <Route path="/invites"       element={<Navigate to="/users" replace />} />
+          <Route path="/infra"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Infrastructure Hub failed to load"><InfraHub /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/devices"       element={<Navigate to="/infra" replace />} />
+          <Route path="/users"         element={<Navigate to="/infra" replace />} />
+          <Route path="/remote-agents" element={<Navigate to="/infra" replace />} />
+          <Route path="/invites"       element={<Navigate to="/infra" replace />} />
           <Route path="/notifications" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Notifications failed to load"><NotificationSettings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/register"    element={<Register />} />
           <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />

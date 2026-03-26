@@ -350,6 +350,7 @@ async def _get_or_create_alert(
         id=str(uuid.uuid4()),
         org_id=snap.org_id,
         agent_id=snap.agent_id,
+        owner_user_id=agent.owner_user_id if agent else None,
         severity=severity,
         category=category,
         title=f"{category.upper()} {severity.upper()} — {label}",

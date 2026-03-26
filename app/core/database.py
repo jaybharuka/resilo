@@ -30,12 +30,32 @@ DATABASE_URL = os.getenv(
 )
 TIMESCALE_RETENTION_DAYS = int(os.getenv("TIMESCALE_RETENTION_DAYS", "30"))
 
+# asyncpg does not accept sslmode/channel_binding as URL parameters.
+# Strip them out and pass ssl via connect_args instead.
+def _build_engine_args(raw_url: str):
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    parsed = urlparse(raw_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    ssl_mode = (params.pop("sslmode", [None])[0] or
+                params.pop("ssl",     [None])[0])
+    params.pop("channel_binding", None)
+    clean_url = urlunparse(parsed._replace(
+        query=urlencode({k: v[0] for k, v in params.items()})
+    ))
+    connect_args = {}
+    if ssl_mode in ("require", "verify-ca", "verify-full", "true", "1"):
+        connect_args["ssl"] = True
+    return clean_url, connect_args
+
+_db_url, _connect_args = _build_engine_args(DATABASE_URL)
+
 engine = create_async_engine(
-    DATABASE_URL,
+    _db_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=10,
+    connect_args=_connect_args,
 )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -143,6 +163,7 @@ class Agent(Base):
     last_seen:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status:        Mapped[str]           = mapped_column(String(20), default="pending", nullable=False)  # pending|online|offline
     platform_info: Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)  # hostname, os, cpu_cores, python_version
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # device owner
     pending_cmds:  Mapped[Optional[list]]= mapped_column(JSON, nullable=True, default=list)  # queue of commands to deliver
     is_active:     Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
     created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -215,6 +236,7 @@ class AlertRecord(Base):
     id:            Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     org_id:        Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
     agent_id:      Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # device owner at alert time
     severity:      Mapped[str]           = mapped_column(String(20), nullable=False)   # critical|high|medium|low|info
     category:      Mapped[str]           = mapped_column(String(50), nullable=False)   # cpu|memory|disk|network|anomaly
     title:         Mapped[str]           = mapped_column(String(255), nullable=False)
@@ -365,6 +387,61 @@ class NotificationLog(Base):
     status:            Mapped[str]           = mapped_column(String(20), default="sent", nullable=False)
     error:             Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sent_at:           Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ── WMI Targets (agentless Windows polling) ───────────────────────────────────
+
+class WMITarget(Base):
+    """
+    Stores credentials for agentless Windows machine monitoring via WinRM/WMI.
+    The server polls each target on a schedule and stores results as MetricSnapshot
+    under the linked agent_id. Password is Fernet-encrypted at rest.
+    """
+    __tablename__ = "wmi_targets"
+    __table_args__ = (
+        Index("ix_wmitarget_org", "org_id"),
+    )
+
+    id:             Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:         Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id:       Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    label:          Mapped[str]           = mapped_column(String(255), nullable=False)
+    host:           Mapped[str]           = mapped_column(String(255), nullable=False)   # IP or hostname
+    port:           Mapped[int]           = mapped_column(Integer, default=5985, nullable=False)
+    username:       Mapped[str]           = mapped_column(String(255), nullable=False)
+    enc_password:   Mapped[str]           = mapped_column(Text, nullable=False)          # Fernet-encrypted
+    is_active:      Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
+    last_polled:    Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status:    Mapped[str]           = mapped_column(String(20), default="pending", nullable=False)  # pending|ok|error
+    last_error:     Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by:     Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at:     Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── WMI Bootstrap Invites (zero-input onboarding) ────────────────────────────
+
+class WmiInvite(Base):
+    """
+    One-time invite token for zero-input Windows machine self-registration.
+    Admin generates a token → PowerShell command is sent to the user →
+    user runs it on their machine → machine auto-registers as a WMI target.
+    Token is SHA-256 hashed at rest; raw token is never stored.
+    """
+    __tablename__ = "wmi_invites"
+    __table_args__ = (
+        Index("ix_wmiinvite_org", "org_id"),
+    )
+
+    id:                  Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:              Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    token_hash:          Mapped[str]           = mapped_column(String(64), nullable=False, unique=True)  # SHA-256 hex
+    created_by:          Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    expires_at:          Mapped[datetime]      = mapped_column(DateTime(timezone=True), nullable=False)
+    used:                Mapped[bool]          = mapped_column(Boolean, default=False, nullable=False)
+    used_at:             Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    registered_agent_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    machine_label:       Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at:          Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ── DB init ───────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { setTokenGetter, authApi } from '../services/api';
+import { clearMetricsConsent } from '../components/MetricsConsent';
 
 const AuthContext = createContext(null);
 
@@ -74,6 +75,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     try { await authApi.logout(); } catch {}
+    clearMetricsConsent(user?.id);
     setTokenGetter(null);
     localStorage.removeItem('aiops:token');
     localStorage.removeItem('aiops:refresh');
