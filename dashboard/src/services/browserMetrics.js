@@ -158,7 +158,10 @@ export function startMetricsPush(pushFn, intervalMs = 10_000) {
     while (active) {
       try {
         const metrics = await collectMetrics();
-        await pushFn(metrics);
+        // Skip pure browser-API estimates with no real signal — they store zeros
+        // in the DB and pollute the dashboard. Local-agent data is always pushed.
+        const hasRealData = metrics.source === 'local-agent' || metrics.cpu > 0 || metrics.memory > 0;
+        if (hasRealData) await pushFn(metrics);
       } catch { /* swallow — network issues are expected */ }
       await new Promise(r => setTimeout(r, intervalMs));
     }
