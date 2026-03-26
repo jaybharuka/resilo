@@ -50,6 +50,10 @@ dashboard/tmpclaude-*-cwd
 # Export outputs
 exports/
 
+# Local tooling / build output
+.mcp.json
+dashboard/build/
+
 # Extra Sensitive patterns
 *.pem
 *.key

@@ -6,8 +6,10 @@ import json
 class GeminiAIAssistant:
     def __init__(self, api_key: Optional[str] = None):
         """Initialize AI Assistant with API key"""
-        self.api_key = api_key or os.getenv('NVIDIA_API_KEY') or "REDACTED_NVIDIA_API_KEY"
-        
+        self.api_key = api_key or os.getenv('AI_API_KEY') or os.getenv('NVIDIA_API_KEY')
+        if not self.api_key:
+            raise ValueError("AI API key not configured. Set AI_API_KEY or NVIDIA_API_KEY.")
+
         # Configure OpenAI Client for Nvidia endpoint
         self.client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",

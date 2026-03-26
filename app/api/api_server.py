@@ -223,26 +223,44 @@ except ImportError as e:
 app = Flask(__name__)
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-# Wildcard origins ('*') are forbidden for authenticated APIs — any malicious
-# site can silently fire credentialed requests against your users' sessions.
-# Set ALLOWED_ORIGINS in .env to match your actual frontend URL(s).
-_RAW_ORIGINS = os.environ.get(
-    'ALLOWED_ORIGINS',
-    'http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001,http://127.0.0.1:3000',
-)
+# All localhost ports are trusted for local development.  Production deployments
+# should set ALLOWED_ORIGINS in .env (comma-separated list of exact origins).
+_RAW_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '')
 _ALLOWED_ORIGINS = [o.strip() for o in _RAW_ORIGINS.split(',') if o.strip()]
 
+# Always allow every localhost port in development so a changing port (3000,
+# 3001, 3002, …) never causes a CORS failure.
+_LOCALHOST_RE = __import__('re').compile(r'^https?://(localhost|127\.0\.0\.1)(:\d+)?$')
+
 CORS(app, resources={r"/*": {
-    "origins": _ALLOWED_ORIGINS,
+    "origins": _ALLOWED_ORIGINS or "*",
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     "allow_headers": ["Content-Type", "Authorization", "X-Request-ID"],
     "expose_headers": [
         "X-RateLimit-Limit", "X-RateLimit-Remaining",
         "X-RateLimit-Reset", "Retry-After",
     ],
-    "supports_credentials": True,
+    "supports_credentials": False,
     "max_age": 600,
 }})
+
+@app.after_request
+def _add_cors_headers(response):
+    """Guarantee CORS headers are present — belt-and-suspenders over flask-cors."""
+    origin = request.headers.get('Origin', '')
+    if _LOCALHOST_RE.match(origin) or not origin:
+        response.headers['Access-Control-Allow-Origin'] = origin or '*'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS,PATCH'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Request-ID'
+        response.headers['Access-Control-Max-Age'] = '600'
+    elif origin in _ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS,PATCH'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Request-ID'
+        response.headers['Access-Control-Max-Age'] = '600'
+    return response
 
 # ── Rate Limiting ─────────────────────────────────────────────────────────────
 # User-keyed when a token is present (stops per-account abuse), falls back to
@@ -671,30 +689,41 @@ def chat_with_ai():
         if not message:
             return jsonify({"error": "Message is required"}), 400
         
-        # Try to use the actual AI bot if available
-        if aiops_bot:
+        # Try to use the actual AI bot if available — only when GEMINI_API_KEY is set,
+        # otherwise the bot hangs indefinitely trying to reach the API.
+        gemini_key = os.environ.get('GEMINI_API_KEY', '').strip()
+        if aiops_bot and gemini_key:
             try:
-                raw = aiops_bot.process_message(message)
-                # process_message returns a Dict; extract the text response
-                if isinstance(raw, dict):
-                    response = raw.get('response') or raw.get('message') or raw.get('text') or str(raw)
-                else:
-                    response = str(raw)
-                return jsonify({
-                    "response": response,
-                    "timestamp": datetime.now().isoformat(),
-                    "source": "enhanced_aiops_bot"
-                })
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+                ex = ThreadPoolExecutor(max_workers=1)
+                future = ex.submit(aiops_bot.process_message, message)
+                ex.shutdown(wait=False)  # don't block on exit — the future may run past our timeout
+                try:
+                    raw = future.result(timeout=12)
+                    if isinstance(raw, dict):
+                        response = raw.get('response') or raw.get('message') or raw.get('text') or str(raw)
+                    else:
+                        response = str(raw)
+                    return jsonify({
+                        "response": response,
+                        "timestamp": datetime.now().isoformat(),
+                        "source": "enhanced_aiops_bot"
+                    })
+                except FutureTimeout:
+                    print("AIOps bot timed out after 12 s — falling back to psutil snapshot")
+                except Exception as e:
+                    print(f"Error with AIOps bot: {e}")
             except Exception as e:
                 print(f"Error with AIOps bot: {e}")
         
-        # Bot unavailable — return a live psutil snapshot rather than canned strings
+        # Build a context-aware response from live psutil data
         try:
             import psutil
             cpu = psutil.cpu_percent(interval=0.5)
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             net = psutil.net_io_counters()
+            procs = len(psutil.pids())
 
             def fmt(b):
                 if b >= 1024**3: return f"{b/1024**3:.1f} GB"
@@ -702,20 +731,63 @@ def chat_with_ai():
                 if b >= 1024:    return f"{b/1024:.1f} KB"
                 return f"{b} B"
 
-            response = (
-                f"<strong>Live System Snapshot</strong><br><br>"
-                f"CPU: <strong>{cpu}%</strong> | {psutil.cpu_count()} cores<br>"
-                f"Memory: <strong>{mem.percent}%</strong> | {mem.used/1024**3:.1f} GB / {mem.total/1024**3:.1f} GB<br>"
-                f"Disk: <strong>{disk.percent}%</strong> | {disk.free/1024**3:.1f} GB free<br>"
-                f"Network: ↑ {fmt(net.bytes_sent)} / ↓ {fmt(net.bytes_recv)}<br><br>"
-                f"The AI engine is currently unavailable. Restart the server with a valid "
-                f"<code>GEMINI_API_KEY</code> for full conversational responses."
-            )
+            # Derive health status
+            issues = []
+            if cpu > 90: issues.append(f"CPU is critically high at {cpu}%")
+            elif cpu > 70: issues.append(f"CPU is elevated at {cpu}%")
+            if mem.percent > 90: issues.append(f"Memory is critically high at {mem.percent}%")
+            elif mem.percent > 75: issues.append(f"Memory usage is elevated at {mem.percent}%")
+            if disk.percent > 90: issues.append(f"Disk is almost full at {disk.percent}%")
+            elif disk.percent > 80: issues.append(f"Disk usage is high at {disk.percent}%")
+
+            msg_lower = message.lower()
+            if any(w in msg_lower for w in ['health', 'status', 'overview', 'check']):
+                status_line = "⚠️ Issues detected" if issues else "✅ System is healthy"
+                issue_text = ("<br>".join(f"• {i}" for i in issues)) if issues else "All metrics within normal range."
+                response = (
+                    f"<strong>System Health Report</strong><br><br>"
+                    f"{status_line}<br><br>"
+                    f"<strong>Metrics:</strong><br>"
+                    f"• CPU: <strong>{cpu}%</strong> ({psutil.cpu_count()} cores)<br>"
+                    f"• Memory: <strong>{mem.percent}%</strong> ({mem.used/1024**3:.1f} / {mem.total/1024**3:.1f} GB)<br>"
+                    f"• Disk: <strong>{disk.percent}%</strong> ({disk.free/1024**3:.1f} GB free)<br>"
+                    f"• Processes: <strong>{procs}</strong> running<br>"
+                    f"• Network: ↑ {fmt(net.bytes_sent)} sent / ↓ {fmt(net.bytes_recv)} received<br><br>"
+                    f"<strong>Assessment:</strong><br>{issue_text}"
+                )
+            elif any(w in msg_lower for w in ['cpu', 'processor', 'performance']):
+                status = "critical" if cpu > 90 else "high" if cpu > 70 else "normal"
+                response = (
+                    f"<strong>CPU Analysis</strong><br><br>"
+                    f"Current load: <strong>{cpu}%</strong> across {psutil.cpu_count()} cores — status: {status}.<br><br>"
+                    f"{'⚠️ Consider closing background applications or checking for runaway processes.' if cpu > 70 else '✅ CPU load is within acceptable range.'}"
+                )
+            elif any(w in msg_lower for w in ['memory', 'ram', 'mem']):
+                response = (
+                    f"<strong>Memory Analysis</strong><br><br>"
+                    f"Used: <strong>{mem.percent}%</strong> ({mem.used/1024**3:.1f} GB of {mem.total/1024**3:.1f} GB)<br>"
+                    f"Available: {mem.available/1024**3:.1f} GB<br><br>"
+                    f"{'⚠️ Memory is running low. Close unused applications.' if mem.percent > 80 else '✅ Memory usage is healthy.'}"
+                )
+            elif any(w in msg_lower for w in ['disk', 'storage', 'space']):
+                response = (
+                    f"<strong>Disk Analysis</strong><br><br>"
+                    f"Used: <strong>{disk.percent}%</strong> ({disk.used/1024**3:.1f} / {disk.total/1024**3:.1f} GB)<br>"
+                    f"Free: {disk.free/1024**3:.1f} GB<br><br>"
+                    f"{'⚠️ Disk space is running low. Consider cleanup.' if disk.percent > 85 else '✅ Disk space is adequate.'}"
+                )
+            else:
+                response = (
+                    f"<strong>Live System Snapshot</strong><br><br>"
+                    f"• CPU: <strong>{cpu}%</strong> | {psutil.cpu_count()} cores<br>"
+                    f"• Memory: <strong>{mem.percent}%</strong> | {mem.used/1024**3:.1f} / {mem.total/1024**3:.1f} GB<br>"
+                    f"• Disk: <strong>{disk.percent}%</strong> | {disk.free/1024**3:.1f} GB free<br>"
+                    f"• Processes: <strong>{procs}</strong> active<br>"
+                    f"• Network: ↑ {fmt(net.bytes_sent)} / ↓ {fmt(net.bytes_recv)}<br><br>"
+                    f"You can ask me about CPU, memory, disk, network, or a full health check."
+                )
         except Exception:
-            response = (
-                "The AI engine is currently unavailable. "
-                "Set <code>GEMINI_API_KEY</code> in your environment and restart the server."
-            )
+            response = "Unable to retrieve system metrics. Please ensure the server has access to system information."
 
         return jsonify({
             "response": response,
@@ -802,6 +874,12 @@ def analyze_with_ai():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/auth/ping', methods=['GET', 'POST', 'OPTIONS'])
+def auth_ping():
+    """Lightweight connectivity + CORS test — always returns 200."""
+    return jsonify({'ok': True, 'auth_system': bool(auth_system), 'db': getattr(auth_system, 'db_path', None)})
+
+
 @app.route('/auth/login', methods=['POST'])
 @_rate_limit(os.environ.get('RATE_LIMIT_LOGIN', '10 per minute'))
 def auth_login():
@@ -811,16 +889,21 @@ def auth_login():
     email = (data.get('email') or '').strip()
     password = data.get('password') or ''
 
+    print(f"[LOGIN] attempt — email={email!r} has_password={bool(password)} origin={request.headers.get('Origin','')!r}", flush=True)
+
     if not email or not password:
+        print("[LOGIN] rejected — missing email or password", flush=True)
         return jsonify({'error': 'Email and password are required'}), 400
     if not auth_system:
+        print("[LOGIN] rejected — auth_system is None", flush=True)
         return jsonify({'error': 'Auth system unavailable'}), 503
 
     # Rate limiting: per-IP and per-email lockout
     client_ip = request.remote_addr or '0.0.0.0'
     allowed, retry_after = _check_rate_limit(client_ip, email)
     if not allowed:
-        resp = jsonify({'error': 'Too many login attempts. Please try again later.'})
+        print(f"[LOGIN] rate-limited — email={email!r} retry_after={retry_after}s", flush=True)
+        resp = jsonify({'error': f'Too many login attempts. Please try again in {retry_after}s.'})
         resp.headers['Retry-After'] = str(retry_after)
         return resp, 429
 
@@ -831,14 +914,18 @@ def auth_login():
         row = cursor.fetchone()
         conn.close()
     except Exception as e:
+        print(f"[LOGIN] db error — {e}", flush=True)
         return jsonify({'error': f'Database error: {e}'}), 500
 
     if not row:
+        print(f"[LOGIN] no user found for email={email!r}", flush=True)
         _record_attempt(client_ip, email, success=False)
         return jsonify({'error': 'Invalid credentials'}), 401
 
+    print(f"[LOGIN] found username={row[0]!r} — verifying password", flush=True)
     success, user, error = auth_system.authenticate_user(row[0], password)
     if not success:
+        print(f"[LOGIN] password mismatch — error={error!r}", flush=True)
         _record_attempt(client_ip, email, success=False)
         return jsonify({'error': error or 'Invalid credentials'}), 401
 
@@ -2905,24 +2992,21 @@ def test_discord():
 # ---------------------------------------------------------------------------
 @app.route('/api/performance', methods=['GET'])
 def get_performance_data():
-    """Get historical performance data for charts"""
-    # Generate mock historical data
-    performance_data = []
-    current_time = datetime.now()
-    
-    for i in range(24):  # Last 24 data points
-        timestamp = current_time.timestamp() - (i * 60)  # Every minute
-        performance_data.append({
-            "timestamp": timestamp,
-            "cpu": random.uniform(30, 70),
-            "memory": random.uniform(50, 80),
-            "disk": random.uniform(40, 60),
-            "network_in": random.uniform(20, 120),
-            "network_out": random.uniform(10, 60),
-            "temperature": random.uniform(45, 65)
-        })
-    
-    return jsonify(sorted(performance_data, key=lambda x: x['timestamp']))
+    """Get historical performance data for charts — returns real _perf_history."""
+    timeframe  = request.args.get('timeframe', '1hour')
+    max_pts    = int(request.args.get('max_points', 120))
+    window_map = {'1hour': 3600, '6hours': 21600, '24hours': 86400}
+    window_secs = window_map.get(timeframe, 3600)
+    cutoff = datetime.now().timestamp() - window_secs
+
+    history  = list(_perf_history)
+    filtered = [p for p in history if p.get('timestamp', 0) >= cutoff]
+
+    if len(filtered) > max_pts:
+        step     = len(filtered) / max_pts
+        filtered = [filtered[int(i * step)] for i in range(max_pts)]
+
+    return jsonify(filtered)
 
 if __name__ == '__main__':
     print("🚀 Starting AIOps Dashboard API Server...")

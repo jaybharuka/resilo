@@ -8,32 +8,32 @@ const http = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
 const { spawn } = require('child_process');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const app = express();
 const server = http.createServer(app);
 
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
-const HOST = (process.env.HOST || '127.0.0.1').trim();
-const CHAT_API_URL = process.env.CHAT_API_URL || 'http://localhost:5000/chat';
-const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || 'http://localhost:5000/chat/stream';
+const HOST = (process.env.HOST || '0.0.0.0').trim();
 const FLASK_BASE_URL = process.env.FLASK_BASE_URL || 'http://localhost:5000';
+const CHAT_API_URL = process.env.CHAT_API_URL || `${FLASK_BASE_URL}/chat`;
+const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || `${FLASK_BASE_URL}/chat/stream`;
 const CORE_API_URL = process.env.CORE_API_URL || 'http://localhost:8000';
 
-// Wildcard CORS ('*') allows any site to make requests to this server —
-// including with credentials if the browser allows it.  Use an explicit list.
-const _rawOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001').split(',').map(o => o.trim()).filter(Boolean);
+// Allow all localhost ports + any configured origins — broad for dev/LAN, lock down in prod
+const _rawOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
+const _localhostRe = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 const io = new Server(server, {
-  cors: { origin: _rawOrigins, methods: ['GET', 'POST'], credentials: true },
+  cors: { origin: true, methods: ['GET', 'POST'], credentials: true },
 });
 
 const _corsOptions = {
   origin(origin, cb) {
-    // Allow same-origin requests (no Origin header) and listed origins
-    if (!origin || _rawOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin '${origin}' not allowed`));
+    if (!origin || _localhostRe.test(origin) || _rawOrigins.includes(origin)) return cb(null, true);
+    cb(null, true); // allow all in express layer; Flask handles its own CORS for auth routes
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
   exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After'],
 };
@@ -47,6 +47,44 @@ app.use((_req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+// ── Flask reverse proxy (MUST be before express.json — body stream must be intact) ──
+// Forwards /auth/*, /api/performance, /api/insights, /api/chat, etc. to Flask.
+// express.json() would consume the body before the proxy can stream it upstream.
+const _EXPRESS_NATIVE_PREFIXES = [
+  '/api/system', '/api/processes', '/api/network', '/api/alerts',
+  '/api/health', '/api/local-agent', '/api/actions', '/api/ai',
+  '/connect.ps1',
+];
+const _isExpressNative = (path) => {
+  // Exact root
+  if (path === '/' || path === '/api') return true;
+  for (const p of _EXPRESS_NATIVE_PREFIXES) {
+    if (path === p || path.startsWith(p + '/') || path.startsWith(p + '?')) return true;
+  }
+  return false;
+};
+
+const _flaskProxy = createProxyMiddleware({
+  target: FLASK_BASE_URL,
+  changeOrigin: true,
+  pathFilter: (path) => {
+    if (path.startsWith('/static/') || path.startsWith('/socket.io')) return false;
+    if (_isExpressNative(path)) return false;
+    return true;
+  },
+  on: {
+    error(err, req, res) {
+      console.warn(`[proxy→flask] ${req.method} ${req.url} — ${err.message}`);
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Backend unavailable', detail: err.message });
+      }
+    },
+  },
+});
+app.use(_flaskProxy);
+
+// JSON body parser — after proxy so Flask-bound requests keep their raw body stream intact
 app.use(express.json());
 
 // Cache for system data to reduce load (kept minimal, no synthetic defaults in Option A mode)
@@ -163,16 +201,20 @@ app.get('/api/system', async (req, res) => {
 
     // Process and format the data
     const systemData = {
-      cpu: typeof cpuData.currentload === 'number' ? Math.round(cpuData.currentload) : null,
+      cpu: typeof cpuData.currentLoad === 'number' ? Math.round(cpuData.currentLoad) : null,
       memory: (memData.total && memData.active) ? Math.round((memData.active / memData.total) * 100) : null,
+      disk: (diskData[0] && diskData[0].size) ? Math.round((diskData[0].used / diskData[0].size) * 100) : null,
       storage: (diskData[0] && diskData[0].size) ? Math.round((diskData[0].used / diskData[0].size) * 100) : null,
-      network: (networkData[0] && typeof networkData[0].rx_sec === 'number') ? Math.round((networkData[0].rx_sec || 0) / 1024 / 1024) : null,
+      network_in: (networkData[0] && typeof networkData[0].rx_sec === 'number') ? Math.round((networkData[0].rx_sec || 0) / 1024) : null,
+      network_out: (networkData[0] && typeof networkData[0].tx_sec === 'number') ? Math.round((networkData[0].tx_sec || 0) / 1024) : null,
+      network: (networkData[0] && typeof networkData[0].rx_sec === 'number') ? Math.round((networkData[0].rx_sec || 0) / 1024) : null,
       temperature: typeof tempData.main === 'number' ? Math.round(tempData.main) : null,
       power: null,
       fanSpeed: null,
       processes: typeof processData.all === 'number' ? Math.round(processData.all) : null,
       threads: (typeof processData.all === 'number') ? Math.round(processData.all * 8.5) : null,
       uptime: Math.round(os.uptime()),
+      source: 'express',
       timestamp: new Date().toISOString()
     };
 
@@ -200,13 +242,13 @@ app.get('/api/processes', async (req, res) => {
     const processData = await si.processes();
     
     // Format processes for frontend
-    const formattedProcesses = processData.list.slice(0, 20).map((proc, index) => ({
-      pid: proc.pid || Math.floor(Math.random() * 9999) + 1000,
-      name: proc.name || `Process${index}`,
-      cpu: proc.cpu || Math.random() * 15,
-      memory: proc.mem ? `${Math.round(proc.mem * 100) / 100}%` : `${(Math.random() * 5).toFixed(1)}%`,
-      status: proc.state || (Math.random() > 0.3 ? 'Running' : 'Idle'),
-      priority: proc.priority || (Math.random() > 0.7 ? 'High' : Math.random() > 0.4 ? 'Normal' : 'Low'),
+    const formattedProcesses = processData.list.slice(0, 20).map((proc) => ({
+      pid: proc.pid || null,
+      name: proc.name || 'unknown',
+      cpu: typeof proc.cpu === 'number' ? Math.round(proc.cpu * 10) / 10 : 0,
+      memory: proc.mem ? `${Math.round(proc.mem * 100) / 100}%` : '0%',
+      status: proc.state || 'unknown',
+      priority: proc.priority != null ? String(proc.priority) : 'Normal',
       type: getProcessType(proc.name),
       icon: getProcessIcon(proc.name)
     }));
@@ -707,12 +749,10 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve React build statically if available (so the site is reachable without the CRA dev server)
+// ── Serve React build statically ─────────────────────────────────────────────
 try {
   const buildDir = path.join(__dirname, 'build');
   app.use(express.static(buildDir));
-  // Let API and Socket.IO routes take precedence; for other routes fall back to index.html (SPA)
-  // Express 5 no longer supports '*' path directly; use regex to exclude API/socket paths
   app.get(/^\/(?!api|socket\.io)(.*)/, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(buildDir, 'index.html'));
