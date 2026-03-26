@@ -7,6 +7,7 @@ const os = require('os');
 const http = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
+const { spawn } = require('child_process');
 const app = express();
 const server = http.createServer(app);
 
@@ -15,6 +16,7 @@ const HOST = (process.env.HOST || '127.0.0.1').trim();
 const CHAT_API_URL = process.env.CHAT_API_URL || 'http://localhost:5000/chat';
 const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || 'http://localhost:5000/chat/stream';
 const FLASK_BASE_URL = process.env.FLASK_BASE_URL || 'http://localhost:5000';
+const CORE_API_URL = process.env.CORE_API_URL || 'http://localhost:8000';
 
 // Wildcard CORS ('*') allows any site to make requests to this server —
 // including with credentials if the browser allows it.  Use an explicit list.
@@ -355,6 +357,129 @@ function getProcessIcon(name) {
   return '📱';
 }
 
+// ── Local Agent: one-click launch / status / stop ─────────────────────────────
+const REPO_ROOT = path.resolve(__dirname, '..');
+const AGENT_SCRIPT = path.join(REPO_ROOT, 'app', 'integrations', 'remote_agent.py');
+
+// Candidate Python executables (try venv first, then system)
+const PYTHON_CANDIDATES = [
+  path.join(REPO_ROOT, '.venv', 'Scripts', 'python.exe'),
+  path.join(REPO_ROOT, '.venv', 'bin', 'python3'),
+  path.join(REPO_ROOT, '.venv', 'bin', 'python'),
+  'python3',
+  'python',
+];
+
+// In-memory map of running local agents: agent_id -> { proc, pid, label }
+const localAgentProcs = new Map();
+
+function spawnAgent(apiKey, orgId) {
+  const env = {
+    ...process.env,
+    AIOPS_SERVER: CORE_API_URL,
+    AIOPS_KEY: apiKey,
+    AIOPS_ORG: orgId,
+    ALLOW_SYSTEM_ACTIONS: 'false',
+  };
+  for (const exe of PYTHON_CANDIDATES) {
+    try {
+      const proc = spawn(exe, [AGENT_SCRIPT], {
+        env,
+        cwd: REPO_ROOT,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      if (proc.pid) {
+        proc.unref();
+        return proc;
+      }
+    } catch (_) { /* try next */ }
+  }
+  throw new Error('No Python executable found. Ensure Python is installed or the .venv is present.');
+}
+
+app.post('/api/local-agent/launch', async (req, res) => {
+  const { org_id, token, label } = req.body || {};
+  if (!org_id || !token) return res.status(400).json({ error: 'org_id and token are required' });
+
+  const agentLabel = (label || '').trim() || `${os.hostname()}-local`;
+
+  // 1. Register agent with core API
+  let regData;
+  try {
+    const regRes = await axios.post(
+      `${CORE_API_URL}/api/orgs/${org_id}/agents`,
+      { label: agentLabel },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+    regData = regRes.data;
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.response?.data || err.message || 'Failed to register agent';
+    return res.status(502).json({ error: String(msg) });
+  }
+
+  const { id: agentId, api_key: apiKey } = regData;
+
+  // 2. Spawn remote_agent.py in background
+  let proc;
+  try {
+    proc = spawnAgent(apiKey, org_id);
+  } catch (err) {
+    return res.status(500).json({ error: err.message, agent_id: agentId, tip: 'Agent was registered but could not be auto-started. Use the install_cmd manually.' });
+  }
+
+  localAgentProcs.set(agentId, { proc, pid: proc.pid, label: agentLabel });
+
+  res.json({ agent_id: agentId, label: agentLabel, pid: proc.pid, status: 'running' });
+});
+
+app.get('/api/local-agent/status', (req, res) => {
+  const agents = [];
+  for (const [agentId, info] of localAgentProcs.entries()) {
+    let running = false;
+    try { process.kill(info.pid, 0); running = true; } catch (_) {}
+    agents.push({ agent_id: agentId, label: info.label, pid: info.pid, running });
+  }
+  res.json({ agents });
+});
+
+app.delete('/api/local-agent/stop/:agentId', (req, res) => {
+  const { agentId } = req.params;
+  const info = localAgentProcs.get(agentId);
+  if (!info) return res.status(404).json({ error: 'No local agent with that ID' });
+  try { process.kill(info.pid); } catch (_) {}
+  localAgentProcs.delete(agentId);
+  res.json({ stopped: true, agent_id: agentId });
+});
+
+// Serve dynamic PowerShell bootstrap script for WMI zero-input onboarding.
+// Usage: irm http://HOST:3001/connect.ps1?token=TOKEN | iex
+app.get('/connect.ps1', (req, res) => {
+  const token = (req.query.token || '').trim();
+  if (!token) {
+    return res.status(400).type('text/plain').send('# Error: missing ?token= parameter');
+  }
+  const regUrl = `${CORE_API_URL}/api/wmi-register`;
+  const script = `
+$t='${token}'
+$u='${regUrl}'
+try { Enable-PSRemoting -Force -SkipNetworkProfileCheck -EA Stop } catch {}
+$chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*'
+$p=-join(1..18 | ForEach-Object { $chars[(Get-Random -Max $chars.Length)] })
+net user resilo-monitor $p /add /y 2>$null
+net localgroup administrators resilo-monitor /add 2>$null
+$ip=(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+if (-not $ip) { $ip=$env:COMPUTERNAME }
+$os=(Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue).Caption
+if (-not $os) { $os='Windows' }
+$b=@{token=$t;hostname=$env:COMPUTERNAME;ip=$ip;os=$os;arch=$env:PROCESSOR_ARCHITECTURE;username='resilo-monitor';password=$p;port=5985} | ConvertTo-Json
+Invoke-RestMethod -Method POST -Uri $u -Body $b -ContentType 'application/json' -UseBasicParsing
+Write-Host 'Machine registered. You can close this window.'
+`.trimStart();
+  res.type('text/plain').send(script);
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -589,6 +714,7 @@ try {
   // Let API and Socket.IO routes take precedence; for other routes fall back to index.html (SPA)
   // Express 5 no longer supports '*' path directly; use regex to exclude API/socket paths
   app.get(/^\/(?!api|socket\.io)(.*)/, (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(buildDir, 'index.html'));
   });
   console.log('🗂️ Static build serving enabled (if build exists).');

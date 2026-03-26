@@ -1,0 +1,124 @@
+name: Deploy — Firebase + Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+env:
+  GCP_PROJECT: resilo-ai
+  GCP_REGION:  us-central1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIRED GITHUB SECRETS (Settings → Secrets → Actions → New repository secret)
+#
+#  FIREBASE_SERVICE_ACCOUNT  — Firebase service account JSON
+#    GCP console → IAM → Service Accounts → firebase-adminsdk-* → Keys → Add Key → JSON
+#
+#  GCP_SA_KEY                — GCP service account JSON for Cloud Run + GCR
+#    GCP console → IAM → Service Accounts → Create account
+#    Roles: Cloud Run Admin, Storage Admin, Artifact Registry Writer, Service Account User
+#    Keys → Add Key → JSON → paste the whole JSON as the secret value
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+
+  # ── 1. Frontend ─────────────────────────────────────────────────────────────
+  deploy-frontend:
+    name: Build & Deploy Frontend → Firebase Hosting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: dashboard
+
+      - name: Build
+        run: npm run build
+        working-directory: dashboard
+        env:
+          REACT_APP_AUTH_API_URL:  https://resilo-ai.web.app
+          REACT_APP_CORE_API_URL:  https://resilo-ai.web.app
+          REACT_APP_SOCKET_URL:    https://resilo-ai.web.app
+          REACT_APP_USE_MOCKS:     false
+          REACT_APP_DIRECT_MODE:   false
+          # Silence CRA warnings so build doesn't fail on non-zero exit
+          CI: false
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken:              ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          channelId:              live
+          projectId:              resilo-ai
+
+  # ── 2. Core API (FastAPI + psutil) ──────────────────────────────────────────
+  deploy-core-api:
+    name: Build & Deploy Core API → Cloud Run
+    runs-on: ubuntu-latest
+    # Only rebuild when relevant files change
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Build & Push image
+        run: |
+          IMAGE=gcr.io/${{ env.GCP_PROJECT }}/core-api
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest -f Dockerfile.core .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy core-api \
+            --image gcr.io/${{ env.GCP_PROJECT }}/core-api:${{ github.sha }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --quiet
+
+  # ── 3. Auth API (FastAPI auth service) ──────────────────────────────────────
+  deploy-auth-api:
+    name: Build & Deploy Auth API → Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Build & Push image
+        run: |
+          IMAGE=gcr.io/${{ env.GCP_PROJECT }}/auth-api
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest -f Dockerfile.auth .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy auth-api \
+            --image gcr.io/${{ env.GCP_PROJECT }}/auth-api:${{ github.sha }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --quiet

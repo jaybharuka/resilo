@@ -218,7 +218,7 @@ Rules:
 - Keep response under 300 words. Use HTML formatting."""
 
             response = self.gemini_model.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
+                model="abacusai/dracarys-llama-3.1-70b-instruct",
                 messages=[{"role": "user", "content": system_context}],
                 temperature=1,
                 top_p=1,
