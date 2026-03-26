@@ -3,29 +3,17 @@ name: Deploy — Firebase + Cloud Run
 on:
   push:
     branches: [main]
-  workflow_dispatch:  # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 env:
   GCP_PROJECT: resilo-ai
   GCP_REGION:  us-central1
 
-# ─────────────────────────────────────────────────────────────────────────────
-# REQUIRED GITHUB SECRETS (Settings → Secrets → Actions → New repository secret)
-#
-#  FIREBASE_SERVICE_ACCOUNT  — Firebase service account JSON
-#    GCP console → IAM → Service Accounts → firebase-adminsdk-* → Keys → Add Key → JSON
-#
-#  GCP_SA_KEY                — GCP service account JSON for Cloud Run + GCR
-#    GCP console → IAM → Service Accounts → Create account
-#    Roles: Cloud Run Admin, Storage Admin, Artifact Registry Writer, Service Account User
-#    Keys → Add Key → JSON → paste the whole JSON as the secret value
-# ─────────────────────────────────────────────────────────────────────────────
-
 jobs:
 
-  # ── 1. Frontend ─────────────────────────────────────────────────────────────
+  # ── 1. Frontend → Firebase Hosting ─────────────────────────────────────────
   deploy-frontend:
-    name: Build & Deploy Frontend → Firebase Hosting
+    name: Frontend → Firebase Hosting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +24,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: dashboard/package-lock.json
 
-      - name: Install dependencies
+      - name: Install
         run: npm ci
         working-directory: dashboard
 
@@ -44,15 +32,14 @@ jobs:
         run: npm run build
         working-directory: dashboard
         env:
-          REACT_APP_AUTH_API_URL:  https://resilo-ai.web.app
-          REACT_APP_CORE_API_URL:  https://resilo-ai.web.app
-          REACT_APP_SOCKET_URL:    https://resilo-ai.web.app
-          REACT_APP_USE_MOCKS:     false
-          REACT_APP_DIRECT_MODE:   false
-          # Silence CRA warnings so build doesn't fail on non-zero exit
           CI: false
+          REACT_APP_AUTH_API_URL: https://resilo-ai.web.app
+          REACT_APP_CORE_API_URL: https://resilo-ai.web.app
+          REACT_APP_SOCKET_URL:   https://resilo-ai.web.app
+          REACT_APP_USE_MOCKS:    false
+          REACT_APP_DIRECT_MODE:  false
 
-      - name: Deploy to Firebase Hosting
+      - name: Deploy to Firebase
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken:              ${{ secrets.GITHUB_TOKEN }}
@@ -60,22 +47,20 @@ jobs:
           channelId:              live
           projectId:              resilo-ai
 
-  # ── 2. Core API (FastAPI + psutil) ──────────────────────────────────────────
+  # ── 2. Core API → Cloud Run ─────────────────────────────────────────────────
   deploy-core-api:
-    name: Build & Deploy Core API → Cloud Run
+    name: Core API → Cloud Run
     runs-on: ubuntu-latest
-    # Only rebuild when relevant files change
     steps:
       - uses: actions/checkout@v4
 
-      - uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker gcr.io --quiet
+      - name: Authenticate to Google Cloud
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          gcloud auth activate-service-account --key-file=/tmp/sa-key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          gcloud auth configure-docker gcr.io --quiet
+          rm /tmp/sa-key.json
 
       - name: Build & Push image
         run: |
@@ -92,21 +77,20 @@ jobs:
             --platform managed \
             --quiet
 
-  # ── 3. Auth API (FastAPI auth service) ──────────────────────────────────────
+  # ── 3. Auth API → Cloud Run ─────────────────────────────────────────────────
   deploy-auth-api:
-    name: Build & Deploy Auth API → Cloud Run
+    name: Auth API → Cloud Run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker gcr.io --quiet
+      - name: Authenticate to Google Cloud
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          gcloud auth activate-service-account --key-file=/tmp/sa-key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          gcloud auth configure-docker gcr.io --quiet
+          rm /tmp/sa-key.json
 
       - name: Build & Push image
         run: |
