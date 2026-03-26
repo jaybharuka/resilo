@@ -39,9 +39,8 @@ const PerformanceChart = () => {
           memory: pt.memory,
           disk: pt.disk,
           temperature: pt.temperature ?? null,
-          download: (pt.network_in || 0) / (1024 * 1024),
-          upload: (pt.network_out || 0) / (1024 * 1024),
-          latency: 10 + Math.random() * 30,
+          download: (pt.network_in || 0) / 1024,
+          upload: (pt.network_out || 0) / 1024,
         }));
         setPerformanceData(mapped);
         setNetworkData(mapped);
@@ -87,8 +86,7 @@ const PerformanceChart = () => {
               {entry.name}: {typeof entry.value === 'number' ? entry.value.toFixed(1) : entry.value}
               {entry.name === 'Temperature' ? '°C' : 
                entry.name.includes('CPU') || entry.name.includes('Memory') || entry.name.includes('Disk') ? '%' :
-               entry.name.includes('Download') || entry.name.includes('Upload') ? ' Mbps' :
-               entry.name === 'Latency' ? 'ms' : ''}
+               entry.name.includes('Download') || entry.name.includes('Upload') ? ' MB/s' : ''}
             </Typography>
           ))}
         </Paper>
@@ -226,15 +224,6 @@ const PerformanceChart = () => {
                     fill="#82ca9d"
                     fillOpacity={0.6}
                     name="Upload Speed"
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="latency" 
-                    stroke="#ffd93d" 
-                    name="Latency"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
                   />
                 </AreaChart>
               </ResponsiveContainer>

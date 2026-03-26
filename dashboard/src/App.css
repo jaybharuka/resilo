@@ -39,15 +39,15 @@
   --icon-size-xl: 32px;
   
   /* Typography Scale */
-  --font-xs: 11px;
-  --font-sm: 12px;
-  --font-md: 14px;
-  --font-lg: 16px;
-  --font-xl: 18px;
-  --font-2xl: 24px;
-  --font-3xl: 32px;
-  --font-4xl: 42px;
-  --font-5xl: 56px;
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 15px;
+  --font-lg: 18px;
+  --font-xl: 20px;
+  --font-2xl: 26px;
+  --font-3xl: 34px;
+  --font-4xl: 44px;
+  --font-5xl: 60px;
   
   /* Font Weights */
   --font-light: 300;
@@ -240,7 +240,7 @@ body::before {
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--font-lg);
   font-weight: 500;
   text-align: left;
   text-decoration: none;
@@ -318,13 +318,13 @@ body::before {
 
 .nav-label {
   font-weight: 500;
-  font-size: 15px;
+  font-size: var(--font-lg);
 }
 
 .nav-badge {
   background: linear-gradient(135deg, var(--accent-danger) 0%, #ff6b7a 100%);
   color: white;
-  font-size: 10px;
+  font-size: var(--font-sm);
   font-weight: 700;
   padding: 4px 8px;
   border-radius: 12px;
@@ -955,7 +955,7 @@ body::before {
 }
 
 .metric-status {
-  font-size: 11px;
+  font-size: var(--font-sm);
   font-weight: 600;
   padding: 4px 10px;
   border-radius: var(--border-radius-lg);
@@ -1028,7 +1028,7 @@ body::before {
 }
 
 .metric-change {
-  font-size: 12px;
+  font-size: var(--font-md);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -1047,7 +1047,7 @@ body::before {
 }
 
 .metric-change-icon {
-  font-size: 10px;
+  font-size: var(--font-sm);
 }
 
 .metric-progress {

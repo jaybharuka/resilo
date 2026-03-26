@@ -7,46 +7,42 @@ import axios from 'axios';
 export const DIRECT_MODE = /^(1|true)$/i.test(process.env.REACT_APP_DIRECT_MODE || '');
 export const USE_MOCKS = /^(1|true)$/i.test(process.env.REACT_APP_USE_MOCKS || '');
 
-// Determine API base URL:
-// - If REACT_APP_API_BASE_URL is provided, use it.
-// - Otherwise, derive from the current browser location (hostname:5000),
-//   which makes the build work from localhost and LAN IPs without rebuilds.
+// Determine API base URL.
+// Priority: REACT_APP_API_BASE_URL env var → same origin (window.location.origin).
+// Using same-origin means the Express server (which proxies Flask) is always the
+// single gateway — no hardcoded ports, works on localhost AND any deployed host.
 export const API_BASE_URL = (() => {
-  // Highest priority: user override stored locally (advanced networking)
-  try {
-    const override = (typeof window !== 'undefined') ? localStorage.getItem('aiops:apiBase') : null;
-    if (override && override.trim()) return override.trim();
-  } catch {}
   const env = process.env.REACT_APP_API_BASE_URL;
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname } = window.location;
-      return `${protocol}//${hostname}:5000`;
+      return window.location.origin; // same host+port as the page — no :5000 hardcoding
     }
   } catch {}
-  return 'http://localhost:5000';
+  return 'http://localhost:3001';
 })();
 
-// Auth API base URL — same Flask backend as API (port 5000)
+// Auth API base URL — same origin as API (Express proxies /auth/* to Flask).
 export const AUTH_BASE_URL = (() => {
-  try {
-    const override = (typeof window !== 'undefined') ? localStorage.getItem('aiops:authBase') : null;
-    if (override && override.trim()) return override.trim();
-  } catch {}
   const env = process.env.REACT_APP_AUTH_API_URL;
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname } = window.location;
-      return `${protocol}//${hostname}:5000`;
+      return window.location.origin;
     }
   } catch {}
-  return 'http://localhost:5000';
+  return 'http://localhost:3001';
 })();
+
 const inferSocketUrl = () => {
   const env = process.env.REACT_APP_SOCKET_URL;
   if (env) return env;
+  // Socket.IO is on the Express server — same origin as the page
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      return window.location.origin;
+    }
+  } catch {}
   try {
     const u = new URL(API_BASE_URL);
     return `${u.protocol}//${u.hostname}:3001`;

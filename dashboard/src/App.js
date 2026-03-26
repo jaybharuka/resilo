@@ -1,6 +1,6 @@
 /* eslint-disable unicode-bom */
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AIAssistant from './components/AIAssistant';
@@ -44,14 +44,14 @@ function Topbar() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '20px', gap: '8px' }}>
       {user?.email && (
-        <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.06em', color: '#4A443D' }}>
+        <span style={{ ...MONO, fontSize: '13px', letterSpacing: '0.06em', color: '#4A443D' }}>
           {user.email}
         </span>
       )}
       <span
         style={{
           ...MONO,
-          fontSize: '10px',
+          fontSize: '12px',
           letterSpacing: '0.1em',
           padding: '3px 9px',
           borderRadius: '10px',
@@ -81,7 +81,7 @@ function Topbar() {
         onMouseEnter={e => { e.currentTarget.style.color = '#F59E0B'; e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; }}
         onMouseLeave={e => { e.currentTarget.style.color = '#4A443D'; e.currentTarget.style.borderColor = 'rgba(42,40,32,0.9)'; }}
       >
-        <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+        <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
       </button>
     </div>
   );
@@ -89,10 +89,15 @@ function Topbar() {
 
 function AppShell() {
   const { isAuthenticated } = useAuth();
+  const location = useLocation();
+  const hideSidebar = location.pathname === '/login';
   return (
     <div className="min-h-screen flex" style={{ backgroundColor: 'rgb(var(--bg))', color: 'rgb(var(--text))' }}>
-      <Sidebar />
-      <main className="flex-1 min-w-0 px-6 py-5 overflow-y-auto" style={{ background: 'rgb(var(--bg))' }}>
+      {!hideSidebar && <Sidebar />}
+      <main
+        className="flex-1 min-w-0 px-6 py-5 overflow-y-auto"
+        style={{ background: 'rgb(var(--bg))', marginLeft: hideSidebar ? 0 : undefined }}
+      >
         <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
         <Topbar />
         {isAuthenticated && <HealthRibbon />}

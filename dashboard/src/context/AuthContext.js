@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { setTokenGetter, authApi } from '../services/api';
+import { setTokenGetter, authApi, AUTH_BASE_URL } from '../services/api';
 import { startMetricsPush, stopMetricsPush } from '../services/browserMetrics';
 import { resiloApi } from '../services/resiloApi';
 
@@ -80,8 +80,17 @@ export function AuthProvider({ children }) {
     } catch (err) {
       // FastAPI uses {detail: "..."}, legacy Flask uses {error: "..."}
       const serverError = err?.response?.data?.detail || err?.response?.data?.error;
-      setAuthError(serverError || 'Sign-in failed.');
-      throw new Error(serverError || 'Sign-in failed.');
+      const status = err?.response?.status;
+      let msg;
+      if (!err?.response) {
+        msg = `Cannot reach server at ${AUTH_BASE_URL} — is the backend running?`;
+      } else if (status === 429) {
+        msg = err?.response?.data?.error || 'Too many attempts. Please wait and try again.';
+      } else {
+        msg = serverError || `Sign-in failed (HTTP ${status || 'unknown'}).`;
+      }
+      setAuthError(msg);
+      throw new Error(msg);
     }
   }, []);
 
