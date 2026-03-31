@@ -13,7 +13,13 @@ conn_str = os.getenv('DATABASE_URL')
 if not conn_str:
     raise RuntimeError('DATABASE_URL not set. Copy .env.example to .env and configure your database connection string.')
 
-new_password = os.getenv('RESET_PASSWORD_NEW', 'Admin@1234').encode()
+_raw_password = os.getenv('RESET_PASSWORD_NEW')
+if not _raw_password:
+    raise RuntimeError(
+        'RESET_PASSWORD_NEW is not set. Set it in your .env file or environment before running this script.\n'
+        'Example: RESET_PASSWORD_NEW=<new-password> python update_db.py'
+    )
+new_password = _raw_password.encode()
 email = os.getenv('RESET_PASSWORD_EMAIL', 'admin@company.local')
 
 hashed = bcrypt.hashpw(new_password, bcrypt.gensalt()).decode('utf-8')

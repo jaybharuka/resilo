@@ -4,13 +4,35 @@ Routes /auth/* and /users* → FastAPI auth service (port 5001)
 Routes everything else      → Flask API (port 5000)
 Listens on port 8080
 """
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 FLASK_URL   = "http://127.0.0.1:5000"
 FASTAPI_URL = "http://127.0.0.1:5001"
+
+# Allowed origins — never use "*" with a proxy that forwards credentials.
+_PROXY_ORIGINS = {
+    o.strip()
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
+    ).split(",")
+    if o.strip()
+}
+
+
+def _cors_origin(request_origin: str) -> str:
+    """Return the origin to reflect, or empty string if not allowed."""
+    return request_origin if request_origin in _PROXY_ORIGINS else ""
 
 AUTH_PREFIXES = ("/auth/", "/users", "/auth")
 
@@ -33,38 +55,47 @@ class Proxy(BaseHTTPRequestHandler):
             fwd_headers["Content-Length"] = str(len(body))
 
         req = urllib.request.Request(dest, data=body, headers=fwd_headers, method=self.command)
+        req_origin = self.headers.get("Origin", "")
+        allowed_origin = _cors_origin(req_origin)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 self.send_response(resp.status)
                 for k, v in resp.headers.items():
                     if k.lower() in ("content-type", "content-length", "set-cookie", "authorization"):
                         self.send_header(k, v)
-                # Always allow CORS from Firebase
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+                if allowed_origin:
+                    self.send_header("Access-Control-Allow-Origin", allowed_origin)
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                    self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+                    self.send_header("Vary", "Origin")
                 self.end_headers()
                 self.wfile.write(resp.read())
         except urllib.error.HTTPError as e:
             data = e.read()
             self.send_response(e.code)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            if allowed_origin:
+                self.send_header("Access-Control-Allow-Origin", allowed_origin)
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            if allowed_origin:
+                self.send_header("Access-Control-Allow-Origin", allowed_origin)
             self.end_headers()
             self.wfile.write(f'{{"error":"proxy error: {e}"}}'.encode())
 
     def do_OPTIONS(self):
+        req_origin = self.headers.get("Origin", "")
+        allowed_origin = _cors_origin(req_origin)
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+        if allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+            self.send_header("Vary", "Origin")
         self.end_headers()
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = _proxy

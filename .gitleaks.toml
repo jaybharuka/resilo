@@ -37,4 +37,7 @@ paths = [
   '''.env\.example$''',
   '''dashboard/\.env\.example$''',
   '''\.gitleaks\.toml$''',
+  # Test fixtures use clearly-labelled placeholder secrets — not real credentials
+  '''tests/conftest\.py$''',
+  '''tests/test_auth\.py$''',
 ]

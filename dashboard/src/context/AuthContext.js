@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { setTokenGetter, authApi, AUTH_BASE_URL } from '../services/api';
 import { startMetricsPush, stopMetricsPush } from '../services/browserMetrics';
-import { resiloApi } from '../services/resiloApi';
+import { resiloApi, orgsApi } from '../services/resiloApi';
 
 const AuthContext = createContext(null);
 
@@ -16,7 +16,7 @@ export function AuthProvider({ children }) {
     metricsPushing.current = true;
     startMetricsPush(async (metrics) => {
       try { await resiloApi.pushBrowserMetrics(u.org_id, metrics); } catch {}
-    }, 15_000);
+    }, 5_000);
   }
 
   function _stopMetrics() {
@@ -38,6 +38,7 @@ export function AuthProvider({ children }) {
             setRole(u.role || 'employee');
             try { localStorage.setItem('aiops:user', JSON.stringify(u)); } catch {}
             _startMetrics(u);
+            orgsApi.resolveAndCache().catch(() => {});
           } else {
             setUser(null);
             try { localStorage.removeItem('aiops:user'); } catch {}
@@ -73,6 +74,7 @@ export function AuthProvider({ children }) {
         setUser(res.user);
         setRole(res.user.role || 'employee');
         _startMetrics(res.user);
+        orgsApi.resolveAndCache().catch(() => {});
         return { ok: true };
       } else {
         throw new Error('Invalid response from server.');
@@ -106,6 +108,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('aiops:token');
     localStorage.removeItem('aiops:refresh');
     localStorage.removeItem('aiops:user');
+    localStorage.removeItem('aiops:pgOrgId');
     setUser(null);
     setRole('employee');
   }, []);

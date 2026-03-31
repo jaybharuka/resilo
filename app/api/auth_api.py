@@ -35,15 +35,11 @@ for _p in [_here, _app, _root,
     if _p not in _sys.path:
         _sys.path.insert(0, _p)
 
-# Load .env from repo root so JWT_SECRET_KEY etc. are available
-_env_file = os.path.join(_root, '.env')
-if os.path.exists(_env_file):
-    with open(_env_file) as _ef:
-        for _line in _ef:
-            _line = _line.strip()
-            if _line and not _line.startswith('#') and '=' in _line:
-                _k, _v = _line.split('=', 1)
-                os.environ.setdefault(_k.strip(), _v.strip())
+import sys as _sys2
+if _app not in _sys2.path:
+    _sys2.path.insert(0, _app)
+from secret_config import validate_secrets
+validate_secrets("JWT_SECRET_KEY")
 
 import hashlib
 import hmac as _hmac
@@ -85,21 +81,16 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # JWT config — secret MUST come from env in production
 # ---------------------------------------------------------------------------
-_jwt_secret = os.getenv("JWT_SECRET_KEY", "")
-if not _jwt_secret:
-    _jwt_secret = secrets.token_urlsafe(48)
-    log.warning(
-        "JWT_SECRET_KEY not set — using ephemeral secret. "
-        "All sessions will be lost on restart. Add JWT_SECRET_KEY to .env"
-    )
-
-JWT_SECRET      = _jwt_secret
+JWT_SECRET      = os.getenv("JWT_SECRET_KEY")   # guaranteed present by validate_secrets() above
 JWT_ALGORITHM   = "HS256"
 JWT_ACCESS_TTL  = int(os.getenv("JWT_ACCESS_TTL", "86400"))      # 24 h
 JWT_REFRESH_TTL = int(os.getenv("JWT_REFRESH_TTL", "2592000"))   # 30 d
 FRONTEND_URL    = os.getenv("FRONTEND_URL", "http://localhost:3001")
 
 VALID_ROLES = {"admin", "manager", "employee", "guest"}
+
+MAX_FAILED_ATTEMPTS      = int(os.getenv("MAX_FAILED_ATTEMPTS", "5"))
+LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -144,7 +135,12 @@ async def _seed_admin():
     ADMIN_DEFAULT_PASSWORD from .env.  Running this on every startup means
     the password is never silently randomised — what is in .env is the truth.
     """
-    _dev_pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@1234")
+    _dev_pw = os.getenv("ADMIN_DEFAULT_PASSWORD")
+    if not _dev_pw:
+        raise RuntimeError(
+            "ADMIN_DEFAULT_PASSWORD is not set. Add it to your .env file before starting auth_api.\n"
+            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(16))\""
+        )
 
     async with SessionLocal() as db:
         # ── Ensure default org exists ─────────────────────────────────────────
@@ -264,6 +260,7 @@ def _make_access_token(user: User) -> str:
         "role": user.role,
         "username": user.username,
         "org_id": user.org_id,       # multi-tenancy: org scope in every token
+        "jti": secrets.token_urlsafe(16),  # unique per token, prevents duplicates on same-second logins
         "iat": now,
         "exp": now + timedelta(seconds=JWT_ACCESS_TTL),
         "type": "access",
@@ -471,10 +468,40 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
+    now = datetime.now(timezone.utc)
+
+    # Lockout check BEFORE password verification so a locked account never
+    # leaks whether the supplied password was correct or not.
+    # SQLite returns naive datetimes; make timezone-aware before comparing.
+    _locked_until = user.locked_until if user else None
+    if _locked_until is not None and _locked_until.tzinfo is None:
+        _locked_until = _locked_until.replace(tzinfo=timezone.utc)
+    if user and _locked_until and _locked_until > now:
+        mins_left = max(1, int((_locked_until - now).total_seconds() / 60) + 1)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Account locked. Try again in {mins_left} minute{'s' if mins_left != 1 else ''}.",
+        )
+
     if not user or not _verify_password(body.password, user.hashed_password):
+        if user:
+            user.failed_attempts = (user.failed_attempts or 0) + 1
+            if user.failed_attempts >= MAX_FAILED_ATTEMPTS:
+                user.locked_until = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+                await db.commit()
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Account locked. Try again in {LOCKOUT_DURATION_MINUTES} minutes.",
+                )
+            await db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
+
+    # Successful login — reset failure counters
+    user.failed_attempts = 0
+    user.locked_until = None
 
     # 2FA gate
     if user.two_factor_enabled and user.two_factor_secret:
@@ -632,7 +659,7 @@ async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depend
             plain=f"Password reset link (valid 1 hour): {reset_url}",
         )
         if not sent:
-            log.info("Password reset URL for %s: %s", user.email, reset_url)
+            log.warning("Password reset email could not be sent for %s — check SMTP config", user.email)
     return {"ok": True, "message": "If that email exists, a reset link has been sent"}
 
 
@@ -900,7 +927,7 @@ async def create_invite(
             plain=f"You have been invited as {body.role}. Set up your account: {accept_url}",
         )
         if not sent:
-            log.info("Invite URL for %s: %s", body.email, accept_url)
+            log.warning("Invite email could not be sent for %s — check SMTP config", body.email)
 
     return {
         "token": raw_token,
