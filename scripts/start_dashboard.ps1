@@ -37,7 +37,7 @@ $envCmd = "cd `"$dashDir`"; `$env:HOST='$BindAddress'; npm run start-all"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command","$envCmd" -WorkingDirectory $dashDir | Out-Null
 
 # Probe primary and fallback ports
-$urls = @("http://127.0.0.1:$Port/", "http://127.0.0.1:3001/", "http://127.0.0.1:3011/")
+$urls = @("http://127.0.0.1:$Port/", "http://127.0.0.1:3000/", "http://127.0.0.1:3001/", "http://127.0.0.1:3011/")
 $okUrl = $null
 Write-Host "Waiting for dashboard server..."
 for ($i=0; $i -lt 30; $i++) {

@@ -8,7 +8,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { metricsApi, alertsApi, agentsApi } from '../services/resiloApi';
+import { metricsApi, alertsApi, agentsApi, wmiApi } from '../services/resiloApi';
 import {
   ArrowLeft, RefreshCw, Activity, Server, Clock,
   AlertTriangle, CheckCircle2, Terminal, Zap, Wifi,
@@ -285,14 +285,18 @@ function AlertRow({ alert }) {
 }
 
 // ─── Action button ────────────────────────────────────────────────────────────
-function ActionBtn({ label, desc, icon: Icon, action, agentId, orgId, onResult }) {
+function ActionBtn({ label, desc, icon: Icon, action, agentId, orgId, wmiTargetId, onResult }) {
   const [state, setState] = useState('idle'); // idle | busy | ok | err
 
   const run = async () => {
     if (state === 'busy') return;
     setState('busy');
     try {
-      await agentsApi.sendCommand(orgId, agentId, action);
+      if (wmiTargetId) {
+        await wmiApi.remediate(orgId, wmiTargetId, action);
+      } else {
+        await agentsApi.sendCommand(orgId, agentId, action);
+      }
       setState('ok');
       onResult?.(`${label} completed`);
     } catch (e) {
@@ -348,7 +352,7 @@ function ActionBtn({ label, desc, icon: Icon, action, agentId, orgId, onResult }
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function AgentDashboard({ agent, orgId, onClose }) {
+export default function AgentDashboard({ agent, orgId, wmiTargetId, onClose }) {
   const [history,    setHistory]    = useState([]);
   const [alerts,     setAlerts]     = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -547,6 +551,9 @@ export default function AgentDashboard({ agent, orgId, onClose }) {
               )}
               {uptime != null && (
                 <Chip icon={Clock} label={fmtUptime(uptime)} color={T.teal} />
+              )}
+              {(pi.source === 'wmi' || wmiTargetId) && (
+                <Chip icon={Wifi} label="WMI / AGENTLESS" color={T.blue} />
               )}
             </div>
 
@@ -799,18 +806,29 @@ export default function AgentDashboard({ agent, orgId, onClose }) {
                   REMEDIATION
                 </span>
               </div>
+              {wmiTargetId && (
+                <div style={{
+                  margin: '8px 12px 0', padding: '8px 12px',
+                  background: `${T.blue}0a`, border: `1px solid ${T.blue}20`,
+                  borderRadius: 7, fontFamily: T.mono, fontSize: '9px',
+                  color: T.blue, letterSpacing: '0.06em', lineHeight: 1.5,
+                }}>
+                  WMI AGENT — commands execute via WinRM directly
+                </div>
+              )}
               <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {[
-                  { label: 'FREE MEMORY',  desc: 'Trigger garbage collection',    icon: Zap,      action: 'free_memory'  },
-                  { label: 'CLEAR CACHE',  desc: 'Flush DNS / page cache',        icon: RefreshCw, action: 'clear_cache' },
-                  { label: 'DISK CLEANUP', desc: 'Remove temp files',             icon: HardDrive, action: 'disk_cleanup' },
-                  { label: 'RUN GC',       desc: 'Force Python GC cycle',         icon: Activity,  action: 'run_gc'       },
+                  { label: 'FREE MEMORY',  desc: 'Trigger garbage collection / empty working sets', icon: Zap,      action: 'free_memory'  },
+                  { label: 'CLEAR CACHE',  desc: 'Flush DNS + clear temp files',                   icon: RefreshCw, action: 'clear_cache' },
+                  { label: 'DISK CLEANUP', desc: 'Remove temp / Windows temp files',               icon: HardDrive, action: 'disk_cleanup' },
+                  { label: 'RUN GC',       desc: 'Force .NET/Python garbage collection',            icon: Activity,  action: 'run_gc'       },
                 ].map(a => (
                   <ActionBtn
                     key={a.action}
                     {...a}
                     agentId={agent.id}
                     orgId={orgId}
+                    wmiTargetId={wmiTargetId}
                     onResult={showToast}
                   />
                 ))}

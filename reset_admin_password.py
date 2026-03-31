@@ -20,10 +20,10 @@ try:
 except ImportError:
     pass
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://aiops:aiops@localhost:5432/aiops"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    print("ERROR: DATABASE_URL is not set. Add it to your .env file.", file=sys.stderr)
+    sys.exit(1)
 
 ADMIN_EMAIL = "admin@company.local"
 
@@ -85,7 +85,14 @@ if __name__ == "__main__":
         idx = sys.argv.index("--password")
         pw = sys.argv[idx + 1]
     else:
-        pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@1234")
+        pw = os.getenv("ADMIN_DEFAULT_PASSWORD")
+        if not pw:
+            print(
+                "ERROR: No password provided. Either pass --password <pw> or set "
+                "ADMIN_DEFAULT_PASSWORD in your .env file.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if len(pw) < 8:
         print("ERROR: Password must be at least 8 characters.")

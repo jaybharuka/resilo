@@ -276,7 +276,12 @@ class AuthenticationManager:
     
     def __init__(self, jwt_secret: str = None):
         """Initialize authentication manager"""
-        self.jwt_secret = jwt_secret or secrets.token_urlsafe(32)
+        self.jwt_secret = jwt_secret or os.environ.get("GATEWAY_JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
+        if not self.jwt_secret:
+            raise RuntimeError(
+                "No JWT secret available for AuthenticationManager. "
+                "Set GATEWAY_JWT_SECRET (or JWT_SECRET_KEY) in your .env file."
+            )
         self.api_keys: Dict[str, APIKey] = {}
         self.user_sessions: Dict[str, Dict[str, Any]] = {}
         self.certificate_store: Dict[str, str] = {}

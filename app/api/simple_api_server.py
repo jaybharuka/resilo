@@ -22,7 +22,11 @@ except ImportError as e:
     GEMINI_AVAILABLE = False
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all domains
+_SIMPLE_ORIGINS = [o.strip() for o in os.environ.get('ALLOWED_ORIGINS', '').split(',') if o.strip()]
+CORS(app, resources={r"/*": {
+    "origins": _SIMPLE_ORIGINS,
+    "supports_credentials": True,
+}})
 
 # Boot time for uptime calculation
 BOOT_TIME = datetime.fromtimestamp(psutil.boot_time())

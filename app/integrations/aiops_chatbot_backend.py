@@ -10,6 +10,14 @@ import psutil
 import subprocess
 import threading
 import os
+
+# Load .env and validate required secrets before any other local imports
+_here = os.path.dirname(os.path.abspath(__file__))       # app/integrations
+_app  = os.path.dirname(_here)                            # app/
+if _app not in sys.path:
+    sys.path.insert(0, _app)
+from secret_config import validate_secrets
+validate_secrets("JWT_SECRET_KEY", "SECRET_KEY")
 from datetime import datetime, timedelta
 import platform as py_platform
 from flask import Flask, request, jsonify, render_template_string, Response, send_file
@@ -187,7 +195,7 @@ def _add_cors_headers(resp):
     return resp
 
 # --- Security/Auth configuration ---
-SECRET_KEY = os.getenv('SECRET_KEY') or os.getenv('AIOPS_SECRET_KEY') or 'dev-secret-change-me'
+SECRET_KEY = os.getenv('SECRET_KEY') or os.getenv('AIOPS_SECRET_KEY')   # guaranteed by validate_secrets() above
 ACCESS_TOKEN_TTL = int(os.getenv('ACCESS_TOKEN_TTL_SECONDS', '1800'))  # 30m
 REFRESH_TOKEN_TTL = int(os.getenv('REFRESH_TOKEN_TTL_SECONDS', '2592000'))  # 30d
 TOKEN_ISSUER = 'aiops-bot'
@@ -2011,10 +2019,9 @@ def analyze():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ---- System Actions (no auth; demo acks with real context) ----
+# ---- System Actions (JWT required) ----
 @app.route('/actions/memory-cleanup', methods=['POST'])
 @auth_required
-@role_required('admin')
 def action_memory_cleanup():
     try:
         # Optional JSON body for extra flags
@@ -2230,7 +2237,6 @@ def action_memory_cleanup():
 
 @app.route('/actions/disk-cleanup', methods=['POST'])
 @auth_required
-@role_required('admin')
 def action_disk_cleanup():
     try:
         d = psutil.disk_usage('/')
@@ -2320,6 +2326,7 @@ def action_disk_cleanup():
         return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/actions/process-monitor', methods=['POST'])
+@auth_required
 def action_process_monitor():
     try:
         procs = []
@@ -2344,7 +2351,6 @@ def action_process_monitor():
 
 @app.route('/actions/emergency-stop', methods=['POST'])
 @auth_required
-@role_required('admin')
 def action_emergency_stop():
     try:
         data = request.get_json(silent=True) or {}

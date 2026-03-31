@@ -44,6 +44,10 @@ coverage/
 tmpclaude-*-cwd
 dashboard/tmpclaude-*-cwd
 
+# Claude Code local session settings (machine-specific, not project config)
+.claude/settings.json
+.claude/settings.local.json
+
 # Runtime databases (auto-generated)
 *.db
 

@@ -38,7 +38,7 @@
     "eject": "react-scripts eject",
     "server": "node server.js",
     "dev": "nodemon server.js",
-    "start-all": "concurrently \"cross-env PORT=3011 nodemon server.js\" \"cross-env PORT=3001 BROWSER=none craco start\""
+    "start-all": "concurrently \"cross-env PORT=3002 nodemon server.js\" \"cross-env PORT=3000 BROWSER=none craco start\""
   },
   "eslintConfig": {
     "extends": [

@@ -98,6 +98,8 @@ class User(Base):
     created_at:           Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:           Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login:           Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_attempts:      Mapped[int]                = mapped_column(Integer, default=0, nullable=False)
+    locked_until:         Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     sessions: Mapped[list["UserSession"]] = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
 
@@ -446,10 +448,64 @@ class WmiInvite(Base):
 
 # ── DB init ───────────────────────────────────────────────────────────────────
 
+async def _run_migrations() -> None:
+    """
+    Apply pending SQL migration files from the repo-root migrations/ directory.
+    Tracks applied migrations in a lightweight 'schema_migrations' table.
+    TimescaleDB migrations are skipped gracefully when the extension is absent.
+    """
+    import logging
+    import pathlib
+    log = logging.getLogger("database")
+
+    migrations_dir = pathlib.Path(__file__).parent.parent.parent / "migrations"
+    if not migrations_dir.exists():
+        return
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    filename   TEXT PRIMARY KEY,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+
+    for sql_file in sorted(migrations_dir.glob("*.sql")):
+        async with engine.begin() as conn:
+            row = await conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT 1 FROM schema_migrations WHERE filename = :f"
+                ),
+                {"f": sql_file.name},
+            )
+            if row.fetchone():
+                continue  # already applied
+
+        sql = sql_file.read_text(encoding="utf-8")
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(__import__("sqlalchemy").text(sql))
+                await conn.execute(
+                    __import__("sqlalchemy").text(
+                        "INSERT INTO schema_migrations (filename) VALUES (:f)"
+                    ),
+                    {"f": sql_file.name},
+                )
+            log.info("Applied migration: %s", sql_file.name)
+        except Exception as exc:
+            log.info(
+                "Skipped migration %s (TimescaleDB likely absent): %s",
+                sql_file.name, exc,
+            )
+
+
 async def init_db() -> None:
     """
-    Create all tables (idempotent). If TimescaleDB extension is present,
-    converts metric_snapshots to a hypertable and applies a retention policy.
+    Create all ORM tables (idempotent), then apply SQL migrations.
     Safe to call on every startup.
     """
     import logging
@@ -458,25 +514,22 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(lambda c: Base.metadata.create_all(c, checkfirst=True))
 
-    # TimescaleDB hypertable (best-effort — graceful fallback to plain Postgres)
-    async with engine.begin() as conn:
-        try:
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "SELECT create_hypertable('metric_snapshots', 'timestamp', "
-                    "if_not_exists => TRUE, migrate_data => TRUE)"
-                )
-            )
-            if TIMESCALE_RETENTION_DAYS > 0:
+    await _run_migrations()
+
+    # Retention policy is kept in application code because it is driven by
+    # TIMESCALE_RETENTION_DAYS, an operator-configurable env var.
+    if TIMESCALE_RETENTION_DAYS > 0:
+        async with engine.begin() as conn:
+            try:
                 await conn.execute(
                     __import__("sqlalchemy").text(
                         f"SELECT add_retention_policy('metric_snapshots', "
                         f"INTERVAL '{TIMESCALE_RETENTION_DAYS} days', if_not_exists => TRUE)"
                     )
                 )
-            log.info("TimescaleDB hypertable enabled for metric_snapshots (retention=%dd)", TIMESCALE_RETENTION_DAYS)
-        except Exception as exc:
-            log.info("TimescaleDB not available — using plain PostgreSQL for metrics (%s)", exc)
+                log.info("TimescaleDB retention policy set: %d days", TIMESCALE_RETENTION_DAYS)
+            except Exception:
+                pass  # TimescaleDB not available — plain PostgreSQL mode
 
 
 async def get_db():

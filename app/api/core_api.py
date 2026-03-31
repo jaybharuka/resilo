@@ -34,15 +34,11 @@ for _p in [_here, _app, _root,
     if _p not in _sys.path:
         _sys.path.insert(0, _p)
 
-# Load .env from repo root so DATABASE_URL, JWT_SECRET_KEY etc. are available
-_env_file = os.path.join(_root, '.env')
-if os.path.exists(_env_file):
-    with open(_env_file) as _ef:
-        for _line in _ef:
-            _line = _line.strip()
-            if _line and not _line.startswith('#') and '=' in _line:
-                _k, _v = _line.split('=', 1)
-                os.environ.setdefault(_k.strip(), _v.strip())
+import sys as _sys2
+if _app not in _sys2.path:
+    _sys2.path.insert(0, _app)
+from secret_config import validate_secrets
+validate_secrets("JWT_SECRET_KEY")
 
 import asyncio
 import hashlib
@@ -541,7 +537,7 @@ async def whoami(request: Request):
     """Debug: decode the Bearer token without enforcing permissions."""
     import base64 as _b64, json as _json
     from jose import jwt as _jwt, JWTError as _JWTError
-    _secret = os.getenv("JWT_SECRET_KEY", "dev-secret")
+    _secret = os.getenv("JWT_SECRET_KEY")
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return {"error": "no bearer token"}
@@ -1186,11 +1182,19 @@ async def list_metrics(
     token: TokenPayload = Depends(require("metrics:read")),
     db: AsyncSession = Depends(get_db),
 ):
+    # Default to the last 24 h when no explicit window is given.
+    # This prevents unbounded scans on the hypertable and keeps response times
+    # predictable as data volume grows.
+    _default_from = datetime.now(timezone.utc) - timedelta(hours=24)
+
     q = select(MetricSnapshot).where(MetricSnapshot.org_id == org_id)
     if agent_id:
         q = q.where(MetricSnapshot.agent_id == agent_id)
-    if from_ts:
-        q = q.where(MetricSnapshot.timestamp >= datetime.fromisoformat(from_ts))
+    q = q.where(
+        MetricSnapshot.timestamp >= (
+            datetime.fromisoformat(from_ts) if from_ts else _default_from
+        )
+    )
     if to_ts:
         q = q.where(MetricSnapshot.timestamp <= datetime.fromisoformat(to_ts))
     q = q.order_by(desc(MetricSnapshot.timestamp)).limit(min(limit, 1000))
@@ -1223,6 +1227,93 @@ async def latest_metrics(
         )
     )
     return [_snap_out(s) for s in result.scalars().all()]
+
+
+@app.get("/api/orgs/{org_id}/metrics/aggregate")
+@limiter.limit("60/minute")
+async def aggregate_metrics(
+    request: Request,
+    org_id: str,
+    agent_id: Optional[str] = None,
+    bucket: str = "1 hour",
+    hours: int = 24,
+    token: TokenPayload = Depends(require("metrics:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    TimescaleDB time_bucket() aggregation: returns avg CPU/memory/disk per
+    time bucket over the requested window.  Falls back to a plain GROUP BY
+    on non-TimescaleDB instances (slower but correct).
+    """
+    from sqlalchemy import text
+
+    # Validate bucket string to prevent injection (only allow digits + known units)
+    import re as _re
+    if not _re.fullmatch(r"\d+\s*(second|minute|hour|day|week)s?", bucket.strip()):
+        raise HTTPException(status_code=400, detail="Invalid bucket interval")
+
+    from_ts = datetime.now(timezone.utc) - timedelta(hours=max(1, min(hours, 720)))
+    agent_filter = "AND agent_id = :agent_id" if agent_id else ""
+
+    try:
+        # TimescaleDB path: time_bucket() collapses rows into fixed-size chunks
+        sql = text(f"""
+            SELECT
+                time_bucket(:bucket, timestamp)       AS bucket,
+                agent_id,
+                avg(cpu)                              AS avg_cpu,
+                avg(memory)                           AS avg_memory,
+                avg(disk)                             AS avg_disk,
+                avg(network_in)                       AS avg_net_in,
+                avg(network_out)                      AS avg_net_out
+            FROM metric_snapshots
+            WHERE org_id    = :org_id
+              AND timestamp >= :from_ts
+              {agent_filter}
+            GROUP BY bucket, agent_id
+            ORDER BY bucket DESC, agent_id
+        """)
+        params: dict = {"bucket": bucket, "org_id": org_id, "from_ts": from_ts}
+        if agent_id:
+            params["agent_id"] = agent_id
+        rows = (await db.execute(sql, params)).mappings().all()
+    except Exception:
+        # Plain-PostgreSQL fallback: date_trunc is not ideal for variable
+        # bucket sizes but works correctly for hour/day granularity.
+        unit = bucket.strip().rstrip("s")
+        sql = text(f"""
+            SELECT
+                date_trunc(:unit, timestamp)          AS bucket,
+                agent_id,
+                avg(cpu)                              AS avg_cpu,
+                avg(memory)                           AS avg_memory,
+                avg(disk)                             AS avg_disk,
+                avg(network_in)                       AS avg_net_in,
+                avg(network_out)                      AS avg_net_out
+            FROM metric_snapshots
+            WHERE org_id    = :org_id
+              AND timestamp >= :from_ts
+              {agent_filter}
+            GROUP BY bucket, agent_id
+            ORDER BY bucket DESC, agent_id
+        """)
+        params = {"unit": unit, "org_id": org_id, "from_ts": from_ts}
+        if agent_id:
+            params["agent_id"] = agent_id
+        rows = (await db.execute(sql, params)).mappings().all()
+
+    return [
+        {
+            "bucket":     row["bucket"].isoformat() if row["bucket"] else None,
+            "agent_id":   row["agent_id"],
+            "avg_cpu":    round(row["avg_cpu"]    or 0, 2),
+            "avg_memory": round(row["avg_memory"] or 0, 2),
+            "avg_disk":   round(row["avg_disk"]   or 0, 2),
+            "avg_net_in": round(row["avg_net_in"] or 0, 2),
+            "avg_net_out":round(row["avg_net_out"]or 0, 2),
+        }
+        for row in rows
+    ]
 
 
 def _snap_out(s: MetricSnapshot) -> dict:
@@ -1950,7 +2041,7 @@ async def _send_summary_bg(org_id: str) -> None:
 async def _wmi_polling_loop():
     """Load all active WMI targets from DB on startup, then start the poller."""
     from wmi_poller import wmi_poller, decrypt_password
-    interval = int(os.getenv("WMI_POLL_INTERVAL", "30"))
+    interval = int(os.getenv("WMI_POLL_INTERVAL", "10"))
     await asyncio.sleep(8)   # let DB settle
 
     async with SessionLocal() as db:
@@ -2006,14 +2097,54 @@ async def list_wmi_targets(
     token: TokenPayload = Depends(require("agents:read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all WMI polling targets for this org."""
+    """List all WMI polling targets for this org, with latest metrics embedded."""
     await _fetch_org(db, org_id)
     result = await db.execute(
         select(WMITarget)
         .where(WMITarget.org_id == org_id)
         .order_by(WMITarget.created_at)
     )
-    return [_wmi_target_out(t) for t in result.scalars().all()]
+    targets = result.scalars().all()
+
+    # Fetch latest MetricSnapshot for each target's agent_id in one query
+    agent_ids = [t.agent_id for t in targets if t.agent_id]
+    metrics_map: dict = {}
+    if agent_ids:
+        from sqlalchemy import func as _func
+        sub = (
+            select(
+                MetricSnapshot.agent_id,
+                _func.max(MetricSnapshot.timestamp).label("max_ts"),
+            )
+            .where(MetricSnapshot.agent_id.in_(agent_ids))
+            .group_by(MetricSnapshot.agent_id)
+            .subquery()
+        )
+        latest_rows = await db.execute(
+            select(MetricSnapshot).join(
+                sub,
+                (MetricSnapshot.agent_id == sub.c.agent_id) &
+                (MetricSnapshot.timestamp == sub.c.max_ts),
+            )
+        )
+        for snap in latest_rows.scalars().all():
+            metrics_map[snap.agent_id] = {
+                "cpu":         snap.cpu,
+                "memory":      snap.memory,
+                "disk":        snap.disk,
+                "network_in":  snap.network_in,
+                "network_out": snap.network_out,
+                "processes":   snap.processes,
+                "uptime_secs": snap.uptime_secs,
+                "timestamp":   snap.timestamp.isoformat() if snap.timestamp else None,
+            }
+
+    out = []
+    for t in targets:
+        row = _wmi_target_out(t)
+        row["metrics"] = metrics_map.get(t.agent_id) if t.agent_id else None
+        out.append(row)
+    return out
 
 
 @app.post("/api/orgs/{org_id}/wmi-targets", status_code=201)
@@ -2121,6 +2252,113 @@ async def test_wmi_target(
     return {"success": ok, "message": message, "host": target.host}
 
 
+_WMI_REMEDIATION_PS: dict = {
+    "clear_cache": (
+        "Clear-DnsClientCache -ErrorAction SilentlyContinue; "
+        "Remove-Item -Path \"$env:TEMP\\*\" -Recurse -Force -ErrorAction SilentlyContinue; "
+        "Write-Output 'cache_cleared'"
+    ),
+    "disk_cleanup": (
+        "Remove-Item -Path \"$env:TEMP\\*\" -Recurse -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -Path \"C:\\Windows\\Temp\\*\" -Recurse -Force -ErrorAction SilentlyContinue; "
+        "Write-Output 'disk_cleaned'"
+    ),
+    "free_memory": (
+        "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); "
+        "[System.GC]::Collect(); Write-Output 'memory_freed'"
+    ),
+    "run_gc": (
+        "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); "
+        "Write-Output 'gc_complete'"
+    ),
+    "restart_service": (
+        "param([string]$Name='Spooler'); "
+        "Restart-Service -Name $Name -Force -ErrorAction SilentlyContinue; "
+        "Write-Output \"restarted_$Name\""
+    ),
+    "kill_process": (
+        "param([string]$Name=''); if($Name){ "
+        "Stop-Process -Name $Name -Force -ErrorAction SilentlyContinue; "
+        "Write-Output \"killed_$Name\" } else { Write-Output 'no_name' }"
+    ),
+}
+
+
+class WmiRemediateRequest(BaseModel):
+    action: str
+    params: dict = {}
+
+
+@app.post("/api/orgs/{org_id}/wmi-targets/{target_id}/remediate")
+@limiter.limit("10/minute")
+async def wmi_remediate(
+    request: Request,
+    org_id: str,
+    target_id: str,
+    body: WmiRemediateRequest,
+    token: TokenPayload = Depends(require("remediation:execute")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Execute a remediation action on a WMI target machine directly via WinRM.
+    Unlike agent-based remediation (which uses pending_cmds + heartbeat),
+    this runs the PowerShell command synchronously over WinRM.
+    """
+    from wmi_poller import wmi_poller, decrypt_password
+
+    if body.action not in AGENT_ALLOWLIST:
+        raise HTTPException(400, f"Action not allowed: {sorted(AGENT_ALLOWLIST)}")
+    if body.action not in _WMI_REMEDIATION_PS:
+        raise HTTPException(400, f"No WMI PS mapping for action: {body.action}")
+
+    await _fetch_org(db, org_id)
+    result = await db.execute(
+        select(WMITarget).where(WMITarget.id == target_id, WMITarget.org_id == org_id)
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(404, "WMI target not found")
+
+    password = decrypt_password(target.enc_password)
+    ps_cmd = _WMI_REMEDIATION_PS[body.action]
+
+    # Inject params (e.g. service name, process name)
+    if body.params.get("service_name"):
+        ps_cmd = f"$Name='{body.params['service_name']}'; " + ps_cmd
+    elif body.params.get("process_name"):
+        ps_cmd = f"$Name='{body.params['process_name']}'; " + ps_cmd
+
+    loop = asyncio.get_event_loop()
+    ok, output = await loop.run_in_executor(
+        None,
+        wmi_poller.execute_command_sync,
+        target.host, target.username, password, target.port, ps_cmd,
+    )
+
+    cmd_id = str(uuid.uuid4())
+    record = RemediationRecord(
+        id=cmd_id,
+        org_id=org_id,
+        agent_id=target.agent_id,
+        action=body.action,
+        params=body.params,
+        source="manual",
+        triggered_by=token.sub,
+        status="success" if ok else "failed",
+        result=output,
+        error=None if ok else output,
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        verified=ok,
+    )
+    db.add(record)
+    await db.commit()
+
+    await _audit(db, org_id, token.sub, "wmi_remediation.executed", "remediation", cmd_id,
+                 {"action": body.action, "target": target.host, "ok": ok})
+    return {"ok": ok, "cmd_id": cmd_id, "output": output, "action": body.action}
+
+
 @app.delete("/api/orgs/{org_id}/wmi-targets/{target_id}", status_code=204)
 async def delete_wmi_target(
     org_id: str,
@@ -2173,18 +2411,23 @@ async def create_wmi_invite(
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
 
+    # Validate that token.sub references a real PostgreSQL user; fall back to None
+    # when auth comes from the legacy Flask/SQLite auth system (different ID space).
+    pg_user = await db.get(User, token.sub)
+    creator_id = token.sub if pg_user else None
+
     invite = WmiInvite(
         org_id=org_id,
         token_hash=token_hash,
-        created_by=token.sub,
+        created_by=creator_id,
         expires_at=expires_at,
     )
     db.add(invite)
     await db.commit()
     await db.refresh(invite)
 
-    dashboard_url = os.getenv("DASHBOARD_URL", "http://localhost:3001")
-    connect_command = f"irm {dashboard_url}/connect.ps1?token={raw_token} | iex"
+    api_url = os.getenv("CORE_API_URL", "http://localhost:8000")
+    connect_command = f"irm {api_url}/connect.ps1?token={raw_token} | iex"
 
     return {
         "invite_id": invite.id,
@@ -2325,8 +2568,105 @@ async def get_wmi_invite_status(
 
 # ── User-facing setup guide (no auth — safe to share) ─────────────────────────
 
+@app.get("/connect.ps1", response_class=None)
+async def serve_connect_ps1(
+    token: str,
+    request: Request,
+    _auth: TokenPayload = Depends(require("agents:write")),
+):
+    """
+    PowerShell bootstrap script served to Windows machines via:
+        irm http://<server>:8000/connect.ps1?token=<TOKEN> | iex
+
+    The script:
+      1. Enables WinRM (one-time, requires Admin)
+      2. Creates a local 'aiops-monitor' account with a random password
+      3. Collects hostname / IP / OS info
+      4. POSTs to /api/wmi-register to self-register
+    """
+    from fastapi.responses import PlainTextResponse
+    api_base = os.getenv("CORE_API_URL",
+        f"http://{request.headers.get('host', 'localhost:8000')}")
+    ps = r"""
+$ErrorActionPreference = 'Stop'
+$token   = '__TOKEN__'
+$apiBase = '__API_BASE__'
+
+Write-Host '[AIOps] Starting machine registration...' -ForegroundColor Cyan
+
+# 1 - Enable WinRM
+try {
+    Enable-PSRemoting -Force -SkipNetworkProfileCheck | Out-Null
+    Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -ErrorAction SilentlyContinue
+    Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -ErrorAction SilentlyContinue
+    Write-Host '[AIOps] WinRM enabled.' -ForegroundColor Green
+} catch {
+    Write-Host "[AIOps] WinRM warning: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# 2 - Create / update local monitoring account
+$monUser = 'aiops-monitor'
+$chars   = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#'
+$monPass = -join ((1..20) | ForEach-Object { $chars[(Get-Random -Max $chars.Length)] })
+try {
+    $existing = Get-LocalUser -Name $monUser -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        $secPass = ConvertTo-SecureString $monPass -AsPlainText -Force
+        New-LocalUser -Name $monUser -Password $secPass -PasswordNeverExpires `
+            -UserMayNotChangePassword -Description 'AIOps monitoring account' | Out-Null
+        Add-LocalGroupMember -Group 'Administrators' -Member $monUser -ErrorAction SilentlyContinue
+        Write-Host '[AIOps] Monitoring account created.' -ForegroundColor Green
+    } else {
+        $secPass = ConvertTo-SecureString $monPass -AsPlainText -Force
+        Set-LocalUser -Name $monUser -Password $secPass
+        Write-Host '[AIOps] Monitoring account password refreshed.' -ForegroundColor Green
+    }
+} catch {
+    Write-Host "[AIOps] Account setup warning: $($_.Exception.Message)" -ForegroundColor Yellow
+    $monUser = $env:USERNAME
+    $monPass = ''
+}
+
+# 3 - Gather machine info
+$hostname = $env:COMPUTERNAME
+try {
+    $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1
+    $ip = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop).IPAddress
+} catch { $ip = '127.0.0.1' }
+$osCaption = (Get-WmiObject Win32_OperatingSystem).Caption
+$arch      = $env:PROCESSOR_ARCHITECTURE
+
+# 4 - Register with AIOps
+$body = @{
+    token    = $token
+    hostname = $hostname
+    ip       = $ip
+    os       = $osCaption
+    arch     = $arch
+    username = $monUser
+    password = $monPass
+    port     = 5985
+} | ConvertTo-Json -Compress
+
+try {
+    $resp = Invoke-RestMethod -Uri "$apiBase/api/wmi-register" -Method POST `
+        -Body $body -ContentType 'application/json'
+    Write-Host "[AIOps] SUCCESS: Machine '$($resp.label)' registered!" -ForegroundColor Green
+    Write-Host "[AIOps] Agent ID : $($resp.agent_id)" -ForegroundColor Cyan
+    Write-Host '[AIOps] Metrics will appear in the dashboard within 30 seconds.' -ForegroundColor Cyan
+} catch {
+    Write-Host "[AIOps] Registration FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+"""
+    ps = ps.replace("__TOKEN__", token).replace("__API_BASE__", api_base)
+    return PlainTextResponse(ps.strip(), media_type="text/plain")
+
+
 @app.get("/api/wmi/setup-guide")
-async def wmi_setup_guide():
+async def wmi_setup_guide(
+    _auth: TokenPayload = Depends(require("agents:read")),
+):
     """
     Returns the PowerShell command the end-user needs to run ONCE on their
     Windows machine to allow WinRM polling from the AIOps server.

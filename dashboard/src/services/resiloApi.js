@@ -1,5 +1,5 @@
 /**
- * resiloApi.js — Core API client (port 8001)
+ * resiloApi.js — Core API client via dashboard gateway
  *
  * All endpoints are org-scoped: data is automatically filtered to the
  * authenticated user's org_id (read from their JWT via /auth/me).
@@ -16,11 +16,10 @@ const CORE_BASE_URL = (() => {
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname } = window.location;
-      return `${protocol}//${hostname}:8001`;
+      return window.location.origin;
     }
   } catch {}
-  return 'http://localhost:8001';
+  return 'http://localhost:3001';
 })();
 
 const coreAxios = axios.create({
@@ -41,9 +40,12 @@ coreAxios.interceptors.request.use((config) => {
   return config;
 });
 
-// Read org_id from stored user profile (cached in localStorage as 'aiops:user')
+// Read org_id — prefers the PostgreSQL org_id cached by orgsApi.resolveAndCache().
+// Falls back to the org_id in aiops:user (which may be a legacy SQLite company_id).
 function getOrgId() {
   try {
+    const pgOrgId = localStorage.getItem('aiops:pgOrgId');
+    if (pgOrgId) return pgOrgId;
     const raw = localStorage.getItem('aiops:user');
     if (raw) {
       const u = JSON.parse(raw);
@@ -185,6 +187,30 @@ export const wmiApi = {
     const oid = orgId || getOrgId();
     const res = await coreAxios.get(`${orgPath(oid)}/wmi-invite/${inviteId}/status`);
     return res.data;
+  },
+
+  remediate: async (orgId, targetId, action, params = {}) => {
+    const oid = orgId || getOrgId();
+    const res = await coreAxios.post(`${orgPath(oid)}/wmi-targets/${targetId}/remediate`, { action, params });
+    return res.data;
+  },
+};
+
+// ── Orgs ─────────────────────────────────────────────────────────────────────
+
+export const orgsApi = {
+  /** Admin only: fetch all orgs from core_api and cache the first org's ID as aiops:pgOrgId. */
+  resolveAndCache: async () => {
+    try {
+      const res = await coreAxios.get('/api/orgs');
+      const orgs = res.data;
+      if (Array.isArray(orgs) && orgs.length > 0) {
+        const orgId = orgs[0].id;
+        try { localStorage.setItem('aiops:pgOrgId', orgId); } catch {}
+        return orgId;
+      }
+    } catch {}
+    return null;
   },
 };
 

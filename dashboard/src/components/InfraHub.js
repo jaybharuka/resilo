@@ -15,7 +15,7 @@ import {
   Server, Users, WifiOff, AlertTriangle, CheckCircle2, RefreshCw,
   Plus, Copy, Terminal, Key, UserPlus, Trash2,
   Activity, Layers, Eye, EyeOff,
-  Zap, Globe, Clock, ArrowUpRight, Monitor, Wifi,
+  Zap, Globe, Clock, ArrowUpRight, ArrowRight, ArrowLeft, Monitor, Wifi,
   Search, ChevronDown, Square, CheckSquare, X,
 } from 'lucide-react';
 
@@ -711,13 +711,38 @@ function UserRow({ user, onToggle, onRoleChange, onDelete, isMe, selected, onSel
   );
 }
 
-// ─── WMI Row (inline test result + inline delete confirm) ─────────────────────
+// ─── Tiny metric pill: label + bar + value ────────────────────────────────────
+function MetricPill({ label, value, color }) {
+  const c = color || (value == null ? C.muted : value > 85 ? C.red : value > 70 ? C.amber : C.teal);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 52 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <span style={{ ...mono({ fontSize: '8px', color: C.muted }), letterSpacing: '0.07em' }}>{label}</span>
+        <span style={{ ...mono({ fontSize: '9px', color: c }), fontWeight: 600 }}>
+          {value != null ? `${value.toFixed(0)}%` : '—'}
+        </span>
+      </div>
+      <div style={{ height: 3, borderRadius: 2, background: C.border, overflow: 'hidden', width: '100%' }}>
+        <div style={{
+          height: '100%', width: `${Math.min(100, value ?? 0)}%`,
+          background: c, borderRadius: 2, transition: 'width 0.6s ease',
+        }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── WMI Row (inline metrics + test + delete) ─────────────────────────────────
 function WMIRow({ target: t, orgId, onDelete, onRefresh }) {
   const [testing,    setTesting]    = useState(false);
-  const [testResult, setTestResult] = useState(null); // { ok, text }
+  const [testResult, setTestResult] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const sc = t.last_status === 'ok' ? C.teal : t.last_status === 'pending' ? C.amber : C.red;
+  const m  = t.metrics || {};
+
+  const netInKB = m.network_in  != null ? (m.network_in  / 1024).toFixed(1) : null;
+  const netOutKB= m.network_out != null ? (m.network_out / 1024).toFixed(1) : null;
 
   const handleTest = async () => {
     setTesting(true); setTestResult(null);
@@ -748,6 +773,29 @@ function WMIRow({ target: t, orgId, onDelete, onRefresh }) {
       </td>
       <td style={{ padding: '10px 16px', ...ui({ fontSize: '13px', color: C.text }) }}>{t.label}</td>
       <td style={{ padding: '10px 16px', ...mono({ fontSize: '10px', color: C.sub }) }}>{t.host}:{t.port}</td>
+
+      {/* ── Inline live metrics ── */}
+      <td style={{ padding: '8px 16px' }}>
+        {t.last_status === 'ok' && (m.cpu != null || m.memory != null || m.disk != null) ? (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <MetricPill label="CPU"  value={m.cpu}    />
+            <MetricPill label="MEM"  value={m.memory} />
+            <MetricPill label="DISK" value={m.disk}   />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 72 }}>
+              <span style={{ ...mono({ fontSize: '8px', color: C.muted }), letterSpacing: '0.07em' }}>NET IN/OUT</span>
+              <span style={{ ...mono({ fontSize: '9px', color: C.blue }) }}>
+                {netInKB != null ? `↓${netInKB} KB/s` : '—'}
+                {netOutKB != null ? ` ↑${netOutKB}` : ''}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <span style={{ ...mono({ fontSize: '9px', color: C.muted }) }}>
+            {t.last_status === 'ok' ? 'COLLECTING…' : 'NO DATA'}
+          </span>
+        )}
+      </td>
+
       <td style={{ padding: '10px 16px', ...mono({ fontSize: '10px', color: C.muted }) }}>{relTime(t.last_polled)}</td>
       <td style={{ padding: '10px 16px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
@@ -784,83 +832,131 @@ function WMIRow({ target: t, orgId, onDelete, onRefresh }) {
 
 // ─── WMI Add Machine Modal ────────────────────────────────────────────────────
 function WMIModal({ orgId, onClose, onCreated }) {
+  // method: null (choose) | 'bootstrap' | 'direct'
+  const [method, setMethod] = useState(null);
+
+  // ── Bootstrap state ───────────────────────────────────────────────────────
   // step: 'idle' | 'generating' | 'waiting' | 'done' | 'expired' | 'error'
-  const [step,       setStep]     = useState('idle');
-  const [invite,     setInvite]   = useState(null);   // { invite_id, connect_command, expires_at }
-  const [result,     setResult]   = useState(null);   // { machine_label, registered_agent_id }
-  const [copied,     setCopied]   = useState(false);
-  const [error,      setError]    = useState('');
-  const [countdown,  setCountdown] = useState(0);     // seconds remaining
+  const [bStep,      setBStep]     = useState('idle');
+  const [invite,     setInvite]    = useState(null);
+  const [bResult,    setBResult]   = useState(null);
+  const [copied,     setCopied]    = useState(false);
+  const [bError,     setBError]    = useState('');
+  const [countdown,  setCountdown] = useState(0);
   const pollRef  = useRef(null);
   const timerRef = useRef(null);
 
-  // Cleanup on unmount
+  // ── Direct credentials state ──────────────────────────────────────────────
+  const [dLabel,    setDLabel]    = useState('');
+  const [dHost,     setDHost]     = useState('');
+  const [dPort,     setDPort]     = useState('5985');
+  const [dUser,     setDUser]     = useState('');
+  const [dPass,     setDPass]     = useState('');
+  const [dBusy,     setDBusy]     = useState(false);
+  const [dStep,     setDStep]     = useState('idle'); // idle | done | error
+  const [dResult,   setDResult]   = useState(null);
+  const [dError,    setDError]    = useState('');
+  const [showPass,  setShowPass]  = useState(false);
+
   useEffect(() => () => {
     clearInterval(pollRef.current);
     clearInterval(timerRef.current);
   }, []);
 
+  // ── Bootstrap helpers ─────────────────────────────────────────────────────
   const generate = async () => {
-    setStep('generating'); setError('');
+    setBStep('generating'); setBError('');
     try {
       const data = await wmiApi.createInvite(orgId);
       setInvite(data);
       const expMs = new Date(data.expires_at).getTime();
       setCountdown(Math.max(0, Math.round((expMs - Date.now()) / 1000)));
-      setStep('waiting');
-
-      // Countdown ticker
+      setBStep('waiting');
       timerRef.current = setInterval(() => {
-        setCountdown(c => {
-          if (c <= 1) { clearInterval(timerRef.current); return 0; }
-          return c - 1;
-        });
+        setCountdown(c => { if (c <= 1) { clearInterval(timerRef.current); return 0; } return c - 1; });
       }, 1000);
-
-      // Poll for completion every 3s
       pollRef.current = setInterval(async () => {
         try {
           const status = await wmiApi.pollInvite(orgId, data.invite_id);
           if (status.used) {
-            clearInterval(pollRef.current);
-            clearInterval(timerRef.current);
-            setResult({ machine_label: status.machine_label, agent_id: status.registered_agent_id });
-            setStep('done');
-            onCreated?.();
+            clearInterval(pollRef.current); clearInterval(timerRef.current);
+            setBResult({ machine_label: status.machine_label, agent_id: status.registered_agent_id });
+            setBStep('done'); onCreated?.();
           } else if (status.expired) {
-            clearInterval(pollRef.current);
-            clearInterval(timerRef.current);
-            setStep('expired');
+            clearInterval(pollRef.current); clearInterval(timerRef.current);
+            setBStep('expired');
           }
-        } catch (_) { /* silent — keep polling */ }
+        } catch (_) {}
       }, 3000);
     } catch (e) {
-      setStep('error');
-      setError(e?.response?.data?.detail || e?.message || 'Failed to generate invite');
+      setBStep('error');
+      setBError(e?.response?.data?.detail || e?.message || 'Failed to generate invite');
     }
   };
 
   const copyCmd = () => {
     if (!invite?.connect_command) return;
     navigator.clipboard.writeText(invite.connect_command);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+    setCopied(true); setTimeout(() => setCopied(false), 2500);
   };
 
-  const reset = () => {
-    clearInterval(pollRef.current);
-    clearInterval(timerRef.current);
-    setStep('idle'); setInvite(null); setResult(null); setError(''); setCopied(false); setCountdown(0);
+  const resetBootstrap = () => {
+    clearInterval(pollRef.current); clearInterval(timerRef.current);
+    setBStep('idle'); setInvite(null); setBResult(null); setBError(''); setCopied(false); setCountdown(0);
   };
 
   const fmtCountdown = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  // ── Direct credentials submit ─────────────────────────────────────────────
+  const submitDirect = async () => {
+    if (!dLabel.trim() || !dHost.trim() || !dUser.trim() || !dPass.trim()) return;
+    setDBusy(true); setDError('');
+    try {
+      const data = await wmiApi.create(orgId, {
+        label: dLabel.trim(),
+        host: dHost.trim(),
+        port: parseInt(dPort, 10) || 5985,
+        username: dUser.trim(),
+        password: dPass,
+      });
+      setDResult(data);
+      setDStep('done');
+      onCreated?.();
+    } catch (e) {
+      setDStep('error');
+      setDError(e?.response?.data?.detail || e?.message || 'Failed to add machine');
+    } finally { setDBusy(false); }
+  };
+
+  // ── Shared overlay wrapper ────────────────────────────────────────────────
+  const busy = bStep === 'waiting' || dBusy;
+  const Field = ({ label: lbl, value, onChange, type = 'text', placeholder, right }) => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.muted }) }}>{lbl}</div>
+      <div style={{ position: 'relative' }}>
+        <input
+          type={type} value={value} onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(0,0,0,0.3)', border: `1px solid ${C.border}`,
+            borderRadius: 7, padding: right ? '7px 36px 7px 10px' : '7px 10px',
+            ...mono({ fontSize: '12px', color: C.text }), outline: 'none',
+          }}
+          onFocus={e => { e.target.style.borderColor = `${C.blue}60`; }}
+          onBlur={e => { e.target.style.borderColor = C.border; }}
+        />
+        {right}
+      </div>
+    </div>
+  );
 
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 1000, display: 'flex',
       alignItems: 'center', justifyContent: 'center',
       background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(6px)',
-    }} onClick={() => step !== 'waiting' && onClose()}>
+    }} onClick={() => !busy && onClose()}>
       <div style={{
         background: C.panel, border: `1px solid ${C.border}`,
         borderRadius: 16, padding: '28px 30px', width: '100%', maxWidth: 540,
@@ -883,205 +979,317 @@ function WMIModal({ orgId, onClose, onCreated }) {
               ADD WINDOWS MACHINE
             </div>
             <div style={{ ...ui({ fontSize: '12px', color: C.sub, marginTop: 3, lineHeight: 1.5 }) }}>
-              Zero-input agentless onboarding — user runs one command, machine registers automatically.
+              {method === 'bootstrap'
+                ? 'Zero-input — user runs one command, machine registers automatically.'
+                : method === 'direct'
+                  ? 'Enter credentials to poll this machine via WinRM.'
+                  : 'Choose how to connect the Windows machine.'}
             </div>
           </div>
-          {step !== 'waiting' && (
-            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, padding: 4, marginTop: -2 }}>
-              <X size={15} />
+          {!busy && (
+            <button onClick={method ? () => setMethod(null) : onClose}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, padding: 4, marginTop: -2 }}>
+              {method ? <ArrowLeft size={15} /> : <X size={15} />}
             </button>
           )}
         </div>
 
-        {/* ── IDLE: explain + generate button ── */}
-        {step === 'idle' && (
-          <>
-            {/* How it works */}
-            <div style={{
-              background: 'rgba(96,165,250,0.05)', border: `1px solid ${C.blue}20`,
-              borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
-            }}>
-              <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.blue }) }}>HOW IT WORKS</div>
-              {[
-                ['1', 'Click Generate — a secure one-time token is created (expires in 30 min)'],
-                ['2', 'Copy the one-line command and send it to the user (email / Slack / Teams)'],
-                ['3', 'User opens PowerShell as Administrator, pastes and runs the command'],
-                ['4', 'The machine auto-configures WinRM, creates a monitoring account, and registers here instantly'],
-              ].map(([n, text]) => (
-                <div key={n} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <div style={{
-                    width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
-                    background: `${C.blue}18`, border: `1px solid ${C.blue}30`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    ...mono({ fontSize: '10px', color: C.blue }),
-                  }}>{n}</div>
-                  <div style={{ ...ui({ fontSize: '12px', color: C.sub, lineHeight: 1.55 }) }}>{text}</div>
+        {/* ── METHOD SELECTION ── */}
+        {!method && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {[
+              {
+                id: 'bootstrap',
+                icon: Zap, color: C.teal,
+                title: 'Zero-Input Bootstrap',
+                desc: 'Generate a one-time token. User pastes one PowerShell command — machine configures WinRM and registers itself automatically. No credentials needed upfront.',
+                badge: 'RECOMMENDED',
+              },
+              {
+                id: 'direct',
+                icon: Monitor, color: C.blue,
+                title: 'Direct Credentials',
+                desc: 'Enter the machine\'s hostname/IP, WinRM port, and Windows credentials. The server will start polling immediately. Requires WinRM already enabled on the target.',
+                badge: 'MANUAL',
+              },
+            ].map(opt => (
+              <button key={opt.id} onClick={() => setMethod(opt.id)} style={{
+                background: 'rgba(0,0,0,0.2)', border: `1px solid ${C.border}`,
+                borderRadius: 12, padding: '16px 18px', cursor: 'pointer',
+                display: 'flex', gap: 14, alignItems: 'flex-start', textAlign: 'left',
+                transition: 'border-color 0.15s, background 0.15s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = `${opt.color}50`; e.currentTarget.style.background = `${opt.color}08`; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = 'rgba(0,0,0,0.2)'; }}>
+                <div style={{
+                  width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+                  background: `${opt.color}14`, border: `1px solid ${opt.color}30`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <opt.icon size={17} color={opt.color} />
                 </div>
-              ))}
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ ...ui({ fontSize: '13px', fontWeight: 600, color: C.text }) }}>{opt.title}</span>
+                    <span style={{ ...mono({ fontSize: '8px', color: opt.color }), background: `${opt.color}14`, padding: '2px 7px', borderRadius: 4 }}>{opt.badge}</span>
+                  </div>
+                  <div style={{ ...ui({ fontSize: '11px', color: C.muted, lineHeight: 1.55 }) }}>{opt.desc}</div>
+                </div>
+                <ArrowRight size={14} color={C.muted} style={{ flexShrink: 0, marginTop: 12 }} />
+              </button>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Btn variant="ghost" onClick={onClose}>CANCEL</Btn>
-              <Btn variant="teal" onClick={generate}>
-                <Key size={12} /> GENERATE BOOTSTRAP COMMAND
-              </Btn>
             </div>
-          </>
-        )}
-
-        {/* ── GENERATING spinner ── */}
-        {step === 'generating' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
-            <RefreshCw size={16} color={C.teal} style={{ animation: 'spin 1s linear infinite' }} />
-            <span style={{ ...mono({ fontSize: '11px', color: C.sub }) }}>Generating secure token…</span>
           </div>
         )}
 
-        {/* ── WAITING: show command + live polling indicator ── */}
-        {step === 'waiting' && invite && (
+        {/* ── BOOTSTRAP FLOW ── */}
+        {method === 'bootstrap' && (
           <>
-            {/* Countdown */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              background: countdown < 120 ? `${C.amber}0a` : `${C.teal}08`,
-              border: `1px solid ${countdown < 120 ? C.amber : C.teal}25`,
-              borderRadius: 9, padding: '9px 14px',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Clock size={12} color={countdown < 120 ? C.amber : C.teal} />
-                <span style={{ ...mono({ fontSize: '10px', color: countdown < 120 ? C.amber : C.teal }) }}>
-                  TOKEN EXPIRES IN
-                </span>
-              </div>
-              <span style={{ ...mono({ fontSize: '14px', letterSpacing: '0.05em', color: countdown < 120 ? C.amber : C.teal }) }}>
-                {fmtCountdown(countdown)}
-              </span>
-            </div>
-
-            {/* Step 1: command block */}
-            <div>
-              <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.muted, marginBottom: 8 }) }}>
-                STEP 1 — SEND THIS COMMAND TO THE USER (COPY → PASTE IN POWERSHELL AS ADMIN)
-              </div>
-              <div style={{
-                background: 'rgba(0,0,0,0.45)', border: `1px solid ${C.teal}30`,
-                borderRadius: 9, padding: '12px 14px',
-                display: 'flex', flexDirection: 'column', gap: 10,
-              }}>
+            {bStep === 'idle' && (
+              <>
                 <div style={{
-                  ...mono({ fontSize: '12px', color: C.teal, lineHeight: 1.6, wordBreak: 'break-all' }),
+                  background: 'rgba(96,165,250,0.05)', border: `1px solid ${C.blue}20`,
+                  borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
                 }}>
-                  {invite.connect_command}
+                  <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.blue }) }}>HOW IT WORKS</div>
+                  {[
+                    ['1', 'Click Generate — a secure one-time token is created (expires in 30 min)'],
+                    ['2', 'Copy the one-line command and send it to the user (email / Slack / Teams)'],
+                    ['3', 'User opens PowerShell as Administrator, pastes and runs the command'],
+                    ['4', 'Machine auto-configures WinRM, creates a monitoring account, and registers here instantly'],
+                  ].map(([n, text]) => (
+                    <div key={n} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{
+                        width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                        background: `${C.blue}18`, border: `1px solid ${C.blue}30`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        ...mono({ fontSize: '10px', color: C.blue }),
+                      }}>{n}</div>
+                      <div style={{ ...ui({ fontSize: '12px', color: C.sub, lineHeight: 1.55 }) }}>{text}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={onClose}>CANCEL</Btn>
+                  <Btn variant="teal" onClick={generate}><Key size={12} /> GENERATE BOOTSTRAP COMMAND</Btn>
+                </div>
+              </>
+            )}
+
+            {bStep === 'generating' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+                <RefreshCw size={16} color={C.teal} style={{ animation: 'spin 1s linear infinite' }} />
+                <span style={{ ...mono({ fontSize: '11px', color: C.sub }) }}>Generating secure token…</span>
+              </div>
+            )}
+
+            {bStep === 'waiting' && invite && (
+              <>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: countdown < 120 ? `${C.amber}0a` : `${C.teal}08`,
+                  border: `1px solid ${countdown < 120 ? C.amber : C.teal}25`,
+                  borderRadius: 9, padding: '9px 14px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Clock size={12} color={countdown < 120 ? C.amber : C.teal} />
+                    <span style={{ ...mono({ fontSize: '10px', color: countdown < 120 ? C.amber : C.teal }) }}>TOKEN EXPIRES IN</span>
+                  </div>
+                  <span style={{ ...mono({ fontSize: '14px', letterSpacing: '0.05em', color: countdown < 120 ? C.amber : C.teal }) }}>
+                    {fmtCountdown(countdown)}
+                  </span>
+                </div>
+                <div>
+                  <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.muted, marginBottom: 8 }) }}>
+                    SEND THIS COMMAND TO THE USER (PASTE IN POWERSHELL AS ADMIN)
+                  </div>
+                  <div style={{
+                    background: 'rgba(0,0,0,0.45)', border: `1px solid ${C.teal}30`,
+                    borderRadius: 9, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10,
+                  }}>
+                    <div style={{ ...mono({ fontSize: '12px', color: C.teal, lineHeight: 1.6, wordBreak: 'break-all' }) }}>
+                      {invite.connect_command}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <Btn variant={copied ? 'teal' : 'ghost'} onClick={copyCmd}>
+                        <Copy size={11} /> {copied ? 'COPIED!' : 'COPY COMMAND'}
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 14,
+                  background: `${C.blue}07`, border: `1px solid ${C.blue}18`,
+                  borderRadius: 10, padding: '14px 16px',
+                }}>
+                  <div style={{ position: 'relative', width: 20, height: 20, flexShrink: 0 }}>
+                    <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.blue}40`, animation: 'pulse-ring 1.8s ease-out infinite' }} />
+                    <div style={{ position: 'absolute', inset: 4, borderRadius: '50%', background: C.blue, opacity: 0.8, animation: 'pulse-dot 1.8s ease-out infinite' }} />
+                  </div>
+                  <div>
+                    <div style={{ ...mono({ fontSize: '10px', letterSpacing: '0.08em', color: C.blue }) }}>WAITING FOR MACHINE TO CONNECT…</div>
+                    <div style={{ ...ui({ fontSize: '11px', color: C.muted, marginTop: 3 }) }}>Polling every 3 seconds. This dialog will update automatically.</div>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <Btn variant={copied ? 'teal' : 'ghost'} onClick={copyCmd}>
-                    <Copy size={11} /> {copied ? 'COPIED!' : 'COPY COMMAND'}
+                  <Btn variant="ghost" onClick={() => { resetBootstrap(); onClose(); }}>CANCEL</Btn>
+                </div>
+              </>
+            )}
+
+            {bStep === 'done' && bResult && (
+              <>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 14,
+                  background: `${C.teal}0d`, border: `1px solid ${C.teal}30`,
+                  borderRadius: 12, padding: '16px 18px',
+                }}>
+                  <CheckCircle2 size={26} color={C.teal} style={{ flexShrink: 0 }} />
+                  <div>
+                    <div style={{ ...mono({ fontSize: '12px', letterSpacing: '0.08em', color: C.teal }) }}>MACHINE REGISTERED</div>
+                    <div style={{ ...ui({ fontSize: '13px', color: C.text, marginTop: 4 }) }}>{bResult.machine_label}</div>
+                    <div style={{ ...mono({ fontSize: '10px', color: C.muted, marginTop: 3 }) }}>WinRM polling active — metrics will appear in Fleet within 30s</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Btn variant="teal" onClick={onClose}>DONE</Btn>
+                </div>
+              </>
+            )}
+
+            {bStep === 'expired' && (
+              <>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  background: `${C.amber}0a`, border: `1px solid ${C.amber}30`,
+                  borderRadius: 10, padding: '14px 16px',
+                }}>
+                  <AlertTriangle size={20} color={C.amber} />
+                  <div>
+                    <div style={{ ...mono({ fontSize: '11px', color: C.amber }) }}>TOKEN EXPIRED</div>
+                    <div style={{ ...ui({ fontSize: '12px', color: C.sub, marginTop: 3 }) }}>
+                      The 30-minute window closed before the machine connected. Generate a new token.
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={onClose}>CLOSE</Btn>
+                  <Btn variant="primary" onClick={resetBootstrap}><RefreshCw size={11} /> GENERATE NEW TOKEN</Btn>
+                </div>
+              </>
+            )}
+
+            {bStep === 'error' && (
+              <>
+                <div style={{ ...mono({ fontSize: '10px', color: C.red }), background: `${C.red}0d`, border: `1px solid ${C.red}25`, borderRadius: 8, padding: '10px 14px' }}>
+                  {bError}
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={onClose}>CLOSE</Btn>
+                  <Btn variant="primary" onClick={resetBootstrap}>RETRY</Btn>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ── DIRECT CREDENTIALS FLOW ── */}
+        {method === 'direct' && (
+          <>
+            {dStep === 'idle' && (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <Field label="LABEL (friendly name)" value={dLabel} onChange={setDLabel} placeholder="e.g. Jay's Workstation" />
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <div style={{ flex: 3 }}>
+                      <Field label="HOST / IP ADDRESS" value={dHost} onChange={setDHost} placeholder="192.168.1.100 or hostname" />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <Field label="PORT" value={dPort} onChange={setDPort} placeholder="5985" />
+                    </div>
+                  </div>
+                  <Field label="WINDOWS USERNAME" value={dUser} onChange={setDUser} placeholder=".\Administrator or DOMAIN\user" />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    <div style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.muted }) }}>PASSWORD</div>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showPass ? 'text' : 'password'}
+                        value={dPass} onChange={e => setDPass(e.target.value)}
+                        placeholder="Windows account password"
+                        style={{
+                          width: '100%', boxSizing: 'border-box',
+                          background: 'rgba(0,0,0,0.3)', border: `1px solid ${C.border}`,
+                          borderRadius: 7, padding: '7px 36px 7px 10px',
+                          ...mono({ fontSize: '12px', color: C.text }), outline: 'none',
+                        }}
+                        onFocus={e => { e.target.style.borderColor = `${C.blue}60`; }}
+                        onBlur={e => { e.target.style.borderColor = C.border; }}
+                      />
+                      <button onClick={() => setShowPass(p => !p)} style={{
+                        position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                        background: 'none', border: 'none', cursor: 'pointer', color: C.muted, padding: 0,
+                        ...mono({ fontSize: '9px', letterSpacing: '0.05em' }),
+                      }}>{showPass ? 'HIDE' : 'SHOW'}</button>
+                    </div>
+                  </div>
+                  <div style={{
+                    background: `${C.amber}08`, border: `1px solid ${C.amber}20`,
+                    borderRadius: 8, padding: '10px 12px',
+                    ...mono({ fontSize: '10px', color: C.amber, lineHeight: 1.6 }),
+                  }}>
+                    Ensure WinRM is enabled on the target machine:<br />
+                    <span style={{ color: C.teal }}>Enable-PSRemoting -Force -SkipNetworkProfileCheck</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={onClose}>CANCEL</Btn>
+                  <Btn variant="primary" disabled={dBusy || !dLabel.trim() || !dHost.trim() || !dUser.trim() || !dPass.trim()} onClick={submitDirect}>
+                    {dBusy ? <><RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} /> ADDING…</> : <><Monitor size={11} /> ADD MACHINE</>}
                   </Btn>
                 </div>
-              </div>
-            </div>
+              </>
+            )}
 
-            {/* Step 2: waiting indicator */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 14,
-              background: `${C.blue}07`, border: `1px solid ${C.blue}18`,
-              borderRadius: 10, padding: '14px 16px',
-            }}>
-              <div style={{ position: 'relative', width: 20, height: 20, flexShrink: 0 }}>
+            {dStep === 'done' && dResult && (
+              <>
                 <div style={{
-                  position: 'absolute', inset: 0, borderRadius: '50%',
-                  border: `2px solid ${C.blue}40`,
-                  animation: 'pulse-ring 1.8s ease-out infinite',
-                }} />
-                <div style={{
-                  position: 'absolute', inset: 4, borderRadius: '50%',
-                  background: C.blue, opacity: 0.8,
-                  animation: 'pulse-dot 1.8s ease-out infinite',
-                }} />
-              </div>
-              <div>
-                <div style={{ ...mono({ fontSize: '10px', letterSpacing: '0.08em', color: C.blue }) }}>
-                  WAITING FOR MACHINE TO CONNECT…
+                  display: 'flex', alignItems: 'center', gap: 14,
+                  background: `${C.teal}0d`, border: `1px solid ${C.teal}30`,
+                  borderRadius: 12, padding: '16px 18px',
+                }}>
+                  <CheckCircle2 size={26} color={C.teal} style={{ flexShrink: 0 }} />
+                  <div>
+                    <div style={{ ...mono({ fontSize: '12px', letterSpacing: '0.08em', color: C.teal }) }}>MACHINE ADDED</div>
+                    <div style={{ ...ui({ fontSize: '13px', color: C.text, marginTop: 4 }) }}>{dResult.label} — {dResult.host}</div>
+                    <div style={{ ...mono({ fontSize: '10px', color: C.muted, marginTop: 3 }) }}>
+                      WMI polling started — use TEST to verify connectivity, then metrics will flow in within 30s.
+                    </div>
+                    {dResult.setup_guide && (
+                      <div style={{ ...mono({ fontSize: '10px', color: C.amber, marginTop: 6, lineHeight: 1.6 }) }}>
+                        {dResult.setup_guide}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div style={{ ...ui({ fontSize: '11px', color: C.muted, marginTop: 3 }) }}>
-                  Polling every 3 seconds. This dialog will update automatically.
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Btn variant="teal" onClick={onClose}>DONE</Btn>
                 </div>
-              </div>
-            </div>
+              </>
+            )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Btn variant="ghost" onClick={() => { reset(); onClose(); }}>CANCEL</Btn>
-            </div>
-          </>
-        )}
-
-        {/* ── DONE: machine registered ── */}
-        {step === 'done' && result && (
-          <>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 14,
-              background: `${C.teal}0d`, border: `1px solid ${C.teal}30`,
-              borderRadius: 12, padding: '16px 18px',
-            }}>
-              <CheckCircle2 size={26} color={C.teal} style={{ flexShrink: 0 }} />
-              <div>
-                <div style={{ ...mono({ fontSize: '12px', letterSpacing: '0.08em', color: C.teal }) }}>
-                  MACHINE REGISTERED
+            {dStep === 'error' && (
+              <>
+                <div style={{ ...mono({ fontSize: '10px', color: C.red }), background: `${C.red}0d`, border: `1px solid ${C.red}25`, borderRadius: 8, padding: '10px 14px' }}>
+                  {dError}
                 </div>
-                <div style={{ ...ui({ fontSize: '13px', color: C.text, marginTop: 4 }) }}>
-                  {result.machine_label}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={onClose}>CLOSE</Btn>
+                  <Btn variant="primary" onClick={() => setDStep('idle')}>RETRY</Btn>
                 </div>
-                <div style={{ ...mono({ fontSize: '10px', color: C.muted, marginTop: 3 }) }}>
-                  WinRM polling active — metrics will appear in Fleet within 30s
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Btn variant="teal" onClick={onClose}>DONE</Btn>
-            </div>
-          </>
-        )}
-
-        {/* ── EXPIRED ── */}
-        {step === 'expired' && (
-          <>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              background: `${C.amber}0a`, border: `1px solid ${C.amber}30`,
-              borderRadius: 10, padding: '14px 16px',
-            }}>
-              <AlertTriangle size={20} color={C.amber} />
-              <div>
-                <div style={{ ...mono({ fontSize: '11px', color: C.amber }) }}>TOKEN EXPIRED</div>
-                <div style={{ ...ui({ fontSize: '12px', color: C.sub, marginTop: 3 }) }}>
-                  The 30-minute window closed before the machine connected. Generate a new token.
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <Btn variant="ghost" onClick={onClose}>CLOSE</Btn>
-              <Btn variant="primary" onClick={reset}>
-                <RefreshCw size={11} /> GENERATE NEW TOKEN
-              </Btn>
-            </div>
-          </>
-        )}
-
-        {/* ── ERROR ── */}
-        {step === 'error' && (
-          <>
-            <div style={{
-              ...mono({ fontSize: '10px', color: C.red }),
-              background: `${C.red}0d`, border: `1px solid ${C.red}25`,
-              borderRadius: 8, padding: '10px 14px',
-            }}>
-              {error}
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <Btn variant="ghost" onClick={onClose}>CLOSE</Btn>
-              <Btn variant="primary" onClick={reset}>RETRY</Btn>
-            </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1213,7 +1421,7 @@ export default function InfraHub() {
     fetchAll();
     fetchLocalAgents();
     fetchWmiTargets();
-    intervalRef.current = setInterval(() => { fetchAll(); fetchLocalAgents(); fetchWmiTargets(); }, 15000);
+    intervalRef.current = setInterval(() => { fetchAll(); fetchLocalAgents(); fetchWmiTargets(); }, 10000);
     return () => clearInterval(intervalRef.current);
   }, [fetchAll, fetchLocalAgents, fetchWmiTargets]);
 
@@ -1606,7 +1814,7 @@ export default function InfraHub() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                      {['STATUS', 'LABEL', 'HOST', 'LAST POLLED', 'ACTIONS'].map(h => (
+                      {['STATUS', 'LABEL', 'HOST', 'METRICS', 'LAST POLLED', 'ACTIONS'].map(h => (
                         <th key={h} style={{ ...mono({ fontSize: '9px', letterSpacing: '0.1em', color: C.muted }), padding: '8px 16px', textAlign: 'left', fontWeight: 400 }}>{h}</th>
                       ))}
                     </tr>
@@ -1729,13 +1937,18 @@ export default function InfraHub() {
       )}
 
       {/* Agent detail dashboard — full-screen overlay */}
-      {selectedAgent && (
-        <AgentDashboard
-          agent={agents.find(a => a.id === selectedAgent.id) || selectedAgent}
-          orgId={orgId}
-          onClose={() => setSelectedAgent(null)}
-        />
-      )}
+      {selectedAgent && (() => {
+        const liveAgent = agents.find(a => a.id === selectedAgent.id) || selectedAgent;
+        const matchedWmiTarget = wmiTargets.find(t => t.agent_id === liveAgent.id);
+        return (
+          <AgentDashboard
+            agent={liveAgent}
+            orgId={orgId}
+            wmiTargetId={matchedWmiTarget?.id}
+            onClose={() => setSelectedAgent(null)}
+          />
+        );
+      })()}
     </>
   );
 }
