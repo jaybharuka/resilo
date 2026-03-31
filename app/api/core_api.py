@@ -52,7 +52,7 @@ from typing import Optional, List, Any
 import bcrypt
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from pythonjsonlogger import jsonlogger
@@ -161,6 +161,13 @@ async def _startup():
 # live psutil metrics so all org members can see them without deploying an agent.
 
 _LOCAL_AGENT_LABEL = "local-server"
+
+# ── SSE config & fan-out ──────────────────────────────────────────────────────
+# Each connected /stream/metrics client registers its own asyncio.Queue here.
+# _local_metrics_loop puts snapshots into every queue so the SSE stream is
+# driven by real data events rather than an independent sleep timer.
+SSE_HEARTBEAT_SECONDS: int = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
+_metrics_subscribers: set[asyncio.Queue] = set()
 
 async def _get_or_create_local_agent(db: AsyncSession, org_id: str) -> Agent:
     """Return the built-in local-server agent for the given org, creating it if needed."""
@@ -277,6 +284,32 @@ async def _local_metrics_loop():
                     agent.status = "live"
                     agent.last_seen = datetime.now(timezone.utc)
                 await db.commit()
+
+                # Fan-out fresh metrics to all connected SSE /stream/metrics clients.
+                # Uses put_nowait so a slow consumer never blocks the collection loop.
+                if _metrics_subscribers:
+                    import json as _json
+                    snap_payload = {
+                        "org_id":      org.id,
+                        "agent_id":    agent.id,
+                        "timestamp":   datetime.now(timezone.utc).isoformat(),
+                        "cpu":         metrics["cpu"],
+                        "memory":      metrics["memory"],
+                        "disk":        metrics["disk"],
+                        "network_in":  metrics.get("network_in", 0),
+                        "network_out": metrics.get("network_out", 0),
+                        "temperature": metrics.get("temperature"),
+                        "processes":   metrics.get("processes"),
+                        "uptime_secs": metrics.get("uptime_secs"),
+                    }
+                    dead: set[asyncio.Queue] = set()
+                    for _q in _metrics_subscribers:
+                        try:
+                            _q.put_nowait(snap_payload)
+                        except asyncio.QueueFull:
+                            dead.add(_q)   # evict unresponsive consumer
+                    _metrics_subscribers.difference_update(dead)
+
         except Exception as exc:
             log.error("Local metrics collection failed: %s", exc)
         await asyncio.sleep(interval)
@@ -1164,6 +1197,119 @@ async def legacy_heartbeat(
     await db.commit()
 
     return {"ok": True, "agent_id": agent.id, "commands": pending}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STREAMING  (Server-Sent Events)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/stream/metrics", include_in_schema=True)
+async def stream_metrics(request: Request):
+    """
+    SSE stream of metric snapshots.
+
+    Emits a ``data: {…}`` event whenever _local_metrics_loop collects fresh
+    data (every ANOMALY_POLL_INTERVAL seconds, default 30 s).  Sends a
+    ``: heartbeat`` comment every SSE_HEARTBEAT_SECONDS to keep proxies alive.
+    Cleans up its subscriber queue the moment the client disconnects.
+    """
+    import json as _json
+
+    async def _generator():
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        _metrics_subscribers.add(q)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(
+                        q.get(), timeout=float(SSE_HEARTBEAT_SECONDS)
+                    )
+                    yield f"data: {_json.dumps(payload)}\n\n"
+                except asyncio.TimeoutError:
+                    # No new data within the heartbeat window — keep alive.
+                    yield ": heartbeat\n\n"
+        except asyncio.CancelledError:
+            pass   # client gone — exit silently
+        finally:
+            _metrics_subscribers.discard(q)
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
+
+
+@app.get("/stream/alerts", include_in_schema=True)
+async def stream_alerts(request: Request):
+    """
+    SSE stream of alert records.
+
+    Polls the DB every ANOMALY_POLL_INTERVAL seconds for alerts created after
+    the stream opened, emitting each new record immediately.  Heartbeats fill
+    any quiet window longer than SSE_HEARTBEAT_SECONDS.
+    """
+    import json as _json
+
+    poll_secs: int = int(os.getenv("ANOMALY_POLL_INTERVAL", "30"))
+
+    async def _generator():
+        since = datetime.now(timezone.utc)
+        loop = asyncio.get_event_loop()
+        next_poll      = loop.time() + poll_secs
+        next_heartbeat = loop.time() + SSE_HEARTBEAT_SECONDS
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                now = loop.time()
+
+                if now >= next_poll:
+                    next_poll = now + poll_secs
+                    try:
+                        async with SessionLocal() as db:
+                            result = await db.execute(
+                                select(AlertRecord)
+                                .where(AlertRecord.created_at > since)
+                                .order_by(AlertRecord.created_at)
+                                .limit(50)
+                            )
+                            new_alerts = list(result.scalars().all())
+                        for alert in new_alerts:
+                            yield f"data: {_json.dumps(_alert_out(alert))}\n\n"
+                            since = alert.created_at
+                            # Extend heartbeat deadline after emitting real data.
+                            next_heartbeat = loop.time() + SSE_HEARTBEAT_SECONDS
+                    except Exception as exc:
+                        log.error("SSE alerts poll error: %s", exc)
+
+                if now >= next_heartbeat:
+                    yield ": heartbeat\n\n"
+                    next_heartbeat = now + SSE_HEARTBEAT_SECONDS
+
+                # Small tick so disconnect is detected within 2 s.
+                await asyncio.sleep(2)
+
+        except asyncio.CancelledError:
+            pass   # client gone — exit silently
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
