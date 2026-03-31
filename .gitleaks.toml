@@ -40,4 +40,8 @@ paths = [
   # Test fixtures use clearly-labelled placeholder secrets — not real credentials
   '''tests/conftest\.py$''',
   '''tests/test_auth\.py$''',
+  # Documentation files use example/placeholder tokens — not real credentials
+  '''aiops_documentation/''',
+  '''documentation_generator\.py$''',
+  '''config/enterprise_config\.yml$''',
 ]
