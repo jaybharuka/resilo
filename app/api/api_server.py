@@ -10,6 +10,8 @@ import os
 import logging
 from collections import deque
 
+from flask import current_app
+
 # ---------------------------------------------------------------------------
 # In-memory login rate limiter
 # Tracks (ip, email) → list of attempt timestamps
@@ -332,9 +334,10 @@ def _require_auth():
         except Exception:
             pass  # fall through to legacy JWT check
     # Try legacy JWT (auth_system)
-    if auth_system:
+    a = _get_auth_system()
+    if a:
         try:
-            valid, _, _ = auth_system.verify_token(token)
+            valid, _, _ = a.verify_token(token)
             if valid:
                 return None
         except Exception:
@@ -550,6 +553,28 @@ try:
 except Exception as e:
     print(f"Warning: Could not initialize auth system: {e}")
 
+def _get_auth_system():
+    global auth_system
+    try:
+        a = getattr(current_app, 'auth_system', None)
+    except Exception:
+        a = None
+    if not a:
+        a = getattr(app, 'auth_system', None)
+    if a:
+        auth_system = a
+        return a
+    if AuthenticationSystem:
+        try:
+            a = AuthenticationSystem(db_path="aiops_auth.db")
+            auth_system = a
+            app.auth_system = a
+            return a
+        except Exception as e:
+            print(f"Warning: Could not initialize auth system: {e}")
+            return None
+    return None
+
 def collect_real_system_data():
     """Collect real system metrics using psutil and append to rolling history."""
     global system_data
@@ -563,12 +588,10 @@ def collect_real_system_data():
             disk   = psutil.disk_usage('/')
             net    = psutil.net_io_counters()
 
-            # Bytes delta → KB/s over the collection interval
             net_in_kbps  = round(max(0, net.bytes_recv - _prev_net.bytes_recv) / _interval / 1024, 2)
             net_out_kbps = round(max(0, net.bytes_sent - _prev_net.bytes_sent) / _interval / 1024, 2)
             _prev_net = net
 
-            # temperature (not available on all platforms)
             temp = None
             try:
                 temps = psutil.sensors_temperatures()
@@ -602,47 +625,6 @@ def collect_real_system_data():
             print(f"Error in system data collection: {e}")
 
         time.sleep(_interval)
-
-# ---------------------------------------------------------------------------
-# Pre-seed _perf_history at startup so the Analytics page has data immediately
-# ---------------------------------------------------------------------------
-def _seed_perf_history():
-    """Take one real psutil reading and backfill 60 synthetic history points
-    so charts are populated the moment the server starts (no waiting for the
-    10-second collection loop to accumulate enough points)."""
-    try:
-        import psutil
-        cpu   = psutil.cpu_percent(interval=0.5)
-        mem   = psutil.virtual_memory()
-        disk  = psutil.disk_usage('/')
-        net   = psutil.net_io_counters()
-        now   = datetime.now().timestamp()
-        # Generate 60 back-filled points spaced 10s apart (~10 mins of history)
-        for i in range(60, 0, -1):
-            jitter = lambda v, spread=2.5: round(min(100, max(0, v + random.uniform(-spread, spread))), 1)
-            snap = {
-                "cpu":          jitter(cpu, 3.0),
-                "memory":       jitter(mem.percent, 1.5),
-                "disk":         jitter(disk.percent, 0.2),
-                "network_in":   round(random.uniform(0, 50), 2),
-                "network_out":  round(random.uniform(0, 20), 2),
-                "temperature":  None,
-                "status":       "healthy",
-                "last_updated": datetime.fromtimestamp(now - i * 10).isoformat(),
-                "timestamp":    now - i * 10,
-            }
-            _perf_history.append(snap)
-        # Also update system_data so predictive endpoint has real values
-        system_data.update({
-            "cpu":     round(cpu, 1),
-            "memory":  round(mem.percent, 1),
-            "disk":    round(disk.percent, 1),
-        })
-        print(f"✅ Seeded performance history with 60 initial points (CPU={cpu}%, MEM={mem.percent}%, DISK={disk.percent}%)")
-    except Exception as e:
-        print(f"⚠️  Could not seed perf history: {e}")
-
-_seed_perf_history()
 
 # Start real metrics collection in a background thread
 simulation_thread = threading.Thread(target=collect_real_system_data, daemon=True)
@@ -749,8 +731,8 @@ def chat_with_ai():
                     f"{status_line}<br><br>"
                     f"<strong>Metrics:</strong><br>"
                     f"• CPU: <strong>{cpu}%</strong> ({psutil.cpu_count()} cores)<br>"
-                    f"• Memory: <strong>{mem.percent}%</strong> ({mem.used/1024**3:.1f} / {mem.total/1024**3:.1f} GB)<br>"
-                    f"• Disk: <strong>{disk.percent}%</strong> ({disk.free/1024**3:.1f} GB free)<br>"
+                    f"• Memory: <strong>{mem.percent}%</strong> | {mem.used/1024**3:.1f} / {mem.total/1024**3:.1f} GB<br>"
+                    f"• Disk: <strong>{disk.percent}%</strong> | {disk.free/1024**3:.1f} GB free<br>"
                     f"• Processes: <strong>{procs}</strong> running<br>"
                     f"• Network: ↑ {fmt(net.bytes_sent)} sent / ↓ {fmt(net.bytes_recv)} received<br><br>"
                     f"<strong>Assessment:</strong><br>{issue_text}"
@@ -877,8 +859,8 @@ def analyze_with_ai():
 @app.route('/auth/ping', methods=['GET', 'POST', 'OPTIONS'])
 def auth_ping():
     """Lightweight connectivity + CORS test — always returns 200."""
-    return jsonify({'ok': True, 'auth_system': bool(auth_system), 'db': getattr(auth_system, 'db_path', None)})
-
+    a = _get_auth_system()
+    return jsonify({'ok': True, 'auth_system': bool(a), 'db': getattr(a, 'db_path', None)})
 
 @app.route('/auth/login', methods=['POST'])
 @_rate_limit(os.environ.get('RATE_LIMIT_LOGIN', '10 per minute'))
@@ -894,7 +876,8 @@ def auth_login():
     if not email or not password:
         print("[LOGIN] rejected — missing email or password", flush=True)
         return jsonify({'error': 'Email and password are required'}), 400
-    if not auth_system:
+    a = _get_auth_system()
+    if not a:
         print("[LOGIN] rejected — auth_system is None", flush=True)
         return jsonify({'error': 'Auth system unavailable'}), 503
 
@@ -908,7 +891,7 @@ def auth_login():
         return resp, 429
 
     try:
-        conn = _sqlite3.connect(auth_system.db_path)
+        conn = _sqlite3.connect(a.db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT username FROM users WHERE email = ? OR username = ?', (email, email))
         row = cursor.fetchone()
@@ -923,7 +906,7 @@ def auth_login():
         return jsonify({'error': 'Invalid credentials'}), 401
 
     print(f"[LOGIN] found username={row[0]!r} — verifying password", flush=True)
-    success, user, error = auth_system.authenticate_user(row[0], password)
+    success, user, error = a.authenticate_user(row[0], password)
     if not success:
         print(f"[LOGIN] password mismatch — error={error!r}", flush=True)
         _record_attempt(client_ip, email, success=False)
@@ -932,17 +915,17 @@ def auth_login():
     _record_attempt(client_ip, email, success=True)
 
     # Check if 2FA is enabled for this user — if so, issue a temp token instead
-    totp_status = auth_system.get_totp_status(user.id)
+    totp_status = a.get_totp_status(user.id)
     if totp_status['enabled']:
         temp_token = _create_pending_2fa(user.id)
         return jsonify({'requires_2fa': True, 'temp_token': temp_token})
 
-    token = auth_system.generate_token(user)
+    token = a.generate_token(user)
     # Check if user must change their default password
     import sqlite3 as _sq3b
     must_change = False
     try:
-        c2 = _sq3b.connect(auth_system.db_path)
+        c2 = _sq3b.connect(a.db_path)
         r = c2.execute('SELECT must_change_password FROM users WHERE id = ?', (user.id,)).fetchone()
         c2.close()
         must_change = bool(r[0]) if r else False

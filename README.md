@@ -1,253 +1,266 @@
-# 🤖 AIOps Bot - Intelligent Operations Dashboard
+# Resilo Auth API
 
-A comprehensive AI-powered operations monitoring platform combining free Hugging Face AI models with a modern React dashboard for enterprise-grade system monitoring and insights.
+Enterprise-grade authentication and authorization service for multi-tenant SaaS applications.
 
-## 🌟 Features
+## Overview
 
-### 🤖 AI-Powered Monitoring
-- **Dual AI Engine**: Gemini Pro + Free Hugging Face models
-- **Sentiment Analysis**: Monitor user feedback and system logs
-- **Issue Classification**: Automatic categorization of problems
-- **Log Summarization**: AI-powered log analysis and insights
-- **Intelligent Chat**: Real-time AI assistant for troubleshooting
+Resilo Auth API provides secure, scalable authentication with:
+- **JWT-based access tokens** with configurable expiration
+- **Two-factor authentication (TOTP)** for enhanced security
+- **Multi-tenancy support** with org-scoped authorization
+- **Audit logging** for compliance and security monitoring
+- **Field-level encryption** for sensitive data at rest
+- **API key authentication** for service-to-service calls
+- **Comprehensive monitoring** with Prometheus metrics and distributed tracing
 
-### 📊 Real-Time Dashboard
-- **System Metrics**: CPU, Memory, Disk, Network monitoring
-- **Performance Charts**: Interactive time-series visualizations
-- **AI Insights Panel**: Smart recommendations and alerts
-- **Alert Management**: Centralized notification system
-- **Status Indicators**: Real-time service health monitoring
-
-### 🎨 Modern UI/UX
-- **Material-UI Design**: Professional, responsive interface
-- **Dark/Light Themes**: Customizable appearance
-- **Smooth Animations**: Framer Motion-powered interactions
-- **Mobile Responsive**: Works on all device sizes
-- **Real-time Updates**: Live data streaming
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-- Python 3.8+
-- Node.js 16+
-- 4GB RAM minimum
-- Internet connection (for AI models)
+- Python 3.9+
+- PostgreSQL 12+
+- 2GB RAM minimum
 
-### 🔥 One-Click Launch
+### 5-Minute Setup
+
 ```bash
-# Windows
-start_dashboard.bat
+# 1. Clone repository
+git clone https://github.com/resilo/resilo.git
+cd resilo
 
-# Manual start (all platforms)
-python api_server.py &
-cd dashboard && npm start
+# 2. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Generate encryption key
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# 5. Create .env file
+cp .env.example .env
+# Edit .env and add:
+# - JWT_SECRET_KEY (generate: python -c "import secrets; print(secrets.token_urlsafe(32))")
+# - ENCRYPTION_KEY (from step 4)
+# - DATABASE_URL (postgresql://user:password@localhost/aiops)
+
+# 6. Run migrations
+alembic upgrade head
+
+# 7. Start server
+python -m uvicorn app.api.auth_api:app --reload
 ```
 
-### 📦 Manual Installation
+Server runs at `http://localhost:5001`
 
-#### Backend Setup
+## Architecture
+
+```
+Resilo Auth API
+├── app/
+│   ├── api/
+│   │   └── auth_api.py           # FastAPI application
+│   ├── core/
+│   │   ├── database.py           # SQLAlchemy models
+│   │   ├── logging_config.py     # Structured logging
+│   │   ├── audit.py              # Audit logging
+│   │   ├── authz.py              # Authorization checks
+│   │   ├── apikey.py             # API key management
+│   │   ├── encryption.py         # Field-level encryption
+│   │   ├── secrets.py            # Secrets management
+│   │   ├── retention.py          # Data retention policies
+│   │   ├── backup.py             # Database backups
+│   │   ├── metrics.py            # Prometheus metrics
+│   │   ├── trace_context.py      # Distributed tracing
+│   │   └── http_client.py        # HTTP client helpers
+│   └── models/
+│       └── (Pydantic request/response models)
+├── tests/
+│   └── test_auth_api.py          # Pytest async tests
+├── alembic/                       # Database migrations
+├── requirements.txt               # Python dependencies
+├── .env.example                   # Environment template
+└── README.md                      # This file
+```
+
+## Key Features
+
+### Authentication
+- **JWT Tokens**: Configurable expiration (default 24h)
+- **Password Hashing**: bcrypt with salt
+- **2FA Support**: TOTP-based two-factor authentication
+- **Session Management**: Persistent user sessions with timeout
+
+### Authorization
+- **Role-Based Access Control**: admin, devops, viewer, manager, employee, guest
+- **Org-Scoped Access**: Users can only access their organization's data
+- **API Key Authentication**: Service-to-service calls with API keys
+
+### Security
+- **Field-Level Encryption**: Email and full_name encrypted at rest
+- **Audit Logging**: All sensitive operations logged for compliance
+- **Secrets Management**: Environment-based secrets with validation
+- **HTTPS Enforcement**: Enforced in production mode
+- **Rate Limiting**: Login (5/min), registration (3/hour)
+
+### Operations
+- **Automated Backups**: Daily database backups with retention policy
+- **Data Retention**: Automatic cleanup of expired sessions, tokens, and logs
+- **Health Checks**: Endpoints for monitoring backup and system health
+- **Prometheus Metrics**: Request latency, error rates, database queries
+- **Distributed Tracing**: W3C Trace Context propagation
+
+## Development
+
+### Running Tests
+
 ```bash
-# Install Python dependencies
-pip install flask flask-cors psutil transformers torch
+# Run all tests
+pytest tests/ -v
 
-# Start API server
-python api_server.py
+# Run specific test
+pytest tests/test_auth_api.py::test_login -v
+
+# Run with coverage
+pytest tests/ --cov=app --cov-report=html
 ```
 
-#### Frontend Setup
+### Code Quality
+
 ```bash
-# Navigate to dashboard
-cd dashboard
+# Format code
+black app/ tests/
 
-# Install dependencies
-npm install
+# Lint
+ruff check app/ tests/
 
-# Start development server
-npm start
+# Type checking
+mypy app/
 ```
 
-## 🔌 API Endpoints
+### Database Migrations
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | System health check |
-| `/api/system` | GET | Current system metrics |
-| `/api/insights` | GET | AI-generated insights |
-| `/api/alerts` | GET | Recent alerts and notifications |
-| `/api/chat` | POST | Chat with AI assistant |
-| `/api/analyze` | POST | AI text analysis |
-| `/api/performance` | GET | Historical performance data |
+```bash
+# Create new migration
+alembic revision --autogenerate -m "Add new column"
 
-## 🧠 AI Capabilities
+# Apply migrations
+alembic upgrade head
 
-### Hugging Face Models Used
-- **Sentiment Analysis**: `distilbert-base-uncased-finetuned-sst-2-english`
-- **Issue Classification**: `distilbert-base-uncased`
-- **Text Summarization**: `distilbart-cnn-12-6`
-- **Q&A System**: `distilbert-base-cased-distilled-squad`
-- **Emotion Detection**: `j-hartmann/emotion-english-distilroberta-base`
-
-### Sample AI Interactions
-```python
-# Sentiment Analysis
-analyze_sentiment("The system is running perfectly!")
-# → {'sentiment': 'POSITIVE', 'confidence': 0.9998}
-
-# Issue Classification
-classify_issue("Database connection timeout")
-# → {'category': 'database', 'confidence': 0.95}
-
-# Log Summarization
-summarize_logs("Multiple error logs...")
-# → "Critical database connectivity issues detected"
+# Rollback one migration
+alembic downgrade -1
 ```
 
-## 📊 Dashboard Components
+## API Endpoints
 
-### System Metrics
-- Real-time CPU, Memory, Disk usage
-- Network throughput monitoring
-- System temperature tracking
-- Process count and uptime
+### Authentication
+- `POST /auth/login` - Login with email/password
+- `POST /auth/logout` - Logout and invalidate session
+- `POST /auth/register` - Register new organization
+- `POST /auth/change-password` - Change user password
+- `POST /auth/forgot-password` - Request password reset
+- `POST /auth/reset-password` - Reset password with token
 
-### Performance Charts
-- Historical performance trends
-- Network traffic visualization
-- Temperature monitoring
-- Interactive tooltips and legends
+### Two-Factor Authentication
+- `POST /auth/2fa/setup` - Setup TOTP
+- `POST /auth/2fa/enable` - Enable 2FA
+- `POST /auth/2fa/disable` - Disable 2FA
 
-### AI Insights Panel
-- Smart performance recommendations
-- Anomaly detection alerts
-- Optimization suggestions
-- Confidence-scored insights
+### User Management
+- `GET /users` - List users (admin only)
+- `GET /users/{user_id}` - Get user details
+- `POST /users` - Create new user (admin only)
+- `PUT /users/{user_id}` - Update user (admin only)
+- `DELETE /users/{user_id}` - Deactivate user (admin only)
 
-### Real-time Chat
-- AI-powered troubleshooting assistant
-- Natural language query support
-- Context-aware responses
-- Integration with system metrics
+### Invites
+- `POST /auth/invites` - Create invite (admin only)
+- `GET /auth/invites` - List invites (admin only)
+- `DELETE /auth/invites/{token}` - Revoke invite (admin only)
+- `POST /auth/accept-invite` - Accept invite
 
-## 🔧 Configuration
+### API Keys
+- `POST /auth/api-keys` - Create API key (admin only)
+- `GET /auth/api-keys` - List API keys (admin only)
+- `DELETE /auth/api-keys/{key_id}` - Revoke API key (admin only)
+
+### Health & Monitoring
+- `GET /auth/health` - Service health check
+- `GET /auth/health/backups` - Backup health status
+- `GET /metrics` - Prometheus metrics
+
+## Configuration
 
 ### Environment Variables
+
+Required:
+- `JWT_SECRET_KEY` - Secret for signing JWT tokens (min 32 chars)
+- `ENCRYPTION_KEY` - Fernet key for field-level encryption
+- `DATABASE_URL` - PostgreSQL connection string
+
+Optional:
+- `ENVIRONMENT` - "development" or "production" (default: development)
+- `ADMIN_DEFAULT_PASSWORD` - Default admin password (default: Admin@1234)
+- `BACKUP_DIR` - Backup directory (default: ./backups)
+- `BACKUP_RETENTION_COUNT` - Backups to keep (default: 7)
+
+See `.env.example` for all options.
+
+## Deployment
+
+### Production Checklist
+
 ```bash
-# API Configuration
-API_PORT=5000
-API_HOST=0.0.0.0
+# 1. Verify secrets
+echo $JWT_SECRET_KEY $ENCRYPTION_KEY $DATABASE_URL
 
-# AI Model Settings
-HF_MODEL_CACHE_DIR=./models
-GEMINI_API_KEY=your_key_here
+# 2. Run migrations
+alembic upgrade head
 
-# Dashboard Settings
-REACT_APP_API_URL=http://localhost:5000
+# 3. Run tests
+pytest tests/ -v
+
+# 4. Create backup
+python -c "from app.core.backup import create_backup; create_backup()"
+
+# 5. Start service
+python -m uvicorn app.api.auth_api:app --host 0.0.0.0 --port 5001
 ```
 
-### Customization
-- Modify `api_server.py` for backend logic
-- Update React components in `dashboard/src/components/`
-- Customize themes in `dashboard/src/App.js`
-- Add new AI models in `huggingface_ai_integration.py`
+See `DEPLOYMENT.md` for detailed deployment procedures.
 
-## 🏗️ Architecture
+## Documentation
 
-```
-AIOps Bot System
-├── Backend (Python Flask)
-│   ├── api_server.py          # Main API server
-│   ├── enhanced_aiops_chatbot.py  # Core bot logic
-│   └── huggingface_ai_integration.py  # AI models
-├── Frontend (React)
-│   ├── src/
-│   │   ├── components/        # UI components
-│   │   ├── services/          # API integration
-│   │   └── App.js            # Main application
-│   └── package.json          # Dependencies
-└── CI/CD Pipeline
-    ├── .github/workflows/     # GitHub Actions
-    └── deployment/           # Deployment scripts
-```
+- `DEPLOYMENT.md` - Deployment guide with pre/post-deployment checklists
+- `INCIDENT_RESPONSE.md` - Incident response procedures and runbooks
+- `RUNBOOKS.md` - Operational runbooks for maintenance tasks
+- `SECRETS_MANAGEMENT.md` - Secrets management and rotation
+- `DATA_RETENTION.md` - Data retention policies and cleanup
+- `CHANGELOG.md` - Version history and release notes
 
-## 🎯 Use Cases
+## Contributing
 
-### DevOps Teams
-- Monitor production systems
-- Automated incident response
-- Performance optimization
-- Capacity planning
+1. Create feature branch: `git checkout -b feature/my-feature`
+2. Make changes and commit: `git commit -m "Add my feature"`
+3. Push to branch: `git push origin feature/my-feature`
+4. Open Pull Request
 
-### IT Operations
-- Infrastructure monitoring
-- Predictive maintenance
-- Alert management
-- System health dashboards
+### Code Style
+- Follow PEP 8
+- Use type hints
+- Write docstrings for functions
+- Add tests for new features
 
-### Business Intelligence
-- Performance reporting
-- Cost optimization insights
-- SLA monitoring
-- Trend analysis
+## Support
 
-## 🔐 Security Features
+- **Issues**: [GitHub Issues](https://github.com/resilo/resilo/issues)
+- **Documentation**: See docs/ directory
+- **Email**: support@resilo.io
 
-- CORS protection
-- Input validation
-- API rate limiting
-- Secure communication
-- Error handling
+## License
 
-## 📈 Performance
+MIT License - see LICENSE file for details
 
-### System Requirements
-- **Minimum**: 2GB RAM, 1 CPU core
-- **Recommended**: 4GB RAM, 2 CPU cores
-- **Storage**: 1GB for models and cache
-- **Network**: Broadband for model downloads
+## Version
 
-### Optimization Tips
-- Use local model caching
-- Enable compression
-- Implement connection pooling
-- Monitor memory usage
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Hugging Face**: For providing free AI models
-- **Material-UI**: For beautiful React components
-- **Framer Motion**: For smooth animations
-- **Flask**: For lightweight backend framework
-- **React**: For powerful frontend framework
-
-## 📞 Support
-
-- 📧 Email: support@aiopsbot.com
-- 💬 Discord: AIOps Community
-- 📖 Documentation: [Wiki](https://github.com/aiopsbot/wiki)
-- 🐛 Issues: [GitHub Issues](https://github.com/aiopsbot/issues)
-
----
-
-<div align="center">
-
-**🎉 Built with ❤️ for the DevOps Community**
-
-*Making AI-powered operations accessible to everyone*
-
-[![Demo](https://img.shields.io/badge/🎮-Live%20Demo-blue)](http://localhost:3000)
-[![API](https://img.shields.io/badge/🔌-API%20Docs-green)](http://localhost:5000/api/health)
-[![AI](https://img.shields.io/badge/🤖-AI%20Powered-purple)](https://huggingface.co/)
-
-</div>
+Current: 2.0.0 (see CHANGELOG.md for version history)
