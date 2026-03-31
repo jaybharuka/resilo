@@ -62,37 +62,41 @@ from typing import Optional, List
 import bcrypt
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, func as sqlfunc
 from sqlalchemy.ext.asyncio import AsyncSession
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from database import (
     init_db, get_db, SessionLocal,
-    User, UserSession, InviteToken, PasswordResetToken, Organization,
+    User, UserSession, InviteToken, PasswordResetToken, Organization, APIKey,
 )
+from logging_config import get_logger, set_correlation_id, get_correlation_id
+from metrics import metrics_middleware, get_metrics
+from trace_context import init_trace_context, get_propagation_headers
+from audit import audit_log
+from authz import require_org_access, require_admin_in_org
+from apikey import generate_api_key, hash_api_key, validate_api_key
+from secrets import validate_secrets
+from retention import cleanup_all_expired_data
+from backup import create_backup_async, cleanup_old_backups, get_recent_backups, verify_backup
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-log = logging.getLogger("auth_api")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+log = get_logger("auth_api")
 
 # ---------------------------------------------------------------------------
 # JWT config — secret MUST come from env in production
 # ---------------------------------------------------------------------------
-_jwt_secret = os.getenv("JWT_SECRET_KEY", "")
+_jwt_secret = os.getenv("JWT_SECRET_KEY")
 if not _jwt_secret:
-    _jwt_secret = secrets.token_urlsafe(48)
-    log.warning(
-        "JWT_SECRET_KEY not set — using ephemeral secret. "
-        "All sessions will be lost on restart. Add JWT_SECRET_KEY to .env"
-    )
-
+    raise RuntimeError("JWT_SECRET_KEY env var is required but not set")
 JWT_SECRET      = _jwt_secret
 JWT_ALGORITHM   = "HS256"
 JWT_ACCESS_TTL  = int(os.getenv("JWT_ACCESS_TTL", "86400"))      # 24 h
@@ -105,6 +109,87 @@ VALID_ROLES = {"admin", "manager", "employee", "guest"}
 # FastAPI app
 # ---------------------------------------------------------------------------
 app = FastAPI(title="AIOps Auth API", version="2.0.0", docs_url="/auth/docs")
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, lambda request, exc: HTTPException(status_code=429, detail="Too many requests"))
+
+# Correlation ID middleware for request tracing
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    """
+    Initialize trace context (W3C Trace Context + X-Request-ID) for request tracing.
+    Enables correlation of logs across distributed services.
+    """
+    # Initialize trace context from incoming headers
+    traceparent = request.headers.get("traceparent")
+    request_id = request.headers.get("X-Request-ID")
+    init_trace_context(traceparent=traceparent, request_id=request_id)
+    
+    # Set correlation ID for logging
+    set_correlation_id(request_id or str(uuid.uuid4()))
+    
+    response = await call_next(request)
+    
+    # Propagate trace context in response headers
+    propagation_headers = get_propagation_headers()
+    for header_name, header_value in propagation_headers.items():
+        response.headers[header_name] = header_value
+    
+    return response
+
+
+# Request/response logging middleware
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """Log all requests and responses with structured context."""
+    import time
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    duration = time.time() - start_time
+    log.info(
+        "HTTP request completed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round(duration * 1000, 2),
+            "client_ip": request.client.host if request.client else "unknown",
+        }
+    )
+    return response
+
+
+# Metrics middleware (must be before other middleware to measure all requests)
+@app.middleware("http")
+async def metrics_middleware_wrapper(request: Request, call_next):
+    """Collect request metrics for Prometheus."""
+    return await metrics_middleware(request, call_next)
+
+
+# HTTPS redirect and security headers middleware
+@app.middleware("http")
+async def https_and_security_middleware(request: Request, call_next):
+    """Enforce HTTPS and add security headers."""
+    # Redirect HTTP to HTTPS in production (check X-Forwarded-Proto for reverse proxy)
+    proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    if proto == "http" and os.getenv("ENVIRONMENT", "development") == "production":
+        return HTTPException(status_code=403, detail="HTTPS required")
+    
+    response = await call_next(request)
+    
+    # Add security headers
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    
+    return response
 
 # Wildcard origins with allow_credentials=True is a critical misconfiguration —
 # it allows any site on the internet to make authenticated requests on behalf
@@ -130,12 +215,82 @@ bearer = HTTPBearer(auto_error=False)
 
 
 # ---------------------------------------------------------------------------
-# Startup — create tables + seed default admin
+# Global exception handlers
+# ---------------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions, log them, and return safe error response."""
+    log.error(
+        "Unhandled exception",
+        extra={
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "path": request.url.path,
+            "method": request.method,
+        },
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error_id": get_correlation_id()},
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """Handle ValueError with 400 Bad Request."""
+    log.warning(
+        "Value error",
+        extra={
+            "exception_message": str(exc),
+            "path": request.url.path,
+        },
+    )
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Invalid value provided", "error_id": get_correlation_id()},
+    )
+
+
+@app.exception_handler(TypeError)
+async def type_error_handler(request: Request, exc: TypeError):
+    """Handle TypeError with 400 Bad Request."""
+    log.warning(
+        "Type error",
+        extra={
+            "exception_message": str(exc),
+            "path": request.url.path,
+        },
+    )
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Invalid request format", "error_id": get_correlation_id()},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Startup — validate secrets + create tables + seed default admin
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def _startup():
+    # Validate all required secrets are present before doing anything else
+    validate_secrets()
     await init_db()
     await _seed_admin()
+    
+    # Run data retention cleanup on startup
+    async with SessionLocal() as db:
+        await cleanup_all_expired_data(db)
+    
+    # Create automated backup
+    try:
+        backup_file = await create_backup_async()
+        verify_backup(backup_file)
+        # Cleanup old backups (keep last 7)
+        keep_count = int(os.getenv("BACKUP_RETENTION_COUNT", "7"))
+        cleanup_old_backups(keep_count=keep_count)
+    except Exception as e:
+        log.error(f"Backup failed on startup: {e}")
 
 
 async def _seed_admin():
@@ -219,6 +374,26 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
+
+
+def _validate_password(pw: str) -> None:
+    import re
+    errors = []
+    if len(pw) < 12:
+        errors.append("at least 12 characters")
+    if not re.search(r"[A-Z]", pw):
+        errors.append("an uppercase letter")
+    if not re.search(r"[a-z]", pw):
+        errors.append("a lowercase letter")
+    if not re.search(r"\d", pw):
+        errors.append("a digit")
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        errors.append("a special character")
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must contain {', '.join(errors)}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -350,81 +525,85 @@ def _send_email(to: str, subject: str, html: str, plain: str = "") -> bool:
 # ---------------------------------------------------------------------------
 # Pydantic request / response models
 # ---------------------------------------------------------------------------
+from pydantic import Field, field_validator
+import re
+
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=256)
 
 
 class TwoFAVerifyRequest(BaseModel):
-    temp_token: str
-    code: str
+    temp_token: str = Field(..., min_length=1, max_length=256)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(..., min_length=1, max_length=512)
 
 
 class ChangePasswordRequest(BaseModel):
-    new_password: str
+    new_password: str = Field(..., min_length=1, max_length=256)
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
+    token: str = Field(..., min_length=1, max_length=512)
+    new_password: str = Field(..., min_length=1, max_length=256)
 
 
 class Enable2FARequest(BaseModel):
-    code: str
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class Disable2FARequest(BaseModel):
-    code: str
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class CreateUserRequest(BaseModel):
-    email: str
-    username: str
-    password: str
-    role: str = "employee"
-    full_name: Optional[str] = None
+    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
+    password: str = Field(..., min_length=1, max_length=256)
+    role: str = Field(default="employee", min_length=1, max_length=20)
+    full_name: Optional[str] = Field(None, max_length=255)
     must_change_password: bool = True
 
 
 class UpdateUserRequest(BaseModel):
-    role: Optional[str] = None
+    role: Optional[str] = Field(None, min_length=1, max_length=20)
     is_active: Optional[bool] = None
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(None, max_length=255)
 
 
 class AdminResetPasswordRequest(BaseModel):
-    new_password: str
+    new_password: str = Field(..., min_length=1, max_length=256)
     must_change_password: bool = True
 
 
 class CreateInviteRequest(BaseModel):
-    role: str = "employee"
-    email: Optional[str] = None
-    note: Optional[str] = None
-    ttl_hours: int = 72
+    role: str = Field(default="employee", min_length=1, max_length=20)
+    email: Optional[EmailStr] = None
+    note: Optional[str] = Field(None, max_length=1000)
+    ttl_hours: int = Field(default=72, ge=1, le=720)
 
 
 class AcceptInviteRequest(BaseModel):
-    token: str
-    email: str
-    username: str
-    password: str
-    full_name: Optional[str] = None
+    token: str = Field(..., min_length=1, max_length=512)
+    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
+    password: str = Field(..., min_length=1, max_length=256)
+    full_name: Optional[str] = Field(None, max_length=255)
+
 
 class RegisterOrgRequest(BaseModel):
-    org_name: str
-    email: str
-    username: str
-    password: str
-    full_name: Optional[str] = None
+    org_name: str = Field(..., min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9\s\-._]+$")
+    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
+    password: str = Field(..., min_length=1, max_length=256)
+    full_name: Optional[str] = Field(None, max_length=255)
 
 
 def _user_out(u: User) -> dict:
@@ -466,8 +645,28 @@ def _consume_2fa_pending(temp: str) -> Optional[str]:
 # AUTH ROUTES
 # ---------------------------------------------------------------------------
 
-@app.post("/auth/login")
-async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+@app.post("/auth/login", tags=["Authentication"])
+@limiter.limit("5/minute")
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Authenticate user with email and password.
+    
+    Returns access token and refresh token on success.
+    If 2FA is enabled, returns temp_token instead and requires /auth/verify-2fa.
+    
+    **Rate limit**: 5 requests per minute per IP
+    
+    **Responses**:
+    - 200: Login successful, returns access_token, refresh_token, user
+    - 200: 2FA required, returns requires_2fa=true, temp_token
+    - 401: Invalid email or password
+    - 403: Account disabled
+    - 429: Rate limit exceeded
+    """
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
@@ -595,22 +794,50 @@ async def me(user: User = Depends(_current_user)):
     return _user_out(user)
 
 
-@app.post("/auth/change-password")
+@app.post("/auth/change-password", tags=["Authentication"])
 async def change_password(
     body: ChangePasswordRequest,
     user: User = Depends(_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    """
+    Change the current user's password.
+    
+    Updates the authenticated user's password. Password must meet complexity requirements.
+    Clears the must_change_password flag if set.
+    
+    **Authentication**: Requires valid JWT access token
+    
+    **Responses**:
+    - 200: Password changed successfully
+    - 400: Invalid password format
+    - 401: Missing or invalid authentication token
+    - 500: Database error during update
+    """
+    _validate_password(body.new_password)
     user.hashed_password = _hash_password(body.new_password)
     user.must_change_password = False
     await db.commit()
+    
+    # Audit log password change
+    await audit_log(
+        db,
+        action="password_changed",
+        resource_type="user",
+        resource_id=user.id,
+        user_id=user.id,
+        org_id=user.org_id,
+        detail={"email": user.email},
+        request=None,
+    )
+    await db.commit()
+    
     return {"ok": True}
 
 
 @app.post("/auth/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/hour")
+async def forgot_password(body: ForgotPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     # Always return 200 to avoid email enumeration
@@ -637,7 +864,8 @@ async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depend
 
 
 @app.post("/auth/reset-password")
-async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/hour")
+async def reset_password(body: ResetPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
     token_hash = hashlib.sha256(body.token.encode()).hexdigest()
     now = datetime.now(timezone.utc)
 
@@ -652,8 +880,7 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
     if not prt:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(body.new_password)
 
     result2 = await db.execute(select(User).where(User.id == prt.user_id))
     user = result2.scalar_one_or_none()
@@ -725,34 +952,71 @@ async def list_users(admin: User = Depends(_require_admin), db: AsyncSession = D
     return [_user_out(u) for u in users]
 
 
-@app.post("/users", status_code=201)
+@app.post("/users", status_code=201, tags=["User Management"])
 async def create_user(body: CreateUserRequest, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """
+    Create a new user in the organization (admin only).
+    
+    Creates a user with the specified email, username, password, and role.
+    Password must meet complexity requirements. User is created in the same org as the admin.
+    
+    **Authentication**: Requires valid JWT access token with admin role
+    
+    **Responses**:
+    - 201: User created successfully
+    - 400: Invalid role, email format, username format, or password
+    - 401: Missing or invalid authentication token
+    - 403: User lacks admin permission
+    - 409: Email or username already in use
+    - 500: Database error during creation
+    """
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
-    if len(body.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(body.password)
 
-    # Check uniqueness
-    dup_email = await db.execute(select(User).where(User.email == body.email))
-    if dup_email.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already in use")
-    dup_user = await db.execute(select(User).where(User.username == body.username))
-    if dup_user.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already in use")
+    try:
+        # Check uniqueness
+        dup_email = await db.execute(select(User).where(User.email == body.email))
+        if dup_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Email already in use")
+        dup_user = await db.execute(select(User).where(User.username == body.username))
+        if dup_user.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Username already in use")
 
-    user = User(
-        email=body.email,
-        username=body.username,
-        hashed_password=_hash_password(body.password),
-        role=body.role,
-        full_name=body.full_name,
-        must_change_password=body.must_change_password,
-        org_id=admin.org_id,  # inherit org from the creating admin
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return _user_out(user)
+        user = User(
+            email=body.email,
+            username=body.username,
+            hashed_password=_hash_password(body.password),
+            role=body.role,
+            full_name=body.full_name,
+            must_change_password=body.must_change_password,
+            org_id=admin.org_id,  # inherit org from the creating admin
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        
+        # Audit log user creation
+        await audit_log(
+            db,
+            action="user_created",
+            resource_type="user",
+            resource_id=user.id,
+            user_id=admin.id,
+            org_id=admin.org_id,
+            detail={"email": user.email, "username": user.username, "role": user.role},
+            request=None,
+        )
+        await db.commit()
+        
+        return _user_out(user)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        log.error(f"Error creating user: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create user")
 
 
 @app.get("/users/{user_id}")
@@ -761,6 +1025,8 @@ async def get_user(user_id: str, admin: User = Depends(_require_admin), db: Asyn
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    # Verify admin has access to this user's org
+    await require_org_access(admin, user.org_id)
     return _user_out(user)
 
 
@@ -770,6 +1036,8 @@ async def update_user(user_id: str, body: UpdateUserRequest, admin: User = Depen
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    # Verify admin has access to this user's org
+    await require_org_access(admin, user.org_id)
 
     if body.role is not None:
         if body.role not in VALID_ROLES:
@@ -800,6 +1068,8 @@ async def deactivate_user(user_id: str, admin: User = Depends(_require_admin), d
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    # Verify admin has access to this user's org
+    await require_org_access(admin, user.org_id)
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
 
@@ -832,13 +1102,17 @@ async def admin_reset_password(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(body.new_password)
 
-    user.hashed_password = _hash_password(body.new_password)
-    user.must_change_password = body.must_change_password
-    await db.commit()
-    return {"ok": True}
+    try:
+        user.hashed_password = _hash_password(body.new_password)
+        user.must_change_password = body.must_change_password
+        await db.commit()
+        return {"ok": True}
+    except Exception as e:
+        await db.rollback()
+        log.error(f"Error resetting password: {e}")
+        raise HTTPException(status_code=500, detail="Failed to reset password")
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +1149,11 @@ async def create_invite(
 ):
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role")
+
+    # Invites are always created for the admin's own org
+    org_id = admin.org_id
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Admin must belong to an organization")
 
     raw_token = secrets.token_urlsafe(32)
     invite = InviteToken(
@@ -922,8 +1201,147 @@ async def revoke_invite(token: str, admin: User = Depends(_require_admin), db: A
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# API Key Management (service-to-service authentication)
+# ---------------------------------------------------------------------------
+
+class CreateAPIKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="Name for the API key (e.g., 'core_api', 'notification_service')")
+
+
+@app.post("/auth/api-keys", status_code=201, tags=["API Keys"])
+async def create_api_key(
+    body: CreateAPIKeyRequest,
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new API key for service-to-service authentication.
+    
+    Returns the raw API key only once. Store it securely and use in X-API-Key header.
+    
+    **Authentication**: Requires valid JWT access token with admin role
+    
+    **Responses**:
+    - 201: API key created successfully
+    - 400: Invalid name
+    - 401: Missing or invalid authentication token
+    - 403: User lacks admin permission
+    """
+    if not admin.org_id:
+        raise HTTPException(status_code=400, detail="Admin must belong to an organization")
+    
+    # Generate raw key and hash
+    raw_key = generate_api_key()
+    key_hash = hash_api_key(raw_key)
+    
+    api_key = APIKey(
+        org_id=admin.org_id,
+        name=body.name,
+        key_hash=key_hash,
+        created_by=admin.id,
+    )
+    db.add(api_key)
+    await db.commit()
+    await db.refresh(api_key)
+    
+    # Audit log API key creation
+    await audit_log(
+        db,
+        action="api_key_created",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        user_id=admin.id,
+        org_id=admin.org_id,
+        detail={"name": api_key.name},
+        request=None,
+    )
+    await db.commit()
+    
+    return {
+        "id": api_key.id,
+        "name": api_key.name,
+        "key": raw_key,  # Only shown once
+        "message": "Store this key securely. You won't be able to see it again.",
+    }
+
+
+@app.get("/auth/api-keys", tags=["API Keys"])
+async def list_api_keys(
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List all API keys for the organization (admin only).
+    
+    Does not return the raw key values (only hashes).
+    """
+    if not admin.org_id:
+        raise HTTPException(status_code=400, detail="Admin must belong to an organization")
+    
+    result = await db.execute(
+        select(APIKey).where(APIKey.org_id == admin.org_id).order_by(APIKey.created_at.desc())
+    )
+    keys = result.scalars().all()
+    
+    return [
+        {
+            "id": k.id,
+            "name": k.name,
+            "is_active": k.is_active,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "revoked_at": k.revoked_at.isoformat() if k.revoked_at else None,
+        }
+        for k in keys
+    ]
+
+
+@app.delete("/auth/api-keys/{key_id}", tags=["API Keys"])
+async def revoke_api_key(
+    key_id: str,
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Revoke an API key (admin only).
+    
+    Revoked keys cannot be used for authentication.
+    """
+    if not admin.org_id:
+        raise HTTPException(status_code=400, detail="Admin must belong to an organization")
+    
+    result = await db.execute(
+        select(APIKey).where(APIKey.id == key_id, APIKey.org_id == admin.org_id)
+    )
+    api_key = result.scalar_one_or_none()
+    
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    api_key.revoked_at = datetime.now(timezone.utc)
+    api_key.is_active = False
+    await db.commit()
+    
+    # Audit log API key revocation
+    await audit_log(
+        db,
+        action="api_key_revoked",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        user_id=admin.id,
+        org_id=admin.org_id,
+        detail={"name": api_key.name},
+        request=None,
+    )
+    await db.commit()
+    
+    return {"ok": True}
+
+
 @app.post("/auth/accept-invite", status_code=201)
-async def accept_invite(body: AcceptInviteRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/hour")
+async def accept_invite(body: AcceptInviteRequest, request: Request, db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(InviteToken).where(
@@ -940,92 +1358,145 @@ async def accept_invite(body: AcceptInviteRequest, db: AsyncSession = Depends(ge
     if invite.email and invite.email.lower() != body.email.lower():
         raise HTTPException(status_code=400, detail="This invite was issued for a different email address")
 
-    if len(body.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(body.password)
 
-    # Check uniqueness
-    dup = await db.execute(select(User).where(User.email == body.email))
-    if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already registered")
-    dup2 = await db.execute(select(User).where(User.username == body.username))
-    if dup2.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already in use")
+    try:
+        # Check uniqueness
+        dup = await db.execute(select(User).where(User.email == body.email))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Email already registered")
+        dup2 = await db.execute(select(User).where(User.username == body.username))
+        if dup2.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Username already in use")
 
-    user = User(
-        email=body.email,
-        username=body.username,
-        hashed_password=_hash_password(body.password),
-        role=invite.role,
-        org_id=invite.org_id,   # inherit org from invite
-        full_name=body.full_name,
-    )
-    db.add(user)
-    await db.flush()
+        user = User(
+            email=body.email,
+            username=body.username,
+            hashed_password=_hash_password(body.password),
+            role=invite.role,
+            org_id=invite.org_id,   # inherit org from invite
+            full_name=body.full_name,
+        )
+        db.add(user)
+        await db.flush()
 
-    invite.used_at = now
-    invite.used_by = user.id
-    await db.commit()
-    return {"ok": True, "message": "Account created. You can now log in."}
+        invite.used_at = now
+        invite.used_by = user.id
+        await db.commit()
+        
+        # Audit log invite acceptance
+        await audit_log(
+            db,
+            action="invite_accepted",
+            resource_type="invite",
+            resource_id=invite.id,
+            user_id=user.id,
+            org_id=invite.org_id,
+            detail={"email": user.email, "role": user.role},
+            request=request,
+        )
+        await db.commit()
+        
+        return {"ok": True, "message": "Account created. You can now log in."}
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        log.error(f"Error accepting invite: {e}")
+        raise HTTPException(status_code=500, detail="Failed to accept invite")
 
 
 # ---------------------------------------------------------------------------
 # Self-service admin registration — creates a new org + admin user
 # ---------------------------------------------------------------------------
-@app.post("/auth/register", status_code=201)
-async def register_org(body: RegisterOrgRequest, db: AsyncSession = Depends(get_db)):
+@app.post("/auth/register", status_code=201, tags=["Authentication"])
+@limiter.limit("3/hour")
+async def register_org(body: RegisterOrgRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Create a brand-new organization and its first admin user in one step.
-    Anyone can call this — it's the entry point for new accounts.
+    
+    This is the entry point for new accounts. Creates org with auto-generated slug,
+    creates admin user with provided credentials. Password must meet complexity requirements.
+    
+    **Rate limit**: 3 requests per hour per IP
+    
+    **Responses**:
+    - 201: Organization created successfully
+    - 400: Invalid org name, email, or password
+    - 409: Email or username already in use
+    - 429: Rate limit exceeded
+    - 500: Database error during creation
     """
-    if len(body.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(body.password)
 
     org_name = body.org_name.strip()
     if not org_name:
         raise HTTPException(status_code=400, detail="Organization name is required")
 
-    # Derive a URL-safe slug from the org name
-    import re
-    slug_base = re.sub(r'[^a-z0-9]+', '-', org_name.lower()).strip('-') or "org"
-    # Ensure slug uniqueness
-    slug = slug_base
-    counter = 1
-    while True:
-        exists = await db.execute(select(Organization).where(Organization.slug == slug))
-        if not exists.scalar_one_or_none():
-            break
-        slug = f"{slug_base}-{counter}"
-        counter += 1
+    try:
+        # Derive a URL-safe slug from the org name
+        import re
+        slug_base = re.sub(r'[^a-z0-9]+', '-', org_name.lower()).strip('-') or "org"
+        # Ensure slug uniqueness
+        slug = slug_base
+        counter = 1
+        while True:
+            exists = await db.execute(select(Organization).where(Organization.slug == slug))
+            if not exists.scalar_one_or_none():
+                break
+            slug = f"{slug_base}-{counter}"
+            counter += 1
 
-    # Check user uniqueness before creating the org
-    dup_email = await db.execute(select(User).where(User.email == body.email))
-    if dup_email.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already registered")
-    dup_user = await db.execute(select(User).where(User.username == body.username))
-    if dup_user.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already in use")
+        # Check user uniqueness before creating the org
+        dup_email = await db.execute(select(User).where(User.email == body.email))
+        if dup_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Email already registered")
+        dup_user = await db.execute(select(User).where(User.username == body.username))
+        if dup_user.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Username already in use")
 
-    # Create the organization
-    org = Organization(name=org_name, slug=slug, plan="free")
-    db.add(org)
-    await db.flush()  # get org.id
+        # Create the organization
+        org = Organization(name=org_name, slug=slug, plan="free")
+        db.add(org)
+        await db.flush()  # get org.id
 
-    # Create the admin user
-    user = User(
-        email=body.email,
-        username=body.username,
-        hashed_password=_hash_password(body.password),
-        role="admin",
-        org_id=org.id,
-        full_name=body.full_name,
-        must_change_password=False,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
+        # Create the admin user
+        user = User(
+            email=body.email,
+            username=body.username,
+            hashed_password=_hash_password(body.password),
+            role="admin",
+            org_id=org.id,
+            full_name=body.full_name,
+            must_change_password=False,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
 
-    log.info("New org registered: %s (id=%s) by %s", org_name, org.id, body.email)
-    return {"ok": True, "message": "Organization created. You can now sign in.", "org_id": org.id}
+        # Audit log organization creation
+        await audit_log(
+            db,
+            action="organization_created",
+            resource_type="organization",
+            resource_id=org.id,
+            user_id=user.id,
+            org_id=org.id,
+            detail={"org_name": org.name, "slug": org.slug, "plan": org.plan},
+            request=request,
+        )
+        await db.commit()
+
+        log.info("New org registered: %s (id=%s) by %s", org_name, org.id, body.email)
+        return {"ok": True, "message": "Organization created. You can now sign in.", "org_id": org.id}
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        log.error(f"Error registering organization: {e}")
+        raise HTTPException(status_code=500, detail="Failed to register organization")
 
 
 # ---------------------------------------------------------------------------
@@ -1034,3 +1505,77 @@ async def register_org(body: RegisterOrgRequest, db: AsyncSession = Depends(get_
 @app.get("/auth/health")
 async def health():
     return {"status": "ok", "service": "auth-api", "version": "2.0.0"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+    
+    Exposes metrics in Prometheus text format:
+    - http_request_duration_seconds: Request latency histogram
+    - http_requests_total: Total request counter
+    - http_errors_total: Error counter (5xx responses)
+    - db_query_duration_seconds: Database query duration histogram
+    
+    Scrape with: curl http://localhost:5001/metrics
+    """
+    return get_metrics()
+
+
+@app.get("/auth/health/backups")
+async def backup_health():
+    """
+    Check if recent database backups exist and are valid.
+    
+    Returns backup status:
+    - ok: Recent backup exists and is valid
+    - warning: Backup exists but is older than threshold
+    - critical: No backups found
+    """
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    
+    try:
+        backup_age_hours = int(os.getenv("BACKUP_HEALTH_CHECK_HOURS", "24"))
+        
+        # Get recent backups
+        backups = get_recent_backups(limit=5)
+        
+        if not backups:
+            return {
+                "status": "critical",
+                "message": "No backups found",
+                "backups": [],
+            }
+        
+        # Check age of most recent backup
+        latest_backup = backups[0]
+        latest_time = datetime.fromisoformat(latest_backup["created_at"])
+        backup_age = datetime.now(timezone.utc) - latest_time
+        
+        if backup_age > timedelta(hours=backup_age_hours):
+            return {
+                "status": "warning",
+                "message": f"Latest backup is {backup_age.days}d {backup_age.seconds//3600}h old",
+                "latest_backup": latest_backup["filename"],
+                "backup_age_hours": backup_age.total_seconds() / 3600,
+                "threshold_hours": backup_age_hours,
+                "backups": backups,
+            }
+        
+        return {
+            "status": "ok",
+            "message": "Recent backups exist",
+            "latest_backup": latest_backup["filename"],
+            "backup_age_hours": backup_age.total_seconds() / 3600,
+            "total_backups": len(backups),
+            "backups": backups,
+        }
+    
+    except Exception as e:
+        log.error(f"Backup health check failed: {e}")
+        return {
+            "status": "critical",
+            "message": f"Backup health check error: {str(e)}",
+        }

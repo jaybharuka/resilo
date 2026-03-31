@@ -23,6 +23,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.ext.asyncio import (
     create_async_engine, AsyncSession, async_sessionmaker
 )
+from encryption import EncryptedString
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -85,7 +86,7 @@ class User(Base):
 
     id:                   Mapped[str]            = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     org_id:               Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
-    email:                Mapped[str]            = mapped_column(String(255), unique=True, nullable=False, index=True)
+    email:                Mapped[str]            = mapped_column(EncryptedString(255), unique=True, nullable=False, index=True)
     username:             Mapped[str]            = mapped_column(String(100), unique=True, nullable=False)
     hashed_password:      Mapped[str]            = mapped_column(Text, nullable=False)
     # Org-scoped role: admin | devops | viewer | manager | employee | guest
@@ -94,7 +95,7 @@ class User(Base):
     must_change_password: Mapped[bool]           = mapped_column(Boolean, default=False, nullable=False)
     two_factor_secret:    Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     two_factor_enabled:   Mapped[bool]           = mapped_column(Boolean, default=False, nullable=False)
-    full_name:            Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
+    full_name:            Mapped[Optional[str]]  = mapped_column(EncryptedString(255), nullable=True)
     created_at:           Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:           Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login:           Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -444,19 +445,53 @@ class WmiInvite(Base):
     created_at:          Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ── API Keys (service-to-service authentication) ────────────────────────────────
+
+class APIKey(Base):
+    """
+    API keys for service-to-service authentication.
+    Each org can have multiple API keys for different services/integrations.
+    Keys are hashed before storage (raw key shown only once on creation).
+    """
+    __tablename__ = "api_keys"
+    __table_args__ = (
+        Index("ix_apikey_org", "org_id"),
+        Index("ix_apikey_hash", "key_hash"),
+    )
+
+    id:           Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:       Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    name:         Mapped[str]           = mapped_column(String(255), nullable=False)  # e.g., "core_api", "notification_service"
+    key_hash:     Mapped[str]           = mapped_column(String(64), nullable=False, unique=True)  # SHA-256 hex of raw key
+    created_by:   Mapped[str]           = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    is_active:    Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
+    revoked_at:   Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 # ── DB init ───────────────────────────────────────────────────────────────────
 
 async def init_db() -> None:
     """
-    Create all tables (idempotent). If TimescaleDB extension is present,
+    Run Alembic migrations to create/update schema. If TimescaleDB extension is present,
     converts metric_snapshots to a hypertable and applies a retention policy.
     Safe to call on every startup.
     """
     import logging
+    from alembic.config import Config
+    from alembic.command import upgrade
     log = logging.getLogger("database")
 
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda c: Base.metadata.create_all(c, checkfirst=True))
+    # Run Alembic migrations using sync connection
+    try:
+        alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "alembic.ini"))
+        alembic_cfg.set_main_option("sqlalchemy.url", _db_url)
+        upgrade(alembic_cfg, "head")
+        log.info("Database migrations completed successfully")
+    except Exception as exc:
+        log.error(f"Failed to run migrations: {exc}")
+        raise
 
     # TimescaleDB hypertable (best-effort — graceful fallback to plain Postgres)
     async with engine.begin() as conn:

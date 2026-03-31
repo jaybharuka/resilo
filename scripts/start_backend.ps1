@@ -24,7 +24,9 @@ if ($AllowedOrigins) { $env:ALLOWED_ORIGINS = $AllowedOrigins }
 
 # Start Flask backend in a new window
 $appPaths = "$repoRoot\app;$repoRoot\app\api;$repoRoot\app\auth;$repoRoot\app\core;$repoRoot\app\monitoring;$repoRoot\app\security;$repoRoot\app\analytics;$repoRoot\app\remediation;$repoRoot\app\integrations"
-$cmd = "cd `"$repoRoot`"; `$env:PYTHONPATH=`"$appPaths`"; python -u app\api\api_server.py"
+$venvPy = Join-Path $repoRoot '.venv\Scripts\python.exe'
+$py = if (Test-Path $venvPy) { $venvPy } else { 'python' }
+$cmd = "cd `"$repoRoot`"; `$env:PYTHONPATH=`"$appPaths`"; & `"$py`" -u app\api\api_server.py"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command","$cmd" -WorkingDirectory $repoRoot | Out-Null
 
 # Wait for health
