@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
 
-  # ── TimescaleDB — PostgreSQL + time-series extension ─────────────────────
+  # â”€â”€ TimescaleDB â€” PostgreSQL + time-series extension â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: aiops-timescaledb
@@ -23,7 +23,7 @@ services:
     networks:
       - aiops-network
 
-  # ── FastAPI Auth Service (port 5001) ───────────────────────────────────────
+  # â”€â”€ FastAPI Auth Service (port 5001) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   auth-api:
     build:
       context: .
@@ -34,6 +34,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://aiops:aiops@timescaledb:5432/aiops
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-change-me-in-production-use-a-32-char-hex-string}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - EMAIL_SMTP_SERVER=${EMAIL_SMTP_SERVER:-}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -44,10 +45,12 @@ services:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      replicas: 2
     networks:
       - aiops-network
 
-  # ── FastAPI Core API (port 8000) ───────────────────────────────────────────
+  # â”€â”€ FastAPI Core API (port 8000) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   core-api:
     build:
       context: .
@@ -58,18 +61,22 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://aiops:aiops@timescaledb:5432/aiops
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-change-me-in-production-use-a-32-char-hex-string}
       - ANOMALY_AUTONOMOUS=${ANOMALY_AUTONOMOUS:-org}
       - ANOMALY_POLL_INTERVAL=${ANOMALY_POLL_INTERVAL:-30}
       - ANOMALY_VERIFY_DELAY=${ANOMALY_VERIFY_DELAY:-60}
       - TIMESCALE_RETENTION_DAYS=${TIMESCALE_RETENTION_DAYS:-30}
+      - ALEMBIC_INI=/app/alembic.ini
     depends_on:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      replicas: 2
     networks:
       - aiops-network
 
-  # ── Nginx — TLS termination + reverse proxy ────────────────────────────────
+  # â”€â”€ Nginx â€” TLS termination + reverse proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   nginx:
     build:
       context: ./nginx
@@ -95,6 +102,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -148,7 +156,7 @@ services:
     networks:
       - aiops-network
 
-  # AlertManager — routes Prometheus alerts to Slack / Discord / Email
+  # AlertManager â€” routes Prometheus alerts to Slack / Discord / Email
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: aiops-alertmanager
@@ -164,7 +172,7 @@ services:
     networks:
       - aiops-network
 
-  # Grafana — visualization dashboards on top of Prometheus
+  # Grafana â€” visualization dashboards on top of Prometheus
   grafana:
     image: grafana/grafana:10.4.0
     container_name: aiops-grafana
@@ -185,7 +193,7 @@ services:
     networks:
       - aiops-network
 
-  # HashiCorp Vault — secrets management
+  # HashiCorp Vault â€” secrets management
   vault:
     image: hashicorp/vault:1.16
     container_name: aiops-vault
@@ -204,7 +212,7 @@ services:
     networks:
       - aiops-network
 
-  # Jaeger — distributed tracing UI
+  # Jaeger â€” distributed tracing UI
   jaeger:
     image: jaegertracing/all-in-one:1.56
     container_name: aiops-jaeger
@@ -218,7 +226,7 @@ services:
     networks:
       - aiops-network
 
-  # OpenTelemetry Collector — receives traces, forwards to Jaeger
+  # OpenTelemetry Collector â€” receives traces, forwards to Jaeger
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.98.0
     container_name: aiops-otel-collector
@@ -233,7 +241,7 @@ services:
     networks:
       - aiops-network
 
-  # Elasticsearch — log storage for ELK stack
+  # Elasticsearch â€” log storage for ELK stack
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
     container_name: aiops-elasticsearch
@@ -249,13 +257,13 @@ services:
     networks:
       - aiops-network
 
-  # Logstash — log ingestion and parsing pipeline
+  # Logstash â€” log ingestion and parsing pipeline
   logstash:
     image: docker.elastic.co/logstash/logstash:8.13.0
     container_name: aiops-logstash
     ports:
       - "5044:5044"   # Beats input
-      - "5099:5001"   # TCP JSON input (host 5099 → container 5001; avoids conflict with auth-api)
+      - "5099:5001"   # TCP JSON input (host 5099 â†’ container 5001; avoids conflict with auth-api)
     volumes:
       - ./elk/logstash/pipeline:/usr/share/logstash/pipeline
     depends_on:
@@ -264,7 +272,7 @@ services:
     networks:
       - aiops-network
 
-  # Kibana — log visualization
+  # Kibana â€” log visualization
   kibana:
     image: docker.elastic.co/kibana/kibana:8.13.0
     container_name: aiops-kibana
@@ -278,7 +286,7 @@ services:
     networks:
       - aiops-network
 
-  # Filebeat — ships container logs to Logstash via Docker autodiscover
+  # Filebeat â€” ships container logs to Logstash via Docker autodiscover
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.13.0
     container_name: aiops-filebeat
@@ -301,3 +309,5 @@ volumes:
   grafana-storage:
   vault-storage:
   elasticsearch-data:
+
+

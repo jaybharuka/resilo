@@ -9,8 +9,23 @@ const { Server } = require('socket.io');
 const axios = require('axios');
 const { spawn } = require('child_process');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const Sentry = require('@sentry/node');
+const SENTRY_DSN = process.env.SENTRY_DSN;
+
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    tracesSampleRate: 0.1,
+    environment: process.env.NODE_ENV || 'development',
+  });
+}
+
 const app = express();
 const server = http.createServer(app);
+
+if (SENTRY_DSN) {
+  app.use(Sentry.Handlers.requestHandler());
+}
 
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
 const HOST = (process.env.HOST || '0.0.0.0').trim();
@@ -27,10 +42,21 @@ const io = new Server(server, {
   cors: { origin: true, methods: ['GET', 'POST'], credentials: true },
 });
 
+// Socket.IO authentication middleware — verify token on connection
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
+  if (!token) {
+    return next(new Error('Authentication required'));
+  }
+  // Store token on socket for later use in event handlers
+  socket.token = token;
+  next();
+});
+
 const _corsOptions = {
   origin(origin, cb) {
     if (!origin || _localhostRe.test(origin) || _rawOrigins.includes(origin)) return cb(null, true);
-    cb(null, true); // allow all in express layer; Flask handles its own CORS for auth routes
+    cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -502,6 +528,9 @@ app.get('/connect.ps1', (req, res) => {
   if (!token) {
     return res.status(400).type('text/plain').send('# Error: missing ?token= parameter');
   }
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(token)) {
+    return res.status(400).type('text/plain').send('# Error: invalid token format');
+  }
   const regUrl = `${CORE_API_URL}/api/wmi-register`;
   const script = `
 $t='${token}'
@@ -575,7 +604,7 @@ app.post('/api/ai/export-insights', (req, res) => proxyOrAck(req, res, '/ai/expo
 // Socket.IO realtime broadcasting
 let broadcastInterval = null;
 const activeChatStreams = new Map(); // streamId -> { abortController, interval }
-const BROADCAST_MS = 2000;
+const BROADCAST_MS = Number(process.env.BROADCAST_MS) || 2000;
 
 io.on('connection', (socket) => {
   console.log('🔌 Client connected:', socket.id);

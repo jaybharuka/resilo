@@ -68,12 +68,11 @@ class User:
     email: str
     full_name: str
     role: str
-    department: str
     is_active: bool
     created_at: str
     last_login: Optional[str] = None
     password_hash: Optional[str] = None
-    company_id: Optional[str] = None
+    org_id: Optional[str] = None
 
 @dataclass
 class Company:
@@ -125,7 +124,9 @@ ROLE_PERMISSIONS = {
 class AuthenticationSystem:
     def __init__(self, db_path: str = "auth.db", secret_key: str = None):
         self.db_path = db_path
-        self.secret_key = secret_key or os.environ.get("JWT_SECRET_KEY") or secrets.token_urlsafe(32)
+        self.secret_key = secret_key or os.environ.get("JWT_SECRET_KEY")
+        if not self.secret_key:
+            raise RuntimeError("JWT_SECRET_KEY environment variable is required but not set")
         self._init_database()
         self._create_default_admin()
     
@@ -246,7 +247,8 @@ class AuthenticationSystem:
             
             # Create default admin — password must be changed on first login
             admin_id = self._generate_id()
-            password_hash = self._hash_password("admin123")
+            default_password = secrets.token_urlsafe(16)
+            password_hash = self._hash_password(default_password)
 
             cursor.execute('''
                 INSERT OR IGNORE INTO users
@@ -257,7 +259,7 @@ class AuthenticationSystem:
                 "System Administrator", UserRole.ADMIN.value, "IT",
                 company_id, datetime.now().isoformat(), True
             ))
-            print("⚠️  Default admin created with password 'admin123'. You MUST change it on first login.")
+            print(f"Default admin created. You MUST set a password on first login.")
             
             conn.commit()
         
@@ -835,8 +837,11 @@ if __name__ == "__main__":
     except:
         pass  # Company might already exist
     
-    # Test authentication
-    success, user, error = auth.authenticate_user("admin", "admin123")
+    # Test authentication (skip if running in production)
+    if os.environ.get("SKIP_AUTH_TEST"):
+        success, user, error = False, None, "Skipped"
+    else:
+        success, user, error = auth.authenticate_user("admin", "admin123")
     if success:
         print(f"Authenticated user: {user.username}")
         

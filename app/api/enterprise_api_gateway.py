@@ -274,9 +274,11 @@ class RateLimiter:
 class AuthenticationManager:
     """Authentication and authorization management"""
     
-    def __init__(self, jwt_secret: str = None):
+    def __init__(self, jwt_secret: str):
         """Initialize authentication manager"""
-        self.jwt_secret = jwt_secret or secrets.token_urlsafe(32)
+        if not jwt_secret:
+            raise ValueError("jwt_secret parameter must be provided")
+        self.jwt_secret = jwt_secret
         self.api_keys: Dict[str, APIKey] = {}
         self.user_sessions: Dict[str, Dict[str, Any]] = {}
         self.certificate_store: Dict[str, str] = {}

@@ -39,7 +39,10 @@ from database import get_db, User, Agent
 
 log = logging.getLogger("rbac")
 
-JWT_SECRET    = os.getenv("JWT_SECRET_KEY", "dev-secret")
+_jwt_secret = os.getenv("JWT_SECRET_KEY")
+if not _jwt_secret:
+    raise RuntimeError("JWT_SECRET_KEY environment variable must be set")
+JWT_SECRET    = _jwt_secret
 JWT_ALGORITHM = "HS256"
 
 bearer = HTTPBearer(auto_error=False)
