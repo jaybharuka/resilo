@@ -457,54 +457,43 @@ async def _build_daily_summary(db: AsyncSession, org_id: str) -> dict:
     """Aggregate last-24h metrics and incident counts per agent."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    # Fetch agents once.
     agents_result = await db.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.is_active == True)
     )
     agents = list(agents_result.scalars().all())
-    agent_index = {a.id: a for a in agents}
-
-    # Single aggregation query replaces the previous N+1 loop.
-    # Uses a time-bounded WHERE so TimescaleDB can skip older chunks entirely.
-    metrics_result = await db.execute(
-        select(
-            MetricSnapshot.agent_id,
-            sqlfunc.avg(MetricSnapshot.cpu).label("avg_cpu"),
-            sqlfunc.avg(MetricSnapshot.memory).label("avg_memory"),
-            sqlfunc.avg(MetricSnapshot.disk).label("avg_disk"),
-            sqlfunc.max(MetricSnapshot.uptime_secs).label("max_uptime"),
-        )
-        .where(
-            MetricSnapshot.org_id  == org_id,
-            MetricSnapshot.timestamp >= cutoff,
-        )
-        .group_by(MetricSnapshot.agent_id)
-    )
-    metrics_by_agent = {row.agent_id: row for row in metrics_result.all()}
-
-    # Single alert-count query for the same window.
-    alerts_result = await db.execute(
-        select(
-            AlertRecord.agent_id,
-            sqlfunc.count(AlertRecord.id).label("cnt"),
-        ).where(
-            AlertRecord.org_id     == org_id,
-            AlertRecord.created_at >= cutoff,
-        ).group_by(AlertRecord.agent_id)
-    )
-    alerts_by_agent = {row.agent_id: row.cnt for row in alerts_result.all()}
 
     agent_summaries = []
     for agent in agents:
-        m = metrics_by_agent.get(agent.id)
+        avg_result = await db.execute(
+            select(
+                sqlfunc.avg(MetricSnapshot.cpu).label("avg_cpu"),
+                sqlfunc.avg(MetricSnapshot.memory).label("avg_memory"),
+                sqlfunc.avg(MetricSnapshot.disk).label("avg_disk"),
+                sqlfunc.max(MetricSnapshot.uptime_secs).label("max_uptime"),
+            ).where(
+                MetricSnapshot.agent_id == agent.id,
+                MetricSnapshot.timestamp >= cutoff,
+            )
+        )
+        avg = avg_result.one()
+
+        inc_result = await db.execute(
+            select(sqlfunc.count(AlertRecord.id)).where(
+                AlertRecord.org_id  == org_id,
+                AlertRecord.agent_id == agent.id,
+                AlertRecord.created_at >= cutoff,
+            )
+        )
+        incidents = inc_result.scalar() or 0
+
         agent_summaries.append({
             "label":        agent.label,
             "status":       agent.status,
-            "avg_cpu":      round((m.avg_cpu    if m else 0) or 0, 1),
-            "avg_memory":   round((m.avg_memory if m else 0) or 0, 1),
-            "avg_disk":     round((m.avg_disk   if m else 0) or 0, 1),
-            "uptime_hours": round(((m.max_uptime if m else 0) or 0) / 3600, 1),
-            "incidents":    alerts_by_agent.get(agent.id, 0),
+            "avg_cpu":      round(avg.avg_cpu    or 0, 1),
+            "avg_memory":   round(avg.avg_memory or 0, 1),
+            "avg_disk":     round(avg.avg_disk   or 0, 1),
+            "uptime_hours": round((avg.max_uptime or 0) / 3600, 1),
+            "incidents":    incidents,
         })
 
     total_result = await db.execute(

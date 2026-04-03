@@ -803,15 +803,44 @@ class AIAssistant:
         logger.info("AI Assistant initialized")
     
     def _init_database(self):
-        """Apply schema migrations for the AI assistant SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "ai_recommendations"
-        )
+        """Initialize SQLite database for assistant data"""
         try:
-            from app.core.sqlite_migrator import run_sqlite_migrations
-            run_sqlite_migrations(self.db_path, _migrations_dir)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Conversation history table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL,
+                    user_input TEXT NOT NULL,
+                    ai_response TEXT NOT NULL,
+                    context TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    user_id TEXT
+                )
+            ''')
+            
+            # Recommendations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS recommendations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recommendation_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    recommendation_type TEXT NOT NULL,
+                    priority TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    user_id TEXT
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+            
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
     

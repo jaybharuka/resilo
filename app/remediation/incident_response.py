@@ -233,19 +233,75 @@ class IncidentDatabase:
         logger.info(f"Incident response database initialized: {db_path}")
     
     def _create_tables(self):
-        """Apply schema migrations for the incident response SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "incident"
+        """Create database tables"""
+        
+        # Incidents table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS incidents (
+            incident_id TEXT PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            incident_type TEXT,
+            severity TEXT,
+            status TEXT,
+            created_time TEXT,
+            updated_time TEXT,
+            detection_source TEXT,
+            assigned_to TEXT,
+            resolution_time TEXT,
+            incident_data TEXT
         )
-        if self.db_path == ":memory:":
-            _sql_file = _os.path.join(_migrations_dir, "001_initial.sql")
-            with open(_sql_file, encoding="utf-8") as _f:
-                self.conn.executescript(_f.read())
-        else:
-            from app.core.sqlite_migrator import run_sqlite_migrations
-            run_sqlite_migrations(self.db_path, _migrations_dir)
+        """)
+        
+        # Playbook executions table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS playbook_executions (
+            execution_id TEXT PRIMARY KEY,
+            incident_id TEXT,
+            playbook_id TEXT,
+            status TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            executed_by TEXT,
+            total_tasks INTEGER,
+            completed_tasks INTEGER,
+            failed_tasks INTEGER,
+            execution_data TEXT
+        )
+        """)
+        
+        # Evidence table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS evidence (
+            evidence_id TEXT PRIMARY KEY,
+            incident_id TEXT,
+            evidence_type TEXT,
+            source_system TEXT,
+            collection_time TEXT,
+            collector TEXT,
+            file_path TEXT,
+            file_size INTEGER,
+            file_hash TEXT,
+            description TEXT,
+            evidence_data TEXT
+        )
+        """)
+        
+        # Forensic analysis table
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS forensic_analysis (
+            analysis_id TEXT PRIMARY KEY,
+            incident_id TEXT,
+            analysis_type TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            analyst TEXT,
+            confidence_score REAL,
+            analysis_data TEXT
+        )
+        """)
+        
+        self.conn.commit()
     
     def store_incident(self, incident: SecurityIncident):
         """Store security incident"""

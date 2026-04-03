@@ -195,17 +195,105 @@ class PolicyEngine:
         logger.info("Compliance policy engine initialized")
     
     def _init_database(self):
-        """Apply schema migrations for the compliance automation SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "security_compliance"
-        )
+        """Initialize compliance database"""
         try:
             self.conn = sqlite3.connect(self.db_path)
-            from app.core.sqlite_migrator import run_sqlite_migrations
-            run_sqlite_migrations(self.db_path, _migrations_dir)
+            cursor = self.conn.cursor()
+            
+            # Create policies table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS policies (
+                    policy_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    framework TEXT,
+                    policy_type TEXT,
+                    control_id TEXT,
+                    description TEXT,
+                    requirements TEXT,
+                    implementation_guidance TEXT,
+                    testing_procedures TEXT,
+                    evidence_requirements TEXT,
+                    risk_level TEXT,
+                    mandatory BOOLEAN,
+                    frequency_days INTEGER,
+                    owner TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    version TEXT
+                )
+            ''')
+            
+            # Create violations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS violations (
+                    violation_id TEXT PRIMARY KEY,
+                    policy_id TEXT,
+                    framework TEXT,
+                    severity TEXT,
+                    title TEXT,
+                    description TEXT,
+                    affected_systems TEXT,
+                    detected_at TEXT,
+                    root_cause TEXT,
+                    remediation_plan TEXT,
+                    remediation_deadline TEXT,
+                    status TEXT,
+                    assigned_to TEXT,
+                    evidence TEXT,
+                    business_impact TEXT,
+                    resolution_notes TEXT,
+                    resolved_at TEXT,
+                    FOREIGN KEY (policy_id) REFERENCES policies (policy_id)
+                )
+            ''')
+            
+            # Create audit_trail table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS audit_trail (
+                    audit_id TEXT PRIMARY KEY,
+                    event_type TEXT,
+                    timestamp TEXT,
+                    user_id TEXT,
+                    source_system TEXT,
+                    object_type TEXT,
+                    object_id TEXT,
+                    action TEXT,
+                    details TEXT,
+                    ip_address TEXT,
+                    user_agent TEXT,
+                    session_id TEXT,
+                    integrity_hash TEXT
+                )
+            ''')
+            
+            # Create evidence table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS evidence (
+                    evidence_id TEXT PRIMARY KEY,
+                    policy_id TEXT,
+                    control_id TEXT,
+                    evidence_type TEXT,
+                    title TEXT,
+                    description TEXT,
+                    file_path TEXT,
+                    content TEXT,
+                    metadata TEXT,
+                    collected_at TEXT,
+                    collected_by TEXT,
+                    hash_value TEXT,
+                    retention_days INTEGER,
+                    FOREIGN KEY (policy_id) REFERENCES policies (policy_id)
+                )
+            ''')
+            
+            # Create indexes
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_violations_policy_id ON violations(policy_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_trail(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_evidence_policy_id ON evidence(policy_id)')
+            
+            self.conn.commit()
             logger.info("Compliance database initialized successfully")
+            
         except Exception as e:
             logger.error(f"Failed to initialize compliance database: {e}")
     

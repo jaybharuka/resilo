@@ -44,10 +44,6 @@ coverage/
 tmpclaude-*-cwd
 dashboard/tmpclaude-*-cwd
 
-# Claude Code local session settings (machine-specific, not project config)
-.claude/settings.json
-.claude/settings.local.json
-
 # Runtime databases (auto-generated)
 *.db
 
@@ -80,7 +76,3 @@ api_config.json
 
 nul
 
-
-# Runtime deploy tracking — not source files
-.last_good_deploy
-deployments.log

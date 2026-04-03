@@ -41,12 +41,7 @@ except ImportError:
 def _fernet():
     from cryptography.fernet import Fernet
     import hashlib
-    raw = os.environ.get("JWT_SECRET_KEY")
-    if not raw:
-        raise RuntimeError(
-            "JWT_SECRET_KEY is not set. wmi_poller uses it as the Fernet encryption key "
-            "for WMI credentials. Add JWT_SECRET_KEY to your .env file."
-        )
+    raw = os.environ.get("JWT_SECRET_KEY", "dev-secret-change-me")
     key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
     return Fernet(key)
 
@@ -71,12 +66,9 @@ try {
   if ($disk -and $disk.Size -gt 0) {
     $diskPct = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 1)
   } else { $diskPct = 0.0 }
-  $net = Get-WmiObject Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notmatch 'Loopback|Teredo|isatap|6to4' } |
-    Sort-Object BytesTotalPersec -Descending | Select-Object -First 1
-  if (-not $net) { $net = Get-WmiObject Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue | Select-Object -First 1 }
-  $netIn  = if ($net) { [long]$net.BytesReceivedPersec } else { 0 }
-  $netOut = if ($net) { [long]$net.BytesSentPersec } else { 0 }
+  $net = Get-WmiObject Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue | Select-Object -First 1
+  $netIn  = if ($net) { [long]$net.BytesReceivedPerSec } else { 0 }
+  $netOut = if ($net) { [long]$net.BytesSentPerSec } else { 0 }
   $procs  = (Get-Process -ErrorAction SilentlyContinue).Count
   $uptime = [math]::Round(((Get-Date) - $os.ConvertToDateTime($os.LastBootUpTime)).TotalSeconds)
   [PSCustomObject]@{
@@ -160,31 +152,6 @@ class WMIPoller:
         except Exception as exc:
             return False, str(exc)[:300]
 
-    def execute_command_sync(self, host: str, username: str,
-                             password: str, port: int = 5985,
-                             ps_script: str = "") -> tuple[bool, str]:
-        """
-        Execute an arbitrary PowerShell command on a remote machine via WinRM.
-        Returns (success, output_or_error).
-        Used for WMI-based remediation (machines without a running agent).
-        """
-        try:
-            session = winrm.Session(
-                f"http://{host}:{port}/wsman",
-                auth=(username, password),
-                transport="ntlm",
-                read_timeout_sec=30,
-                operation_timeout_sec=28,
-            )
-            result = session.run_ps(ps_script)
-            if result.status_code == 0:
-                out = result.std_out.decode(errors="replace").strip()
-                return True, out or "ok"
-            err = result.std_err.decode(errors="replace").strip()[:500]
-            return False, err or f"Exit code {result.status_code}"
-        except Exception as exc:
-            return False, str(exc)[:500]
-
     def get_info_sync(self, host: str, username: str,
                       password: str, port: int = 5985) -> Optional[dict]:
         """Collect static machine info. Returns dict or None."""
@@ -241,7 +208,7 @@ class WMIPoller:
 
     # ── Background polling loop ───────────────────────────────────────────────
 
-    async def run(self, session_factory, interval: int = 10):
+    async def run(self, session_factory, interval: int = 30):
         """
         Polls all registered targets every `interval` seconds.
         Stores results as MetricSnapshot rows and updates WMITarget status.

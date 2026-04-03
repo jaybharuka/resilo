@@ -152,22 +152,56 @@ class NotificationAnalytics:
         logger.info("Notification analytics system initialized")
     
     def _init_database(self):
-        """Apply schema migrations for the notification analytics SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "analytics_notifications"
-        )
+        """Initialize SQLite database for persistent storage"""
         try:
             self.conn = sqlite3.connect(self.db_path)
-            if self.db_path == ":memory:":
-                _sql_file = _os.path.join(_migrations_dir, "001_initial.sql")
-                with open(_sql_file, encoding="utf-8") as _f:
-                    self.conn.executescript(_f.read())
-            else:
-                from app.core.sqlite_migrator import run_sqlite_migrations
-                run_sqlite_migrations(self.db_path, _migrations_dir)
+            cursor = self.conn.cursor()
+            
+            # Create notifications table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS notifications (
+                    notification_id TEXT PRIMARY KEY,
+                    alert_id TEXT,
+                    title TEXT,
+                    severity TEXT,
+                    channel TEXT,
+                    recipients TEXT,
+                    sent_at TEXT,
+                    status TEXT,
+                    delivery_time_ms INTEGER,
+                    read_time_ms INTEGER,
+                    acknowledgment_time_ms INTEGER,
+                    total_response_time_ms INTEGER,
+                    metadata TEXT
+                )
+            ''')
+            
+            # Create events table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS events (
+                    event_id TEXT PRIMARY KEY,
+                    notification_id TEXT,
+                    event_type TEXT,
+                    channel TEXT,
+                    timestamp TEXT,
+                    user_id TEXT,
+                    response_time_ms INTEGER,
+                    success BOOLEAN,
+                    error_message TEXT,
+                    metadata TEXT,
+                    FOREIGN KEY (notification_id) REFERENCES notifications (notification_id)
+                )
+            ''')
+            
+            # Create indexes for better performance
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_notifications_sent_at ON notifications(sent_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)')
+            
+            self.conn.commit()
             logger.info("Database initialized successfully")
+            
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
     

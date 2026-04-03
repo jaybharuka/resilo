@@ -1,30 +1,18 @@
 FROM python:3.12-slim
-
 WORKDIR /app
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-    fastapi==0.115.5 \
-    "uvicorn[standard]==0.32.1" \
-    "pydantic[email]==2.9.2" \
-    python-multipart==0.0.17 \
-    "python-jose[cryptography]==3.3.0" \
-    bcrypt==4.2.0 \
-    "sqlalchemy[asyncio]==2.0.36" \
-    asyncpg==0.30.0 \
-    slowapi==0.1.9 \
-    python-json-logger==2.0.7 \
-    psutil==5.9.8 \
-    aiohttp==3.10.5
-
-COPY app ./app
-COPY api ./api
-COPY config ./config
-COPY main.py ./main.py
-
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/core/           ./app/core/
+COPY app/auth/           ./app/auth/
+COPY app/api/core_api.py ./core_api.py
+COPY app/analytics/anomaly_engine.py        ./anomaly_engine.py
+COPY app/integrations/wmi_poller.py         ./wmi_poller.py
+COPY app/integrations/notification_service.py ./notification_service.py
+COPY alembic.ini                ./alembic.ini
+COPY alembic/                   ./alembic/
+ENV PYTHONPATH=/app:/app/app/core:/app/app/auth
 EXPOSE 8000
-
-CMD ["python", "-c", "import os,uvicorn; uvicorn.run('main:app', host='0.0.0.0', port=int(os.getenv('PORT', '8000')))" ]
+CMD exec uvicorn core_api:app --host 0.0.0.0 --port ${PORT:-8000}
