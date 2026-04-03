@@ -1,13 +1,13 @@
 """
-core_api.py — AIOps Bot Unified Core API (FastAPI, port 8000)
+core_api.py â€” AIOps Bot Unified Core API (FastAPI, port 8000)
 
 Consolidates agent management, metrics, alerts, and remediation into one
 multi-tenant FastAPI service. Replaces the scattered Flask endpoints over time.
 
 Architecture:
-    Nginx (443) → core_api (8000)
-    Nginx (443) → auth_api (5001)
-    Flask (5000) → legacy (deprecated, being migrated here)
+    Nginx (443) â†’ core_api (8000)
+    Nginx (443) â†’ auth_api (5001)
+    Flask (5000) â†’ legacy (deprecated, being migrated here)
 
 Start:
     uvicorn core_api:app --host 0.0.0.0 --port 8000 --reload
@@ -19,23 +19,10 @@ Environment variables:
     ANOMALY_POLL_INTERVAL  seconds (default: 30)
 """
 
-import sys as _sys
 import os
 
-# Ensure all app sub-packages are importable regardless of working directory
-_here = os.path.dirname(os.path.abspath(__file__))   # app/api
-_app  = os.path.dirname(_here)                        # app/
-_root = os.path.dirname(_app)                         # repo root
-for _p in [_here, _app, _root,
-           os.path.join(_app, 'core'),
-           os.path.join(_app, 'auth'),
-           os.path.join(_app, 'analytics'),
-           os.path.join(_app, 'integrations')]:
-    if _p not in _sys.path:
-        _sys.path.insert(0, _p)
-
 # Load .env from repo root so DATABASE_URL, JWT_SECRET_KEY etc. are available
-_env_file = os.path.join(_root, '.env')
+_env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
 if os.path.exists(_env_file):
     with open(_env_file) as _ef:
         for _line in _ef:
@@ -45,15 +32,17 @@ if os.path.exists(_env_file):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 import asyncio
+import bcrypt
 import hashlib
 import logging
 import secrets
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Any
 
-import bcrypt
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -78,7 +67,7 @@ from rbac import (
 )
 from anomaly_engine import start_anomaly_engine, start_daily_summary_scheduler
 
-# ── Structured JSON logging ───────────────────────────────────────────────────
+# ————————————————— Structured JSON logging ————————————————————————
 
 _handler = logging.StreamHandler()
 _handler.setFormatter(jsonlogger.JsonFormatter(
@@ -89,11 +78,22 @@ logging.root.handlers = [_handler]
 logging.root.setLevel(logging.INFO)
 log = logging.getLogger("core_api")
 
-# ── Rate limiter ──────────────────────────────────────────────────────────────
+# ————————————————— Sentry initialization for error tracking ——————————————————
+
+_SENTRY_DSN = os.getenv('SENTRY_DSN')
+if _SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=0.1,
+        environment=os.getenv('ENVIRONMENT', 'development')
+    )
+
+# ————————————————— Rate limiter ————————————————————————
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# ————————————————— FastAPI app ————————————————————————
 
 app = FastAPI(
     title="AIOps Core API",
@@ -104,7 +104,7 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-# Wildcard origins with allow_credentials=True is a critical misconfiguration —
+# Wildcard origins with allow_credentials=True is a critical misconfiguration â€”
 # it allows any site on the internet to make authenticated requests on behalf
 # of your logged-in users (session riding / credential theft).
 # ALLOWED_ORIGINS must be a comma-separated list of your actual frontend URLs.
@@ -125,7 +125,7 @@ app.add_middleware(
 )
 
 
-# ── Request logging middleware ────────────────────────────────────────────────
+# â”€â”€ Request logging middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.middleware("http")
 async def _log_requests(request: Request, call_next):
@@ -147,10 +147,13 @@ async def _log_requests(request: Request, call_next):
     return response
 
 
-# ── Startup / Shutdown ────────────────────────────────────────────────────────
+# â”€â”€ Startup / Shutdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.on_event("startup")
 async def _startup():
+    log.info("Core API started (startup tasks disabled for debugging)")
+    return
+    # DISABLED FOR DEBUGGING — original startup below:
     await init_db()
     await _seed_default_org()
     asyncio.create_task(start_anomaly_engine())
@@ -160,7 +163,7 @@ async def _startup():
     log.info("Core API started")
 
 
-# ── Local machine metrics collector ──────────────────────────────────────────
+# â”€â”€ Local machine metrics collector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Registers this server as a built-in agent in the default org and stores
 # live psutil metrics so all org members can see them without deploying an agent.
 
@@ -257,7 +260,7 @@ async def _local_metrics_loop():
                 orgs = orgs_result.scalars().all()
                 for org in orgs:
                     agent = await _get_or_create_local_agent(db, org.id)
-                    # network_in/out stored as bytes (BigInteger) — convert from MB float
+                    # network_in/out stored as bytes (BigInteger) â€” convert from MB float
                     net_in_mb  = metrics.get("network_in")  or 0.0
                     net_out_mb = metrics.get("network_out") or 0.0
                     load       = metrics.get("load_avg")
@@ -335,7 +338,7 @@ async def _seed_default_org():
         log.info("Default organization seeded (id=%s)", org.id)
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
+# â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/api/health")
 async def health():
@@ -351,7 +354,7 @@ async def dashboard_snapshot(
 
     Priority:
       1. User's local psutil agent (browser-{user_id[:8]} with source=local-agent, fresh <60s)
-      2. Server's psutil agent (local-server) — always running, real data
+      2. Server's psutil agent (local-server) â€” always running, real data
       3. Average across all agents (last resort)
     """
     org_id  = token.org_id
@@ -422,7 +425,7 @@ async def dashboard_snapshot(
         )
         return r.scalar_one_or_none()
 
-    # ── Priority 1: user's real local psutil agent (local_agent.py) ──────────
+    # â”€â”€ Priority 1: user's real local psutil agent (local_agent.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     browser_label = f"browser-{user_id[:8]}"
     ba_res = await db.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.label == browser_label)
@@ -434,10 +437,10 @@ async def dashboard_snapshot(
         if browser_snap and _age(browser_snap) < 60:
             source = (browser_snap.extra or {}).get("source", "browser") if browser_snap.extra else "browser"
             if source == "local-agent":
-                # Full real psutil data from user's machine — use directly
+                # Full real psutil data from user's machine â€” use directly
                 return _build(browser_snap)
 
-    # ── Priority 2: server psutil (always running) ────────────────────────────
+    # â”€â”€ Priority 2: server psutil (always running) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     sa_res = await db.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.label == "local-server")
     )
@@ -446,7 +449,7 @@ async def dashboard_snapshot(
     if server_agent:
         server_snap = await _latest_snap(server_agent.id)
 
-    # ── Merge: server as baseline + override with any fresh browser values ────
+    # â”€â”€ Merge: server as baseline + override with any fresh browser values â”€â”€â”€â”€
     # Browser API gives partial data (cpu estimate, memory on Chrome).
     # Server gives full psutil. Combine: prefer non-zero browser values.
     if server_snap:
@@ -482,7 +485,7 @@ async def dashboard_snapshot(
             "source":       src,
         }
 
-    # ── Priority 3: average across all agents ────────────────────────────────
+    # â”€â”€ Priority 3: average across all agents â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     sub = (
         select(MetricSnapshot.agent_id, sqlfunc.max(MetricSnapshot.timestamp).label("max_ts"))
         .where(MetricSnapshot.org_id == org_id)
@@ -561,9 +564,9 @@ async def whoami(request: Request):
         return {"decoded": raw_payload, "secret_ok": False, "jwt_error": str(e)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ORGANIZATIONS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class CreateOrgRequest(BaseModel):
     name: str
@@ -646,9 +649,9 @@ async def _fetch_org(db: AsyncSession, org_id: str) -> Organization:
     return org
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # AGENTS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class CreateAgentRequest(BaseModel):
     label: str
@@ -757,7 +760,7 @@ async def create_agent(
 
     return {
         **_agent_out(agent),
-        "api_key": raw_key,  # shown ONCE — not stored in plain text
+        "api_key": raw_key,  # shown ONCE â€” not stored in plain text
         "install_cmd": install_cmd,
         "warning": "Save this API key now. It will not be shown again.",
     }
@@ -899,9 +902,9 @@ async def _fetch_agent(db: AsyncSession, org_id: str, agent_id: str) -> Agent:
     return agent
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INGEST — Agent heartbeat (X-Agent-Key auth, no JWT)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# INGEST â€” Agent heartbeat (X-Agent-Key auth, no JWT)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class MetricsPayload(BaseModel):
     cpu: float
@@ -1057,7 +1060,7 @@ async def browser_metrics(
         cpu=m.cpu or 0.0,
         memory=m.memory or 0.0,
         disk=m.disk or 0.0,
-        network_in=int((m.network_in or 0) * 1024),   # KB → bytes
+        network_in=int((m.network_in or 0) * 1024),   # KB â†’ bytes
         network_out=int((m.network_out or 0) * 1024),
         temperature=m.temperature,
         processes=m.processes,
@@ -1107,7 +1110,7 @@ async def command_result(
     return {"ok": True}
 
 
-# ── Legacy heartbeat compatibility (existing remote_agent.py uses token in body) ──
+# â”€â”€ Legacy heartbeat compatibility (existing remote_agent.py uses token in body) â”€â”€
 
 class LegacyHeartbeatBody(BaseModel):
     token: str
@@ -1128,7 +1131,7 @@ async def legacy_heartbeat(
     Clients should migrate to POST /ingest/heartbeat with X-Agent-Key header.
     """
     import hashlib as _hl
-    log.warning("Legacy agent heartbeat — migrate to /ingest/heartbeat with X-Agent-Key")
+    log.warning("Legacy agent heartbeat â€” migrate to /ingest/heartbeat with X-Agent-Key")
 
     token_hash = _hl.sha256(body.token.encode()).hexdigest()
     result = await db.execute(
@@ -1170,9 +1173,9 @@ async def legacy_heartbeat(
     return {"ok": True, "agent_id": agent.id, "commands": pending}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # METRICS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/api/orgs/{org_id}/metrics")
 @limiter.limit("120/minute")
@@ -1236,9 +1239,9 @@ def _snap_out(s: MetricSnapshot) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ALERTS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class UpdateAlertRequest(BaseModel):
     status: str   # acknowledged | resolved
@@ -1342,9 +1345,9 @@ def _alert_out(a: AlertRecord) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # REMEDIATION
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TriggerRemediationRequest(BaseModel):
     agent_id: str
@@ -1468,9 +1471,9 @@ def _remediation_out(r: RemediationRecord) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # AUDIT LOG
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/api/orgs/{org_id}/audit")
 @limiter.limit("30/minute")
@@ -1500,9 +1503,9 @@ async def list_audit(
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Helper: write audit log
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _audit(
     db: AsyncSession,
@@ -1528,9 +1531,9 @@ async def _audit(
     ))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NOTIFICATION CHANNELS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _VALID_CHANNEL_TYPES = {"email", "slack", "telegram"}
 _VALID_SEVERITIES    = {"critical", "high", "medium", "low", "info"}
@@ -1541,7 +1544,7 @@ class CreateChannelRequest(BaseModel):
     label:        Optional[str] = None
     config:       dict                       # channel-specific credentials
     enabled:      bool = True
-    severities:   Optional[List[str]] = None  # None → all
+    severities:   Optional[List[str]] = None  # None â†’ all
 
 
 class UpdateChannelRequest(BaseModel):
@@ -1559,7 +1562,7 @@ def _channel_out(ch: NotificationChannel) -> dict:
     if ch.channel_type == "telegram":
         token = cfg.get("bot_token", "")
         if token:
-            cfg["bot_token"] = token[:6] + "…" + token[-4:] if len(token) > 10 else "***"
+            cfg["bot_token"] = token[:6] + "â€¦" + token[-4:] if len(token) > 10 else "***"
     return {
         "id":           ch.id,
         "org_id":       ch.org_id,
@@ -1706,9 +1709,9 @@ async def test_notification_channel(
     return outcome
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ALERT RULES
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _VALID_METRICS = {"cpu", "memory", "disk"}
 
@@ -1868,9 +1871,9 @@ async def delete_alert_rule(
     await _audit(db, org_id, token.sub, "alert_rule.deleted", "alert_rule", rule_id)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NOTIFICATION LOGS
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/api/orgs/{org_id}/notification-logs")
 @limiter.limit("60/minute")
@@ -1913,9 +1916,9 @@ async def list_notification_logs(
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DAILY SUMMARY (manual trigger — for testing / on-demand)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# DAILY SUMMARY (manual trigger â€” for testing / on-demand)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/api/orgs/{org_id}/daily-summary/send")
 @limiter.limit("5/minute")
@@ -1943,9 +1946,9 @@ async def _send_summary_bg(org_id: str) -> None:
         log.error("On-demand daily summary failed: org=%s: %s", org_id[:8], exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WMI AGENTLESS POLLING  (server-side, zero client touch)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _wmi_polling_loop():
     """Load all active WMI targets from DB on startup, then start the poller."""
@@ -2145,9 +2148,9 @@ async def delete_wmi_target(
     await _audit(db, org_id, token.sub, "wmi_target.deleted", "wmi_target", target_id, {})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WMI BOOTSTRAP INVITE  (zero-input onboarding)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class CreateWmiInviteRequest(BaseModel):
     pass  # no body needed; org + auth from path/token
@@ -2200,7 +2203,7 @@ class WmiRegisterRequest(BaseModel):
     os: str
     arch: Optional[str] = None
     username: str
-    password: str   # plaintext — caller must use HTTPS/internal network
+    password: str   # plaintext â€” caller must use HTTPS/internal network
     port: int = 5985
 
 
@@ -2213,7 +2216,7 @@ async def wmi_register(
 ):
     """
     Public endpoint: Windows machine self-registers using a bootstrap token.
-    No auth header — the token IS the credential (hashed, single-use, expiring).
+    No auth header â€” the token IS the credential (hashed, single-use, expiring).
     Creates a WMI target + synthetic agent and starts polling immediately.
     """
     from wmi_poller import wmi_poller, encrypt_password
@@ -2323,7 +2326,7 @@ async def get_wmi_invite_status(
     }
 
 
-# ── User-facing setup guide (no auth — safe to share) ─────────────────────────
+# â”€â”€ User-facing setup guide (no auth â€” safe to share) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/api/wmi/setup-guide")
 async def wmi_setup_guide():
@@ -2352,6 +2355,6 @@ async def wmi_setup_guide():
         "note": (
             "This enables Windows Remote Management (WinRM) on port 5985. "
             "Your IT admin will need your machine's IP address or hostname. "
-            "No software is installed — this is a built-in Windows feature."
+            "No software is installed â€” this is a built-in Windows feature."
         ),
     }

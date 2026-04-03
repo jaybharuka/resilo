@@ -1,4 +1,4 @@
-# ── Core Flask API ────────────────────────────────────────────────────────────
+# â”€â”€ Core Flask API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 flask==3.0.3
 flask-cors==4.0.0
 Flask-Limiter==3.5.0
@@ -6,66 +6,70 @@ psutil==5.9.8
 requests==2.31.0
 PyYAML==6.0.1
 
-# ── New: FastAPI Auth + Core Services ─────────────────────────────────────
+# â”€â”€ New: FastAPI Auth + Core Services â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic[email]==2.9.2
 python-multipart==0.0.17
 slowapi==0.1.9              # rate limiting for FastAPI
 
-# ── JWT (shared by Flask + FastAPI) ─────────────────────────────────────────
+# â”€â”€ JWT (shared by Flask + FastAPI) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 PyJWT==2.8.0
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.0
 passlib[bcrypt]==1.7.4
 
-# ── PostgreSQL (async for auth_api, sync driver available for Flask) ─────────
+# â”€â”€ PostgreSQL (async for auth_api, sync driver available for Flask) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
-psycopg2-binary==2.9.10      # sync driver — useful for Alembic migrations
+psycopg2-binary==2.9.10      # sync driver â€” useful for Alembic migrations
 alembic==1.13.1              # database migration framework
 
-# ── AI integrations ──────────────────────────────────────────────────────────
+# â”€â”€ AI integrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 google-generativeai==0.7.2
-openai>=1.0.0
+openai==1.52.0
 
-# ── Async HTTP (notification_service — Slack & Telegram dispatch) ─────────────
+# â”€â”€ Async HTTP (notification_service â€” Slack & Telegram dispatch) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 aiohttp==3.10.5
 
-# ── Structured logging (ELK Stack) ───────────────────────────────────────────
+# â”€â”€ Structured logging (ELK Stack) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 python-json-logger==2.0.7
 
-# ── Metrics (Prometheus) ──────────────────────────────────────────────────────
+# â”€â”€ Metrics (Prometheus) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 prometheus-client==0.20.0
 
-# ── Encryption (field-level encryption at rest) ────────────────────────────────
+# â”€â”€ Encryption (field-level encryption at rest) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 cryptography==42.0.5
 
-# ── OpenTelemetry distributed tracing (Jaeger) ───────────────────────────────
-opentelemetry-sdk
-opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-instrumentation-flask
-opentelemetry-instrumentation-requests
-protobuf>=3.19.5,<5.0.0dev
+# â”€â”€ OpenTelemetry distributed tracing (Jaeger) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+opentelemetry-sdk==1.24.0
+opentelemetry-exporter-otlp-proto-grpc==1.24.0
+opentelemetry-instrumentation-flask==0.45b0
+opentelemetry-instrumentation-requests==0.45b0
+protobuf==4.25.3
 
-# ── Optional Firebase (comment out if not using Firebase) ────────────────────
+# â”€â”€ Optional Firebase (comment out if not using Firebase) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # firebase-admin==6.5.0
 
-# ── Optional HuggingFace AI ───────────────────────────────────────────────────
+# â”€â”€ Optional HuggingFace AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # transformers==4.43.3
 # torch==2.3.1
 # tokenizers==0.19.1
 # huggingface-hub==0.23.4
 
-# ── Optional Redis (response caching) ────────────────────────────────────────
+# â”€â”€ Optional Redis (response caching) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # redis>=5.0.0
 
-# ── WMI Agentless Polling (Windows remote metrics via WinRM) ─────────────────
-pywinrm>=0.4.3                 # WinRM client for Python (server polls Windows machines)
+# â”€â”€ WMI Agentless Polling (Windows remote metrics via WinRM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+pywinrm==0.4.3                 # WinRM client for Python (server polls Windows machines)
 # pywinrm[kerberos]            # uncomment for Active Directory / domain auth
 
-# ── Dev / Test ────────────────────────────────────────────────────────────────
+# â”€â”€ Dev / Test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 pytest==8.2.2
 pytest-asyncio==0.23.7
+pytest-cov==5.0.0              # code coverage reporting
 httpx==0.27.0                  # needed for FastAPI async test client
 aiosqlite==0.19.0              # in-memory SQLite for async tests
+bandit==1.7.9                  # security scanning for Python code
+sentry-sdk[flask]==1.40.0       # error tracking and monitoring
+

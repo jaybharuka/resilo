@@ -145,15 +145,9 @@ class AuthenticationManager:
         # default can forge arbitrary JWTs and impersonate any user.
         # Set GATEWAY_JWT_SECRET in your environment (min 32 chars recommended).
         configured = jwt_secret or os.environ.get('GATEWAY_JWT_SECRET', '')
-        if configured:
-            self.jwt_secret = configured
-        else:
-            self.jwt_secret = secrets.token_urlsafe(48)
-            logger.warning(
-                "GATEWAY_JWT_SECRET not set — using an ephemeral secret. "
-                "All gateway sessions will be invalidated on restart. "
-                "Set GATEWAY_JWT_SECRET in your .env file immediately."
-            )
+        if not configured:
+            raise ValueError("GATEWAY_JWT_SECRET environment variable must be set")
+        self.jwt_secret = configured
         self.users: Dict[str, User] = {}
         self.api_keys: Dict[str, APIKey] = {}
         self.sessions: Dict[str, str] = {}  # session_id -> user_id
@@ -218,23 +212,16 @@ class AuthenticationManager:
         self.users[operator_user.user_id] = operator_user
         self.users[viewer_user.user_id] = viewer_user
 
-        # Require passwords from environment — no hardcoded fallbacks.
-        # If an env var is missing, a cryptographically random password is
-        # generated for the session (effectively disabling that account until
-        # the variable is set), and a warning is logged so ops can act.
+        # Require passwords from environment — no hardcoded or random fallbacks.
+        # All user passwords must be explicitly set via environment variables.
         for _uname, _env_var in [
             ('admin',    'GATEWAY_ADMIN_PASSWORD'),
             ('operator', 'GATEWAY_OPERATOR_PASSWORD'),
             ('viewer',   'GATEWAY_VIEWER_PASSWORD'),
         ]:
-            _pw = os.environ.get(_env_var, '')
+            _pw = os.environ.get(_env_var)
             if not _pw:
-                _pw = secrets.token_urlsafe(32)
-                logger.warning(
-                    "%s not set — '%s' account has a random password for this "
-                    "session and cannot be logged into. Set %s in your .env file.",
-                    _env_var, _uname, _env_var,
-                )
+                raise ValueError(f"{_env_var} environment variable must be set")
             self._password_hashes[_uname] = self._hash_password(_pw)
 
         # Create API keys

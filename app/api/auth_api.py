@@ -1,5 +1,5 @@
 """
-auth_api.py — AIOps Bot Authentication & User Management Service
+auth_api.py Ã¢â‚¬â€ AIOps Bot Authentication & User Management Service
 
 FastAPI application running on port 5001.
 
@@ -8,7 +8,7 @@ Start:
 
 Required environment variables (set in .env):
     DATABASE_URL       postgresql+asyncpg://aiops:aiops@localhost:5432/aiops
-    JWT_SECRET_KEY     a long random string — NEVER change in production
+    JWT_SECRET_KEY     a long random string Ã¢â‚¬â€ NEVER change in production
     FRONTEND_URL       http://localhost:3001  (used in invite / reset links)
 
 Optional:
@@ -21,21 +21,10 @@ Optional:
     EMAIL_FROM         from address
 """
 
-import sys as _sys
 import os
 
-# Ensure all app sub-packages are importable regardless of working directory
-_here = os.path.dirname(os.path.abspath(__file__))   # app/api
-_app  = os.path.dirname(_here)                        # app/
-_root = os.path.dirname(_app)                         # repo root
-for _p in [_here, _app, _root,
-           os.path.join(_app, 'core'),
-           os.path.join(_app, 'auth'),
-           os.path.join(_app, 'integrations')]:
-    if _p not in _sys.path:
-        _sys.path.insert(0, _p)
-
 # Load .env from repo root so JWT_SECRET_KEY etc. are available
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _env_file = os.path.join(_root, '.env')
 if os.path.exists(_env_file):
     with open(_env_file) as _ef:
@@ -60,6 +49,8 @@ from email.mime.text import MIMEText
 from typing import Optional, List
 
 import bcrypt
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -72,17 +63,17 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from database import (
+from app.core.database import (
     init_db, get_db, SessionLocal,
     User, UserSession, InviteToken, PasswordResetToken, Organization, APIKey,
 )
-from logging_config import get_logger, set_correlation_id, get_correlation_id
-from metrics import metrics_middleware, get_metrics
-from trace_context import init_trace_context, get_propagation_headers
-from audit import audit_log
-from authz import require_org_access, require_admin_in_org
+from app.core.logging_config import get_logger, set_correlation_id, get_correlation_id
+from app.core.metrics import metrics_middleware, get_metrics
+from app.core.trace_context import init_trace_context, get_propagation_headers
+from app.core.audit import audit_log
+from app.auth.authz import require_org_access, require_admin_in_org
 from apikey import generate_api_key, hash_api_key, validate_api_key
-from secrets import validate_secrets
+from config import validate_secrets
 from retention import cleanup_all_expired_data
 from backup import create_backup_async, cleanup_old_backups, get_recent_backups, verify_backup
 
@@ -92,7 +83,7 @@ from backup import create_backup_async, cleanup_old_backups, get_recent_backups,
 log = get_logger("auth_api")
 
 # ---------------------------------------------------------------------------
-# JWT config — secret MUST come from env in production
+# JWT config Ã¢â‚¬â€ secret MUST come from env in production
 # ---------------------------------------------------------------------------
 _jwt_secret = os.getenv("JWT_SECRET_KEY")
 if not _jwt_secret:
@@ -104,6 +95,18 @@ JWT_REFRESH_TTL = int(os.getenv("JWT_REFRESH_TTL", "2592000"))   # 30 d
 FRONTEND_URL    = os.getenv("FRONTEND_URL", "http://localhost:3001")
 
 VALID_ROLES = {"admin", "manager", "employee", "guest"}
+
+# ---------------------------------------------------------------------------
+# Sentry initialization for error tracking
+# ---------------------------------------------------------------------------
+_SENTRY_DSN = os.getenv('SENTRY_DSN')
+if _SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=0.1,
+        environment=os.getenv('ENVIRONMENT', 'development')
+    )
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -188,10 +191,11 @@ async def https_and_security_middleware(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' http: https:; frame-ancestors 'none'"
     
     return response
 
-# Wildcard origins with allow_credentials=True is a critical misconfiguration —
+# Wildcard origins with allow_credentials=True is a critical misconfiguration Ã¢â‚¬â€
 # it allows any site on the internet to make authenticated requests on behalf
 # of your logged-in users (session riding / credential theft).
 # ALLOWED_ORIGINS must be a comma-separated list of your actual frontend URLs.
@@ -269,40 +273,40 @@ async def type_error_handler(request: Request, exc: TypeError):
 
 
 # ---------------------------------------------------------------------------
-# Startup — validate secrets + create tables + seed default admin
+# Startup Ã¢â‚¬â€ validate secrets + create tables + seed default admin
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def _startup():
     # Validate all required secrets are present before doing anything else
     validate_secrets()
-    await init_db()
+    
+    # Create tables (simplified - skip Alembic migrations for demo)
+    try:
+        from app.core.database import Base, engine
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        log.info("Database tables created successfully")
+    except Exception as e:
+        log.error(f"Failed to create tables: {e}")
+    
     await _seed_admin()
     
-    # Run data retention cleanup on startup
-    async with SessionLocal() as db:
-        await cleanup_all_expired_data(db)
-    
-    # Create automated backup
-    try:
-        backup_file = await create_backup_async()
-        verify_backup(backup_file)
-        # Cleanup old backups (keep last 7)
-        keep_count = int(os.getenv("BACKUP_RETENTION_COUNT", "7"))
-        cleanup_old_backups(keep_count=keep_count)
-    except Exception as e:
-        log.error(f"Backup failed on startup: {e}")
+    # Note: Data retention cleanup and backups can be run separately via scheduled tasks
+    # Commenting out on startup to allow faster server initialization
+    # async with SessionLocal() as db:
+    #     await cleanup_all_expired_data(db)
 
 
 async def _seed_admin():
     """
     Ensure the default admin account exists and its password always matches
     ADMIN_DEFAULT_PASSWORD from .env.  Running this on every startup means
-    the password is never silently randomised — what is in .env is the truth.
+    the password is never silently randomised Ã¢â‚¬â€ what is in .env is the truth.
     """
     _dev_pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@1234")
 
     async with SessionLocal() as db:
-        # ── Ensure default org exists ─────────────────────────────────────────
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Ensure default org exists Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         org_count = await db.execute(select(sqlfunc.count()).select_from(Organization))
         if org_count.scalar() == 0:
             org = Organization(
@@ -321,9 +325,9 @@ async def _seed_admin():
             org = org_result.scalar_one()
             org_id = org.id
 
-        # ── Upsert admin@company.local ────────────────────────────────────────
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Upsert admin@company.local Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         result = await db.execute(
-            select(User).where(User.email == "admin@company.local")
+            select(User).where((User.email == "admin@company.local") | (User.username == "admin"))
         )
         admin = result.scalar_one_or_none()
         pw_hash = _hash_password(_dev_pw)
@@ -348,6 +352,7 @@ async def _seed_admin():
             admin.is_active          = True
             if not admin.org_id:
                 admin.org_id = org_id
+            log.info("Admin account synced (admin@company.local)")
 
         # Migrate any other users that slipped through without an org
         await db.execute(
@@ -357,7 +362,7 @@ async def _seed_admin():
         )
         await db.commit()
         log.info(
-            "Admin ready — email: admin@company.local  "
+            "Admin ready Ã¢â‚¬â€ email: admin@company.local  "
             "password: (from ADMIN_DEFAULT_PASSWORD in .env)"
         )
 
@@ -397,7 +402,7 @@ def _validate_password(pw: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TOTP (RFC 6238) — stdlib only, no pyotp needed
+# TOTP (RFC 6238) Ã¢â‚¬â€ stdlib only, no pyotp needed
 # ---------------------------------------------------------------------------
 def _totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode()
@@ -458,7 +463,7 @@ def _decode_access_token(token: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Auth dependency — get current user from Bearer token
+# Auth dependency Ã¢â‚¬â€ get current user from Bearer token
 # ---------------------------------------------------------------------------
 async def _current_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -502,7 +507,7 @@ def _send_email(to: str, subject: str, html: str, plain: str = "") -> bool:
     pw   = os.getenv("EMAIL_PASSWORD", "")
     frm  = os.getenv("EMAIL_FROM", user)
     if not (host and user and pw):
-        log.info("SMTP not configured — would have sent to %s: %s", to, subject)
+        log.info("SMTP not configured Ã¢â‚¬â€ would have sent to %s: %s", to, subject)
         return False
     try:
         msg = MIMEMultipart("alternative")
@@ -854,7 +859,7 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request, db: Asy
         reset_url = f"{FRONTEND_URL}/reset-password?token={raw}"
         sent = _send_email(
             user.email,
-            "AIOps Bot — Password Reset",
+            "AIOps Bot Ã¢â‚¬â€ Password Reset",
             f"<p>Click to reset your password (valid 1 hour):</p><p><a href='{reset_url}'>{reset_url}</a></p>",
             plain=f"Password reset link (valid 1 hour): {reset_url}",
         )
@@ -943,7 +948,7 @@ async def twofa_disable(body: Disable2FARequest, user: User = Depends(_current_u
 
 @app.get("/users")
 async def list_users(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
-    # Scope to the admin's own org — admins cannot see users from other orgs
+    # Scope to the admin's own org Ã¢â‚¬â€ admins cannot see users from other orgs
     q = select(User).order_by(User.created_at.desc())
     if admin.org_id:
         q = q.where(User.org_id == admin.org_id)
@@ -1408,7 +1413,7 @@ async def accept_invite(body: AcceptInviteRequest, request: Request, db: AsyncSe
 
 
 # ---------------------------------------------------------------------------
-# Self-service admin registration — creates a new org + admin user
+# Self-service admin registration Ã¢â‚¬â€ creates a new org + admin user
 # ---------------------------------------------------------------------------
 @app.post("/auth/register", status_code=201, tags=["Authentication"])
 @limiter.limit("3/hour")
