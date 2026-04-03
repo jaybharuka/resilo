@@ -8,9 +8,7 @@ const inferSocketUrl = () => {
   if (env) return env;
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname, port } = window.location;
-      if (port === '3000') return `${protocol}//${hostname}:3001`;
-      return window.location.origin;
+      return window.location.origin; // same host+port as the served page
     }
   } catch {}
   try {

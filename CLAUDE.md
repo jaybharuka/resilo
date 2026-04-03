@@ -1,57 +1,31 @@
 # CLAUDE.md
 
-<!-- Token-efficient rules (drona23/claude-token-efficient) — applied project-wide -->
-
-## Behavior
-- No sycophantic openers ("Sure!", "Great question!", "Absolutely!").
-- No hollow closings ("I hope this helps!", "Let me know if you need anything!").
-- Never restate the prompt before answering.
-- No "As an AI..." framing. No unsolicited suggestions beyond the request.
-- No em dashes, smart quotes, or Unicode bullets. Plain ASCII only.
-- No disclaimers unless there is a genuine safety risk.
-- If unsure about a fact: say "I don't know." Never invent file paths, function names, or values.
-- When the user corrects something: accept it as ground truth for the session.
-
-## Efficiency
-- Read a file once. Never re-read unless it may have changed since last read.
-- Prefer editing over rewriting whole files.
-- One focused coding pass. Avoid write-delete-rewrite cycles.
-- Simplest working solution. No over-engineering, no premature abstractions.
-- No docstrings, type annotations, or comments on code not being changed.
-- No error handling for scenarios that cannot happen.
-- Do not touch code outside the scope of the request.
-- Budget: 50 tool calls maximum per task. Work efficiently.
-
----
-
-This file provides project-specific guidance to Claude Code when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-AIOps Bot is an AI-powered operations monitoring and automation platform with a multi-service Python backend (FastAPI + legacy Flask) and a React frontend. It provides real-time system monitoring, AI-powered insights, multi-channel notifications, and autonomous operations for multi-tenant enterprise environments.
+AIOps Bot is an AI-powered operations monitoring and automation platform. It combines a Python Flask backend (74+ modules) with a React frontend dashboard, providing real-time system monitoring, AI-powered insights, multi-channel notifications, and autonomous operations.
 
 ## Commands
 
-### Backend Services
+### Backend
+
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Auth service (FastAPI, port 5001)
-uvicorn app.api.auth_api:app --port 5001 --reload
+# Run main API server (port 5000)
+python api_server.py
 
-# Core API (FastAPI, port 8000)
-uvicorn app.api.core_api:app --port 8000 --reload
+# Run orchestrator
+python aiops_orchestrator.py
 
-# Seed initial admin user
-python scripts/seed_admin.py
-
-# Legacy Flask API (port 5000) — being deprecated
-python app/api/api_server.py
-
-# Interactive launcher (setup, chatbots, monitoring subsystems)
+# Interactive launcher (menu-driven)
 python launch.py
+
+# Check imports / validate environment
+python check_imports.py
 ```
 
 ### Frontend
@@ -59,123 +33,95 @@ python launch.py
 ```bash
 cd dashboard
 npm install
-npm start           # Dev server (port 3000, via craco)
-npm run build       # Production build
-npm run server      # Express server (port 3002)
-npm run start-all   # Concurrent: dev + express server
-npm test            # Jest via craco
+npm start          # Dev server (port 3001)
+npm run build      # Production build
+npm run server     # Express backend server
 ```
 
-### Docker (Full Stack)
+### One-Click Launch (Windows)
 
 ```bash
-docker-compose up                    # All 15 services
-docker-compose up timescaledb nginx  # DB + proxy only
+start_dashboard.bat          # Backend + frontend
+.\scripts\start_all.ps1 -Port 3001 -BindHost "127.0.0.1"
+.\scripts\stop_all.ps1
 ```
 
-### Windows Scripts
+### Docker
 
-```powershell
-.\scripts\start_dashboard.ps1   # Backend + frontend
-.\scripts\stop_all.ps1
-.\scripts\restart_backend.ps1
+```bash
+docker-compose up
 ```
 
 ## Default Ports
 
-| Service             | Port |
-|---------------------|------|
-| Auth API (FastAPI)  | 5001 |
-| Core API (FastAPI)  | 8000 |
-| Legacy Flask API    | 5000 |
-| Frontend dev        | 3000 |
-| Express server      | 3002 |
-| Nginx (TLS)         | 443  |
-| Prometheus          | 9090 |
-| Grafana             | 3000 |
-| Jaeger UI           | 16686|
-| TimescaleDB         | 5432 |
+| Service    | Port |
+|------------|------|
+| Frontend   | 3001 (fallback 3011) |
+| API Backend | 5000 |
+| Prometheus | 9090 |
+| Metrics Exporter | 8001 |
+| Bot Service | 8080 |
 
 ## Architecture
 
-### Three-Layer API Design
+### Backend (Python)
 
-The backend has three API layers; `core_api` and `auth_api` are the active ones:
+The backend is organized around a central orchestrator with modular, domain-specific services:
 
-1. **`app/api/auth_api.py`** (FastAPI, port 5001) — JWT issuance, user management, TOTP/2FA (pure-Python RFC 6238, no pyotp), email-based password reset via SMTP, invite tokens. Rate limited at Nginx: 20 req/min login.
+- **`api_server.py`** — Flask REST API (primary entry point). Serves `/api/health`, `/api/system`, `/api/insights`, `/api/alerts`, `/api/chat`, `/api/analyze`. Initializes `EnhancedAIOpsBot` and `HuggingFaceAIEngine`.
+- **`aiops_orchestrator.py`** — Central event-driven orchestration engine. Manages component lifecycle, pub/sub messaging, dependency resolution, and health monitoring.
+- **`realtime_api_server.py`** — FastAPI server with WebSocket support for real-time data streaming.
+- **`launch.py`** — Menu-driven interactive launcher for running subsystems.
+- **`auth_system.py`** — Authentication and RBAC (Admin/Manager/Employee roles).
 
-2. **`app/api/core_api.py`** (FastAPI, port 8000) — Unified platform for agents, metrics, alerts, remediation, anomaly detection, and daily summaries. Multi-tenant: all queries scoped by `org_id`. Rate limited at Nginx: 100 req/min API, 30 req/min heartbeat. Has background anomaly detection engine and OpenTelemetry instrumentation.
-
-3. **`app/api/api_server.py`** (Flask, port 5000) — **Legacy, being deprecated.** Synchronous, in-memory rate limiting with `threading.Lock`. Still used for backward compatibility.
-
-### Request Flow (via Nginx)
-
-```
-Client → Nginx (443)
-  /auth/*   → auth-api  :5001
-  /users    → auth-api  :5001
-  /api/*    → core-api  :8000
-  /ingest/* → core-api  :8000  (agent heartbeat)
-  /*        → React build (static)
-```
-
-### Authentication & RBAC
-
-- **Auth flow**: login → JWT access token (24h) + refresh token (30d), both HS256
-- **2FA**: password auth returns temp token; client must POST TOTP code to complete login
-- **Rate limiting**: Per-IP 10 attempts/min + per-email lockout (5 failures → 15-min lockout)
-- **RBAC** defined in `app/auth/rbac.py`. Permission matrix:
-  - `admin`: wildcard (`*`)
-  - `devops`: agents, metrics, alerts, remediation r/w/execute
-  - `viewer`: read-only on agents, metrics, alerts, remediation
-  - `manager`/`employee`: legacy aliases for devops/viewer
-
-  FastAPI `Depends()` helpers in `rbac.py` enforce permissions at route level.
-
-### Database
-
-- **PostgreSQL + TimescaleDB** (replaces SQLite). Connection in `app/core/database.py`.
-- Async SQLAlchemy 2.0 (`asyncpg`): pool size 5, max overflow 10, pre-ping enabled.
-- `DATABASE_URL` env defaults to `postgresql+asyncpg://aiops:aiops@localhost:5432/aiops`.
-- Key tables: `Organization`, `User`, `UserSession`, `Agent`, `MetricSnapshot` (hypertable), `AlertRecord`, `RemediationRecord`, `AuditLog`, `WMITarget`.
-- TimescaleDB retention policy controlled by `TIMESCALE_RETENTION_DAYS` (default 30).
-- All resource tables are **multi-tenant**: always filter by `org_id`.
+**Domain modules (all standalone, pluggable):**
+- AI/ML: `enhanced_aiops_chatbot.py`, `huggingface_ai_integration.py`, `gemini_integration.py`, `adaptive_ml.py`
+- Monitoring: `performance_monitor.py`, `intelligent_aiops_monitor.py`, `alert_correlation.py`
+- Integrations: `discord_bot.py`, `slack_notifier.py`, `teams_integration.py`, `notification_hub.py`
+- Analytics: `advanced_predictive_analytics.py`, `business_intelligence_engine.py`
+- Automation: `autonomous_operations.py`, `workflow_orchestration_engine.py`, `intelligent_remediation.py`
+- Security: `advanced_security_compliance_suite.py`, `audit_logging_system.py`, `threat_intelligence.py`
 
 ### Frontend (React)
 
-Located in `dashboard/src/`. Uses craco (not react-scripts directly) for build overrides.
-- State: Zustand
-- UI: Material-UI + Tailwind CSS + Framer Motion + Recharts
-- Real-time: Socket.io-client v4.7
-- `dashboard/server.js` — Express server (separate from React dev server)
+Located in `dashboard/src/`:
+- **`App.js`** — Root app, routing setup
+- **`components/MultiRoleDashboard.js`** — Role-aware dashboard (Admin/Manager/Employee views)
+- **`components/`** — 20+ feature components: `RealtimeChat`, `AiInsights`, `Alerts`, `Analytics`, `DeviceManagementPortal`, etc.
+- **`server.js`** — Express backend for the dashboard
 
-### Key Environment Variables
+Uses: Material-UI, Recharts, Framer Motion, Socket.io-client, Axios, Tailwind CSS.
 
-Copy `dashboard/.env.example` to `dashboard/.env`. Backend variables:
+### Databases (SQLite)
 
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `JWT_SECRET_KEY` | Shared JWT signing secret |
-| `JWT_ACCESS_TTL` | Access token TTL in seconds (default 86400) |
-| `JWT_REFRESH_TTL` | Refresh token TTL (default 2592000) |
-| `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` | Email for password reset |
-| `TIMESCALE_RETENTION_DAYS` | Metrics retention (default 30) |
-| `DISCORD_BOT_TOKEN`, `SLACK_WEBHOOK_URL` | Notification integrations |
-| `DEMO_MODE` | Enable demo features |
+All in the root directory:
+- `aiops_auth.db` — Users and auth
+- `audit_logs.db` — Audit trail
+- `compliance.db`, `configuration.db`, `dashboard.db`, `data_integration.db`, `notifications.db`, `workflows.db`
 
-### Observability Stack (Docker Compose)
+### Key Configuration Files
 
-- **Prometheus + Grafana** — metrics dashboards
-- **ELK stack** (Elasticsearch, Logstash, Kibana, Filebeat) — log aggregation; core_api emits JSON logs via `jsonlogger`
-- **Jaeger** — distributed tracing via OpenTelemetry (instrumented in `core_api.py`)
-- **HashiCorp Vault** — secrets management (port 8200)
+| File | Purpose |
+|------|---------|
+| `aiops_config.yaml` | Main system config (components, health checks, orchestrator) |
+| `enterprise_config.yaml` | Enterprise-specific settings |
+| `.env.example` | Environment variables template (Discord, Slack, Email, logging) |
+| `api_config.json` | API integration config |
+| `alert_rules.yml` | Alert rule definitions |
+| `alertmanager.yml` | Alert manager config |
+| `prometheus.yml` | Prometheus scrape config |
 
-### AI Integration
+## AI Integration
 
-- **Google Gemini** (`app/integrations/gemini_integration.py`) — primary LLM for chat and analysis
-- **Hugging Face** (`app/integrations/huggingface_ai_integration.py`) — sentiment analysis, issue classification (transformers/torch are optional; commented out in `requirements.txt`)
+Dual AI engine architecture:
+- **Google Gemini Pro** (`gemini_integration.py`) — Primary LLM for chat and analysis
+- **Hugging Face** (`huggingface_ai_integration.py`) — Sentiment analysis, issue classification, anomaly detection (transformers/torch are optional, commented out in requirements.txt)
 
-### Pre-commit Hooks
+## Environment Variables
 
-`.pre-commit-config.yaml` runs **gitleaks** on staged files for secret detection. Do not bypass with `--no-verify`.
+Copy `.env.example` to `.env`. Key variables:
+- `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_ALERT_CHANNEL`
+- `SLACK_WEBHOOK_URL`, `SLACK_BOT_TOKEN`
+- `EMAIL_SMTP_SERVER`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`
+- `LOG_LEVEL` (default: INFO)
+- `DEMO_MODE` (enable/disable demo features)when

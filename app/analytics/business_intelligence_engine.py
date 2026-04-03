@@ -107,15 +107,63 @@ class BusinessIntelligenceEngine:
         logger.info("Business Intelligence Engine initialized")
     
     def _init_database(self):
-        """Apply schema migrations for the business intelligence SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "analytics_bi"
-        )
+        """Initialize SQLite database for BI data"""
         try:
-            from app.core.sqlite_migrator import run_sqlite_migrations
-            run_sqlite_migrations(self.db_path, _migrations_dir)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # KPI metrics table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS kpi_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    current_value REAL NOT NULL,
+                    target_value REAL NOT NULL,
+                    previous_value REAL NOT NULL,
+                    unit TEXT NOT NULL,
+                    trend TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    last_updated TEXT NOT NULL,
+                    description TEXT
+                )
+            ''')
+            
+            # ROI analyses table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS roi_analyses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    initiative TEXT NOT NULL,
+                    investment_amount REAL NOT NULL,
+                    savings_achieved REAL NOT NULL,
+                    roi_percentage REAL NOT NULL,
+                    payback_period_months REAL NOT NULL,
+                    net_present_value REAL NOT NULL,
+                    confidence_score REAL NOT NULL,
+                    risk_factors TEXT,
+                    created_at TEXT NOT NULL
+                )
+            ''')
+            
+            # Strategic insights table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS strategic_insights (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    priority TEXT NOT NULL,
+                    impact_score REAL NOT NULL,
+                    description TEXT NOT NULL,
+                    recommendations TEXT,
+                    data_sources TEXT,
+                    confidence REAL NOT NULL,
+                    generated_at TEXT NOT NULL
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+            
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
     

@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(sleep:*)",
+      "Bash(curl:*)",
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force\"; echo done)",
+      "Bash(find /c/Users/jaybh/OneDrive/Documents/ai-ops-bot/Ai-Ops-Bot -maxdepth 1 -name *logger* -o -name *log* -o -name *tracer*)",
+      "Bash(pip install:*)",
+      "Bash(npm start:*)",
+      "Bash(set PORT=3011)",
+      "Bash(PORT=3011 BROWSER=none npm start)",
+      "Bash(xargs grep:*)",
+      "Bash(python api_server.py)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(findstr \":5000\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import jwt; print\\(''jwt ok''\\)\")",
+      "Bash(python -c \"import jwt; print\\(''jwt:'', jwt.__version__\\)\")",
+      "Bash(python -c \"import bcrypt; print\\(''bcrypt:'', bcrypt.__version__\\)\")",
+      "Bash(cmd /c \"taskkill /PID 2916 /F & taskkill /PID 11896 /F & taskkill /PID 13288 /F\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 5000 -State Listen | Select-Object LocalPort,OwningProcess | Format-Table; Stop-Process -Id \\(Get-NetTCPConnection -LocalPort 5000 -State Listen\\).OwningProcess -Force -ErrorAction SilentlyContinue\")",
+      "mcp__ide__getDiagnostics",
+      "Bash(powershell -Command \"\n\\\\$procs = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess | Sort-Object -Unique\nforeach \\(\\\\$p in \\\\$procs\\) { Stop-Process -Id \\\\$p -Force -ErrorAction SilentlyContinue }\nStart-Sleep 2\nWrite-Host 'Port 5000 listeners:' \\(Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue\\).Count\n\")",
+      "Bash(findstr \":3001\")",
+      "Bash(powershell -Command \"\n\\\\$procs = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess | Sort-Object -Unique\nforeach \\(\\\\$p in \\\\$procs\\) { Stop-Process -Id \\\\$p -Force -ErrorAction SilentlyContinue }\nStart-Sleep 2\nWrite-Host 'cleared'\n\")",
+      "Bash(powershell -Command \"\\\\$p = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1\\).OwningProcess; Get-Process -Id \\\\$p | Select-Object Id,ProcessName,Path\")",
+      "Bash(powershell -Command \"Get-WmiObject Win32_Process -Filter 'ProcessId=13888' | Select-Object -ExpandProperty CommandLine\")",
+      "Bash(python -c \"import werkzeug; import inspect; import werkzeug.security as ws; print\\(inspect.getsource\\(ws.check_password_hash\\)\\)\")",
+      "Bash(npm run:*)",
+      "Bash(taskkill /F /IM python.exe /T)",
+      "Bash(taskkill /F /IM node.exe /T)",
+      "Bash(cmd /c \"netstat -ano | findstr LISTENING | findstr \"\":5000 \\\\|:3001 \"\"\")"
+    ]
+  }
+}

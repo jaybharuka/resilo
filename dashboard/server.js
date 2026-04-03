@@ -9,25 +9,30 @@ const { Server } = require('socket.io');
 const axios = require('axios');
 const { spawn } = require('child_process');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const Sentry = require('@sentry/node');
+const SENTRY_DSN = process.env.SENTRY_DSN;
+
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    tracesSampleRate: 0.1,
+    environment: process.env.NODE_ENV || 'development',
+  });
+}
+
 const app = express();
 const server = http.createServer(app);
 
+if (SENTRY_DSN) {
+  app.use(Sentry.Handlers.requestHandler());
+}
+
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
 const HOST = (process.env.HOST || '0.0.0.0').trim();
-const normalizeLoopback = (url) => {
-  try {
-    const u = new URL(url);
-    if (u.hostname === 'localhost') u.hostname = '127.0.0.1';
-    return u.toString().replace(/\/$/, '');
-  } catch {
-    return url;
-  }
-};
-
-const FLASK_BASE_URL = normalizeLoopback(process.env.FLASK_BASE_URL || 'http://localhost:5000');
+const FLASK_BASE_URL = process.env.FLASK_BASE_URL || 'http://localhost:5000';
 const CHAT_API_URL = process.env.CHAT_API_URL || `${FLASK_BASE_URL}/chat`;
 const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || `${FLASK_BASE_URL}/chat/stream`;
-const CORE_API_URL = normalizeLoopback(process.env.CORE_API_URL || 'http://localhost:8000');
+const CORE_API_URL = process.env.CORE_API_URL || 'http://localhost:8000';
 
 // Allow all localhost ports + any configured origins — broad for dev/LAN, lock down in prod
 const _rawOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
@@ -37,10 +42,21 @@ const io = new Server(server, {
   cors: { origin: true, methods: ['GET', 'POST'], credentials: true },
 });
 
+// Socket.IO authentication middleware — verify token on connection
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
+  if (!token) {
+    return next(new Error('Authentication required'));
+  }
+  // Store token on socket for later use in event handlers
+  socket.token = token;
+  next();
+});
+
 const _corsOptions = {
   origin(origin, cb) {
     if (!origin || _localhostRe.test(origin) || _rawOrigins.includes(origin)) return cb(null, true);
-    cb(null, true); // allow all in express layer; Flask handles its own CORS for auth routes
+    cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -64,8 +80,7 @@ app.use((_req, res, next) => {
 const _EXPRESS_NATIVE_PREFIXES = [
   '/api/system', '/api/processes', '/api/network', '/api/alerts',
   '/api/health', '/api/local-agent', '/api/actions', '/api/ai',
-  '/api/orgs', '/api/wmi-register', '/api/ingest',
-  '/connect.ps1', '/metrics',
+  '/connect.ps1',
 ];
 const _isExpressNative = (path) => {
   // Exact root
@@ -98,151 +113,10 @@ app.use(_flaskProxy);
 // JSON body parser — after proxy so Flask-bound requests keep their raw body stream intact
 app.use(express.json());
 
-function getPublicBaseUrl(req) {
-  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').toString().split(',')[0].trim();
-  const host = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${DEFAULT_PORT}`).toString().split(',')[0].trim();
-  return `${proto}://${host}`;
-}
-
-async function proxyToCore(req, res, method, targetPath, data) {
-  try {
-    const headers = {};
-    if (req.headers.authorization) headers.Authorization = req.headers.authorization;
-    const out = await axios({
-      method,
-      url: `${CORE_API_URL}${targetPath}`,
-      data,
-      headers,
-      timeout: 20000,
-    });
-    return res.status(out.status).json(out.data);
-  } catch (err) {
-    const status = err?.response?.status;
-    if (status) {
-      return res.status(status).json(err.response.data || { error: 'Core API request failed' });
-    }
-    return res.status(502).json({
-      error: 'Core API unavailable',
-      detail: err?.message || 'Network error while reaching Core API',
-      target: CORE_API_URL,
-    });
-  }
-}
-
-// Proxy org-scoped Core API routes via Node so browser clients avoid cross-port/CORS failures.
-app.use('/api/orgs', async (req, res) => {
-  const q = req.url || '';
-  const targetPath = `/api/orgs${q}`;
-  return proxyToCore(req, res, req.method, targetPath, req.body);
-});
-
-// Proxy browser metrics ingest to Core API.
-app.post('/api/ingest/browser-metrics', async (req, res) => {
-  return proxyToCore(req, res, 'post', '/api/ingest/browser-metrics', req.body || {});
-});
-
-// Public bootstrap registration endpoint used by connect.ps1.
-app.post('/api/wmi-register', async (req, res) => {
-  return proxyToCore(req, res, 'post', '/api/wmi-register', req.body || {});
-});
-
-// HIGH-PERFORMANCE METRICS CACHE (< 100ms latency)
-let metricsCache = {
-  cpu: 0,
-  memory: 0,
-  disk: 0,
-  network_in: 0,
-  network_out: 0,
-  temperature: null,
-  processes: 0,
-  threads: 0,
-  uptime: 0,
-  timestamp: new Date().toISOString()
-};
-
-// Background metrics collector (runs every 50ms for sub-100ms latency)
-let metricsCollectorInterval;
-let lastPropsNs = 0; // For fast CPU without blocking calls
-let metricsCollectorRunning = false;
-
-// Shared TTL cache for endpoint data fetches.
-const dataCache = new Map();
-const DEFAULT_CACHE_TTL_MS = 2000;
-
-async function getCachedData(key, fetcher, ttlMs = DEFAULT_CACHE_TTL_MS) {
-  const now = Date.now();
-  const cached = dataCache.get(key);
-  if (cached && (now - cached.ts) < ttlMs) {
-    return cached.value;
-  }
-
-  try {
-    const value = await fetcher();
-    dataCache.set(key, { value, ts: now });
-    return value;
-  } catch (err) {
-    // Prefer stale data over failing hard if a probe is temporarily unavailable.
-    if (cached) {
-      return cached.value;
-    }
-    throw err;
-  }
-}
-
-async function startMetricsCollector() {
-  if (metricsCollectorInterval) return;
-  
-  metricsCollectorInterval = setInterval(async () => {
-    if (metricsCollectorRunning) return;
-    metricsCollectorRunning = true;
-    try {
-      // Fast, non-blocking metrics (no Promise.all, serial where needed)
-      const t0 = Date.now();
-      
-      // CPU: fast, non-blocking
-      let cpuData = {};
-      try { cpuData = await si.currentLoad().catch(() => ({})); } catch {}
-      
-      // Memory: fast
-      let memData = {};
-      try { memData = await si.mem().catch(() => ({})); } catch {}
-      
-      // Disk: relatively fast
-      let diskData = [];
-      try { diskData = await si.fsSize().catch(() => []); } catch {}
-      
-      // Network: fast
-      let netData = [];
-      try { netData = await si.networkStats().catch(() => []); } catch {}
-      
-      // CPU Temp: fast but optional
-      let tempData = {};
-      try { tempData = await si.cpuTemperature().catch(() => ({})); } catch {}
-      
-      // Update cache with real data only
-      metricsCache = {
-        cpu: typeof cpuData.currentLoad === 'number' ? Math.round(cpuData.currentLoad * 10) / 10 : 0,
-        memory: (memData.total && memData.active) ? Math.round((memData.active / memData.total) * 100) : 0,
-        disk: (diskData[0]?.size) ? Math.round((diskData[0].used / diskData[0].size) * 100) : 0,
-        network_in: (netData[0]?.rx_sec) ? Math.round((netData[0].rx_sec || 0) / 1024) : 0,
-        network_out: (netData[0]?.tx_sec) ? Math.round((netData[0].tx_sec || 0) / 1024) : 0,
-        temperature: typeof tempData.main === 'number' ? Math.round(tempData.main) : null,
-        processes: Math.max((memData.total ? Math.round(memData.total / (1024**3) * 100) : 534), 1),
-        threads: os.cpus().length * 512, // Approx threads
-        uptime: Math.round(os.uptime()),
-        timestamp: new Date().toISOString(),
-        latency_ms: Date.now() - t0
-      };
-    } catch (error) {
-      console.error('[Metrics Collector Error]', error.message);
-    } finally {
-      metricsCollectorRunning = false;
-    }
-  }, 1000); // 1s interval keeps metrics fresh without overwhelming the event loop
-}
-
-// Start collector on app init
-setTimeout(() => startMetricsCollector(), 100);
+// Cache for system data to reduce load (kept minimal, no synthetic defaults in Option A mode)
+let systemCache = {};
+let lastUpdate = 0;
+const CACHE_DURATION = 2000; // 2 seconds
 
 // Helper to get the effective port (supports dynamic/fallback ports)
 function getEffectivePort(req) {
@@ -321,27 +195,35 @@ app.get('/api', (req, res) => {
   });
 });
 
+// Helper function to get cached or fresh data
+const getCachedData = async (key, fetchFunction) => {
+  const now = Date.now();
+  if (!systemCache[key] || (now - lastUpdate) > CACHE_DURATION) {
+    try {
+      systemCache[key] = await fetchFunction();
+      lastUpdate = now;
+    } catch (error) {
+      console.error(`Error fetching ${key}:`, error);
+      // Do not inject synthetic defaults (Option A) – preserve previous value or empty object
+      if (!systemCache[key]) systemCache[key] = {};
+    }
+  }
+  return systemCache[key];
+};
+
 // Removed getDefaultData – real values only.
 
 // Real-time system metrics endpoint
 app.get('/api/system', async (req, res) => {
   try {
-    const [cpuData, memData, diskData, networkData, tempData] = await Promise.all([
+    const [cpuData, memData, diskData, networkData, tempData, processData] = await Promise.all([
       getCachedData('cpu', () => si.currentLoad()),
       getCachedData('memory', () => si.mem()),
       getCachedData('disk', () => si.fsSize()),
       getCachedData('network', () => si.networkStats()),
-      getCachedData('temperature', () => si.cpuTemperature())
+      getCachedData('temperature', () => si.cpuTemperature()),
+      getCachedData('processes', () => si.processes())
     ]);
-
-    const processData = await Promise.race([
-      getCachedData('processes', () => si.processes(), 5000),
-      new Promise((resolve) => setTimeout(() => resolve(null), 400))
-    ]);
-
-    const processCount = (processData && typeof processData.all === 'number')
-      ? Math.round(processData.all)
-      : (typeof metricsCache.processes === 'number' ? metricsCache.processes : null);
 
     // Process and format the data
     const systemData = {
@@ -355,8 +237,8 @@ app.get('/api/system', async (req, res) => {
       temperature: typeof tempData.main === 'number' ? Math.round(tempData.main) : null,
       power: null,
       fanSpeed: null,
-      processes: processCount,
-      threads: (typeof processCount === 'number') ? Math.round(processCount * 8.5) : null,
+      processes: typeof processData.all === 'number' ? Math.round(processData.all) : null,
+      threads: (typeof processData.all === 'number') ? Math.round(processData.all * 8.5) : null,
       uptime: Math.round(os.uptime()),
       source: 'express',
       timestamp: new Date().toISOString()
@@ -377,36 +259,6 @@ app.get('/api/system', async (req, res) => {
       error: 'Failed to fetch system data',
       status: 'error'
     });
-  }
-});
-
-// /metrics — browserMetrics.js local-agent probe (returns MetricSnapshot-compatible JSON)
-// Uses cached data (2s TTL) to stay fast; skips slow calls like si.processes()
-app.get('/metrics', async (req, res) => {
-  try {
-    const [cpuData, memData, diskData, netData, tempData] = await Promise.all([
-      getCachedData('cpu',     () => si.currentLoad()),
-      getCachedData('memory',  () => si.mem()),
-      getCachedData('disk',    () => si.fsSize()),
-      getCachedData('network', () => si.networkStats()),
-      getCachedData('temp',    () => si.cpuTemperature()),
-    ]);
-    res.json({
-      cpu:              typeof cpuData?.currentLoad === 'number' ? Math.round(cpuData.currentLoad * 10) / 10 : 0,
-      memory:           (memData?.total && memData?.active) ? Math.round((memData.active / memData.total) * 100) : 0,
-      disk:             (diskData?.[0]?.size) ? Math.round((diskData[0].used / diskData[0].size) * 100) : 0,
-      network_in:       Math.round((netData?.[0]?.rx_sec || 0) / 1024),
-      network_out:      Math.round((netData?.[0]?.tx_sec || 0) / 1024),
-      temperature:      typeof tempData?.main === 'number' ? Math.round(tempData.main) : null,
-      processes:        null,
-      uptime_secs:      Math.round(os.uptime()),
-      cpu_cores:        os.cpus().length,
-      device_memory_gb: memData?.total ? Math.round(memData.total / (1024 ** 3) * 10) / 10 : null,
-      platform:         process.platform,
-      source:           'local-agent',
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -676,7 +528,10 @@ app.get('/connect.ps1', (req, res) => {
   if (!token) {
     return res.status(400).type('text/plain').send('# Error: missing ?token= parameter');
   }
-  const regUrl = `${getPublicBaseUrl(req)}/api/wmi-register`;
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(token)) {
+    return res.status(400).type('text/plain').send('# Error: invalid token format');
+  }
+  const regUrl = `${CORE_API_URL}/api/wmi-register`;
   const script = `
 $t='${token}'
 $u='${regUrl}'
@@ -749,7 +604,7 @@ app.post('/api/ai/export-insights', (req, res) => proxyOrAck(req, res, '/ai/expo
 // Socket.IO realtime broadcasting
 let broadcastInterval = null;
 const activeChatStreams = new Map(); // streamId -> { abortController, interval }
-const BROADCAST_MS = 2000;
+const BROADCAST_MS = Number(process.env.BROADCAST_MS) || 2000;
 
 io.on('connection', (socket) => {
   console.log('🔌 Client connected:', socket.id);

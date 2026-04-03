@@ -540,15 +540,66 @@ class WorkflowOrchestrationEngine:
         logger.info("Workflow Orchestration Engine initialized")
     
     def _init_database(self):
-        """Apply schema migrations for the workflow orchestration SQLite database."""
-        import os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        _migrations_dir = _os.path.join(
-            _here, "..", "..", "migrations", "sqlite", "workflow"
-        )
+        """Initialize SQLite database"""
         try:
-            from app.core.sqlite_migrator import run_sqlite_migrations
-            run_sqlite_migrations(self.db_path, _migrations_dir)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Workflows table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS workflows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    version TEXT NOT NULL,
+                    definition TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            
+            # Workflow executions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS workflow_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    execution_id TEXT NOT NULL UNIQUE,
+                    workflow_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    input_data TEXT,
+                    variables TEXT,
+                    task_states TEXT,
+                    task_results TEXT,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    triggered_by TEXT NOT NULL,
+                    error_message TEXT,
+                    metrics TEXT
+                )
+            ''')
+            
+            # Approval requests table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS approval_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    approval_id TEXT NOT NULL UNIQUE,
+                    execution_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    approver TEXT NOT NULL,
+                    request_data TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    approved_at TEXT,
+                    approved_by TEXT,
+                    comments TEXT
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+            
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
     

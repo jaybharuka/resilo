@@ -39,7 +39,10 @@ from database import get_db, User, Agent
 
 log = logging.getLogger("rbac")
 
-JWT_SECRET    = os.getenv("JWT_SECRET_KEY")   # required — validated by validate_secrets() at service startup
+_jwt_secret = os.getenv("JWT_SECRET_KEY")
+if not _jwt_secret:
+    raise RuntimeError("JWT_SECRET_KEY environment variable must be set")
+JWT_SECRET    = _jwt_secret
 JWT_ALGORITHM = "HS256"
 
 bearer = HTTPBearer(auto_error=False)
@@ -90,9 +93,9 @@ def has_permission(role: str, permission: str) -> bool:
 
 class TokenPayload(BaseModel):
     sub:      str
-    email:    Optional[str] = None
+    email:    str
     role:     str
-    username: str = ""
+    username: str
     org_id:   Optional[str] = None
     type:     str = "access"
 
@@ -112,17 +115,8 @@ async def get_token_payload(
         raise exc
     try:
         raw = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        # Reject tokens explicitly typed as something other than access
-        tok_type = raw.get("type")
-        if tok_type and tok_type != "access":
+        if raw.get("type") != "access":
             raise exc
-        # Normalize legacy field names from auth_system.py
-        if "sub" not in raw and "user_id" in raw:
-            raw["sub"] = raw["user_id"]
-        if "org_id" not in raw and "company_id" in raw:
-            raw["org_id"] = raw["company_id"]
-        if "username" not in raw and "email" in raw:
-            raw["username"] = raw["email"].split("@")[0]
         return TokenPayload(**{k: v for k, v in raw.items() if k in TokenPayload.model_fields})
     except (JWTError, Exception):
         raise exc
@@ -197,11 +191,8 @@ def require(permission: str):
         org_id: str,
         token: TokenPayload = Depends(require_permission(permission)),
     ) -> TokenPayload:
-        if token.role != "admin":
-            if not token.org_id:
-                raise HTTPException(status_code=403, detail="No organization assigned to your account")
-            if token.org_id != org_id:
-                raise HTTPException(status_code=403, detail="Organization access denied")
+        if token.role != "admin" and token.org_id and token.org_id != org_id:
+            raise HTTPException(status_code=403, detail="Organization access denied")
         return token
     return _dep
 

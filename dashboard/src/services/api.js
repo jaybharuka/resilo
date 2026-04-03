@@ -8,18 +8,15 @@ export const DIRECT_MODE = /^(1|true)$/i.test(process.env.REACT_APP_DIRECT_MODE 
 export const USE_MOCKS = /^(1|true)$/i.test(process.env.REACT_APP_USE_MOCKS || '');
 
 // Determine API base URL.
-// Priority: REACT_APP_API_BASE_URL env var → inferred from browser location.
-// In local dev with CRA on :3000, route API calls to Node on :3001.
-// Otherwise, use same-origin so deployed environments keep a single gateway.
+// Priority: REACT_APP_API_BASE_URL env var → same origin (window.location.origin).
+// Using same-origin means the Express server (which proxies Flask) is always the
+// single gateway — no hardcoded ports, works on localhost AND any deployed host.
 export const API_BASE_URL = (() => {
   const env = process.env.REACT_APP_API_BASE_URL;
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname, port } = window.location;
-      // In CRA dev (port 3000), backend APIs are served by Node on 3001.
-      if (port === '3000') return `${protocol}//${hostname}:3001`;
-      return window.location.origin;
+      return window.location.origin; // same host+port as the page — no :5000 hardcoding
     }
   } catch {}
   return 'http://localhost:3001';
@@ -31,8 +28,6 @@ export const AUTH_BASE_URL = (() => {
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname, port } = window.location;
-      if (port === '3000') return `${protocol}//${hostname}:3001`;
       return window.location.origin;
     }
   } catch {}
@@ -45,8 +40,6 @@ const inferSocketUrl = () => {
   // Socket.IO is on the Express server — same origin as the page
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname, port } = window.location;
-      if (port === '3000') return `${protocol}//${hostname}:3001`;
       return window.location.origin;
     }
   } catch {}
@@ -235,68 +228,50 @@ export const apiService = {
     }
   },
 
-  // Get system metrics (prefer real Flask /api/system, then legacy fallbacks)
+  // Get system metrics (prefers core API snapshot, falls back to Flask)
   async getSystemData() {
-    const normalize = (d = {}, source = 'flask') => {
-      const cpu = Number(d.cpu ?? 0);
-      const memory = Number(d.memory ?? 0);
-      const disk = Number(d.disk ?? d.storage ?? 0);
-
-      // Keep the dashboard's existing MB/s presentation by normalizing to KB/s.
-      // Flask returns KB/s already; the Node fallback reports MB/s.
-      let networkIn = 0;
-      let networkOut = 0;
-      if (d.network_in != null || d.network_out != null) {
-        networkIn = Number(d.network_in ?? 0);
-        networkOut = Number(d.network_out ?? 0);
-      } else if (d.networkRx != null || d.networkTx != null) {
-        networkIn = Number(d.networkRx ?? 0) * 1024;
-        networkOut = Number(d.networkTx ?? 0) * 1024;
-      } else if (d.network != null) {
-        networkIn = Number(d.network ?? 0) * 1024;
-      }
-
-      return {
-        cpu,
-        memory,
-        disk,
-        network_in: networkIn,
-        network_out: networkOut,
-        temperature: d.temperature ?? null,
-        status: d.status === 'success' ? 'healthy' : (d.status || 'unknown'),
-        uptime: d.uptime ?? null,
-        active_processes: d.active_processes ?? d.processes ?? d.threads ?? null,
-        last_updated: d.last_updated || d.timestamp || new Date().toISOString(),
-        source,
-      };
-    };
-
-    // Real Flask snapshot
+    // Production path: core API proxied via Firebase /api/** rewrite
     try {
-      const response = await api.get('/api/system', { timeout: 5000 });
-      return normalize(response.data || {}, 'flask');
-    } catch (_flaskErr) {}
-
-    // Legacy Flask/compat endpoints
+      const response = await api.get('/api/dashboard-snapshot', { timeout: 5000 });
+      return response.data;
+    } catch (_coreErr) {}
+    // Legacy Flask snapshot
     try {
-      const response = await api.get('/dashboard-snapshot', { timeout: 5000 });
-      return normalize(response.data || {}, 'flask');
-    } catch (_snapErr) {}
-    try {
-      const res2 = await api.get('/system-health', { timeout: 5000 });
-      return normalize(res2.data || {}, 'flask');
+      const response = await api.get('/dashboard-snapshot');
+      return response.data;
     } catch (error) {
-      if (DIRECT_MODE) {
-        console.warn('Direct mode: Flask system endpoints failed; returning minimal offline state. Error:', error?.message || error);
-        return { status: 'offline', last_updated: new Date().toISOString(), source: 'direct' };
-      }
-      console.warn('Flask system endpoints failed, trying Node /api/system ...', error?.message || error);
+      // Fallback to slower system-health
       try {
-        const res = await nodeApi.get('/api/system');
-        return normalize(res.data || {}, 'node');
-      } catch (err2) {
-        console.error('Node /api/system failed:', err2?.message || err2);
-        return { status: 'offline', error: 'Both Flask and Node system endpoints unavailable', last_updated: new Date().toISOString() };
+        const res2 = await api.get('/system-health');
+        return res2.data;
+      } catch (e2) {
+        if (DIRECT_MODE) {
+          console.warn('Direct mode: Flask snapshot & system-health failed; returning minimal offline state. Error:', error?.message || error);
+          return { status: 'offline', last_updated: new Date().toISOString(), source: 'direct' };
+        }
+        console.warn('Flask system endpoints failed, trying Node /api/system ...', error?.message || error);
+        // Try Node realtime API for live data
+        try {
+          const res = await nodeApi.get('/api/system');
+          const d = res.data || {};
+          return {
+            cpu: d.cpu ?? 0,
+            memory: d.memory ?? 0,
+            disk: (d.disk ?? d.storage ?? 0),
+            network_in: d.network ?? d.network_in ?? 0,
+            network_out: d.network_out ?? 0,
+            temperature: d.temperature ?? null,
+            status: d.status === 'success' ? 'healthy' : (d.status || 'unknown'),
+            uptime: d.uptime ?? null,
+            active_processes: d.processes ?? d.threads ?? null,
+            last_updated: d.timestamp || new Date().toISOString(),
+            source: 'node'
+          };
+        } catch (err2) {
+          console.error('Node /api/system failed:', err2?.message || err2);
+          // Return mock data as last resort
+          return { status: 'offline', error: 'Both Flask and Node system endpoints unavailable', last_updated: new Date().toISOString() };
+        }
       }
     }
   },

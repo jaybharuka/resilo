@@ -146,41 +146,19 @@ export async function collectMetrics() {
 
 let _stopLoop = null;
 
-const _PUSH_DELTA = 1.0; // minimum % change on any metric to trigger a push
-
-function _hasChanged(next, prev) {
-  if (!prev) return true;
-  const keys = ['cpu', 'memory', 'disk', 'network_in', 'network_out'];
-  for (const k of keys) {
-    if (Math.abs((next[k] ?? 0) - (prev[k] ?? 0)) > _PUSH_DELTA) return true;
-  }
-  return false;
-}
-
 /**
  * Start sending metrics to the backend every `intervalMs` ms.
- * Skips the push when metrics have not changed by more than _PUSH_DELTA.
- * Pauses automatically when the browser tab is hidden.
  * Returns a stop function.
  */
-export function startMetricsPush(pushFn, intervalMs = 5_000) {
+export function startMetricsPush(pushFn, intervalMs = 10_000) {
   let active = true;
-  let lastPushed = null;
   _stopLoop = () => { active = false; };
 
   async function loop() {
     while (active) {
-      // Skip work entirely when tab is hidden
-      if (typeof document !== 'undefined' && document.hidden) {
-        await new Promise(r => setTimeout(r, intervalMs));
-        continue;
-      }
       try {
         const metrics = await collectMetrics();
-        if (_hasChanged(metrics, lastPushed)) {
-          await pushFn(metrics);
-          lastPushed = metrics;
-        }
+        await pushFn(metrics);
       } catch { /* swallow — network issues are expected */ }
       await new Promise(r => setTimeout(r, intervalMs));
     }

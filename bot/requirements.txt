@@ -1,8 +1,8 @@
-flask==3.0.3
-requests==2.31.0
-openai==2.29.0
-scikit-learn==1.7.2
-pandas==2.3.2
-numpy==2.3.2
-matplotlib==3.10.7
-seaborn==0.13.2
+flask
+requests
+openai
+scikit-learn
+pandas
+numpy
+matplotlib
+seaborn
