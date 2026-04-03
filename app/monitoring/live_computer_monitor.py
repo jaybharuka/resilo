@@ -48,8 +48,8 @@ class LiveComputerMonitor:
         
         # Load analytics service if available
         try:
-            from bot.analytics_service import analytics_service
-            self.analytics = analytics_service
+            from bot.analytics_service import get_analytics_service
+            self.analytics = get_analytics_service()
             print("🧠 Analytics service loaded - using adaptive thresholds")
         except Exception as e:
             print(f"⚠️ Analytics service not available: {e}")

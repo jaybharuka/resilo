@@ -80,3 +80,7 @@ api_config.json
 
 nul
 
+
+# Runtime deploy tracking — not source files
+.last_good_deploy
+deployments.log

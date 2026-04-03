@@ -1,0 +1,42 @@
+name: Manual Rollback
+
+# ── Manual trigger ONLY — never runs on push or PR ───────────────────────────
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: 'Git SHA to roll back to (leave blank to use .last_good_deploy)'
+        required: false
+        default: ''
+      service:
+        description: 'Service to roll back: core-api | auth-api | all (default: all)'
+        required: false
+        default: 'all'
+
+env:
+  GCP_PROJECT: resilo-ai
+  GCP_REGION:  us-central1
+
+jobs:
+  rollback:
+    name: Rollback Cloud Run Services
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          gcloud auth activate-service-account --key-file=/tmp/sa-key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          gcloud auth configure-docker gcr.io --quiet
+          rm /tmp/sa-key.json
+
+      - name: Run rollback script
+        env:
+          GCP_PROJECT: ${{ env.GCP_PROJECT }}
+          GCP_REGION:  ${{ env.GCP_REGION }}
+          ROLLBACK_SERVICE: ${{ github.event.inputs.service }}
+        run: |
+          chmod +x scripts/rollback.sh
+          bash scripts/rollback.sh "${{ github.event.inputs.rollback_sha }}"

@@ -54,31 +54,14 @@ class HealthReportGenerator:
         self._init_database()
     
     def _init_database(self):
-        """Initialize SQLite database for storing metrics"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS health_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                cpu REAL NOT NULL,
-                memory REAL NOT NULL,
-                disk REAL NOT NULL,
-                temperature REAL NOT NULL,
-                network_in REAL NOT NULL,
-                network_out REAL NOT NULL,
-                status TEXT NOT NULL
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_timestamp 
-            ON health_metrics(timestamp)
-        ''')
-        
-        conn.commit()
-        conn.close()
+        """Apply schema migrations for the health reporter SQLite database."""
+        import os as _os
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        _migrations_dir = _os.path.join(
+            _here, "..", "..", "migrations", "sqlite", "health"
+        )
+        from app.core.sqlite_migrator import run_sqlite_migrations
+        run_sqlite_migrations(self.db_path, _migrations_dir)
     
     def store_metric(self, metric: HealthMetric):
         """Store a health metric in the database"""

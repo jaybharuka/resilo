@@ -503,10 +503,51 @@ async def _run_migrations() -> None:
             )
 
 
+async def wait_for_db() -> None:
+    """
+    Retry the database connection until it succeeds or retries are exhausted.
+
+    Reads:
+      DB_CONNECT_RETRIES     — max attempts  (default 5)
+      DB_CONNECT_RETRY_DELAY — seconds between attempts (default 3)
+
+    Logs a clear message per attempt and exits the process with code 1 if
+    all retries are exhausted — never starts the app with no DB.
+    """
+    import asyncio
+    import logging
+    import sys
+    from sqlalchemy import text as _text
+
+    _log = logging.getLogger("database")
+    retries = int(os.getenv("DB_CONNECT_RETRIES", "5"))
+    delay   = float(os.getenv("DB_CONNECT_RETRY_DELAY", "3"))
+
+    for attempt in range(1, retries + 1):
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(_text("SELECT 1"))
+            _log.info("Database connection established (attempt %d/%d)", attempt, retries)
+            return
+        except Exception as exc:
+            if attempt < retries:
+                _log.warning(
+                    "DB not ready, retrying in %.0fs (attempt %d/%d): %s",
+                    delay, attempt, retries, exc,
+                )
+                await asyncio.sleep(delay)
+            else:
+                _log.error(
+                    "Database unreachable after %d attempt(s). Exiting. Last error: %s",
+                    retries, exc,
+                )
+                sys.exit(1)
+
+
 async def init_db() -> None:
     """
     Create all ORM tables (idempotent), then apply SQL migrations.
-    Safe to call on every startup.
+    Safe to call on every startup — call wait_for_db() first.
     """
     import logging
     log = logging.getLogger("database")

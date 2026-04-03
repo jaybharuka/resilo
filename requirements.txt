@@ -2,7 +2,7 @@
 flask==3.0.3
 flask-cors==4.0.0
 Flask-Limiter==3.5.0
-flask-socketio>=5.3.0           # WebSocket/Socket.IO server for real-time metric push
+flask-socketio==5.3.6           # WebSocket/Socket.IO server for real-time metric push
 psutil==5.9.8
 requests==2.31.0
 PyYAML==6.0.1
@@ -23,10 +23,11 @@ passlib[bcrypt]==1.7.4
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 psycopg2-binary==2.9.10      # sync driver — useful for Alembic migrations
+alembic==1.13.2               # database migration tool for PostgreSQL
 
 # ── AI integrations ──────────────────────────────────────────────────────────
 google-generativeai==0.7.2
-openai>=1.0.0
+openai==1.51.2
 
 # ── Async HTTP (notification_service — Slack & Telegram dispatch) ─────────────
 aiohttp==3.10.5
@@ -35,11 +36,15 @@ aiohttp==3.10.5
 python-json-logger==2.0.7
 
 # ── OpenTelemetry distributed tracing (Jaeger) ───────────────────────────────
-opentelemetry-sdk>=1.26.0
-opentelemetry-exporter-otlp-proto-grpc>=1.26.0
-opentelemetry-instrumentation-flask>=0.47b0
-opentelemetry-instrumentation-requests>=0.47b0
-protobuf>=5.0,<6.0
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp-proto-grpc==1.27.0
+opentelemetry-exporter-otlp-proto-http==1.27.0
+opentelemetry-instrumentation-flask==0.48b0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-requests==0.48b0
+opentelemetry-instrumentation-sqlalchemy==0.48b0
+protobuf==4.25.8
 
 # ── Optional Firebase (comment out if not using Firebase) ────────────────────
 # firebase-admin==6.5.0
@@ -51,13 +56,16 @@ protobuf>=5.0,<6.0
 # huggingface-hub==0.23.4
 
 # ── Optional Redis (response caching) ────────────────────────────────────────
-# redis>=5.0.0
+# redis==5.0.8
 
 # ── WMI Agentless Polling (Windows remote metrics via WinRM) ─────────────────
-pywinrm>=0.4.3                 # WinRM client for Python (server polls Windows machines)
+pywinrm==0.4.3                 # WinRM client for Python (server polls Windows machines)
 # pywinrm[kerberos]            # uncomment for Active Directory / domain auth
 
 # ── Dev / Test ────────────────────────────────────────────────────────────────
 # pytest==8.2.2
 # pytest-asyncio==0.23.7
 # httpx==0.27.0   # needed for FastAPI TestClient async
+
+# ── Load / Performance Testing ────────────────────────────────────────────────
+locust==2.31.8              # load testing framework — run: locust -f tests/load/locustfile.py

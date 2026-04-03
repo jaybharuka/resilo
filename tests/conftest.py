@@ -27,31 +27,42 @@ import os
 _TEST_JWT_SECRET = "test-jwt-secret-for-pytest-only-not-for-production-use"
 os.environ["JWT_SECRET_KEY"]         = _TEST_JWT_SECRET
 os.environ["ADMIN_DEFAULT_PASSWORD"] = "TestAdmin123!"
+os.environ["DATABASE_URL"]          = "sqlite+aiosqlite:///./tests/test_auth.db"
+os.environ["ALLOWED_ORIGINS"]       = "http://localhost:3000"
+os.environ["BACKUP_DIR"]            = "./backups"
+os.environ["DEPLOY_HOST"]           = "http://localhost:8000"
 # DATABASE_URL is intentionally left unset here; database.py's engine is
 # intercepted by the mock below so the URL value it reads doesn't matter.
 
+import hashlib
 import sys
 import uuid
+
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.pool import NullPool
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
 # ── sys.path: make all app packages importable ────────────────────────────────
-_root = Path(__file__).resolve().parent.parent
+_tests = Path(__file__).resolve().parent
+_root  = _tests.parent
 for _p in [
+    str(_tests),                              # tests/ — for helpers.py
     str(_root),
     str(_root / "app"),
     str(_root / "app" / "api"),
     str(_root / "app" / "core"),
     str(_root / "app" / "auth"),
+    str(_root / "app" / "analytics"),
+    str(_root / "app" / "integrations"),
 ]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+from helpers import make_jwt as _make_jwt_helper
+from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 # ── Test engine: file-based SQLite with no connection pooling ─────────────────
 # NullPool creates a fresh connection per request, allowing concurrent tests.
@@ -71,10 +82,19 @@ with patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=_test_engi
     from database import Base, get_db, User, Organization  # noqa: E402
     from auth_api import app, _seed_admin                   # noqa: E402
 
+# ── Import additional DB models (database already in sys.modules) ─────────────
+from database import Agent, MetricSnapshot, AlertRecord  # noqa: E402
+
+# ── Import core_api app (database already mocked in sys.modules) ──────────────
+from core_api import app as core_app  # noqa: E402
+
 # ── Public constants (imported by test modules) ───────────────────────────────
 TEST_JWT_SECRET = _TEST_JWT_SECRET
 ADMIN_EMAIL     = "admin@company.local"
 ADMIN_PASSWORD  = "TestAdmin123!"
+
+
+make_jwt = _make_jwt_helper  # re-export for backward compat within this module
 
 
 # ── Session-wide DB setup / teardown ──────────────────────────────────────────
@@ -135,4 +155,127 @@ async def logged_in(client: AsyncClient, admin_creds: dict) -> dict:
     """Return the JSON body of a successful admin login."""
     resp = await client.post("/auth/login", json=admin_creds)
     assert resp.status_code == 200, f"Login fixture failed: {resp.text}"
+    return resp.json()
+
+
+# ── Core API fixtures ─────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def core_client() -> AsyncClient:
+    """Async test client wired to the core_api FastAPI app."""
+    async with AsyncClient(
+        transport=ASGITransport(app=core_app),
+        base_url="http://test",
+    ) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def sample_org() -> Organization:
+    """Create a test organization and clean it up after the test."""
+    org = Organization(
+        id=str(uuid.uuid4()),
+        name="Test Org",
+        slug="test-org",
+        plan="free",
+        is_active=True,
+    )
+    async with _TestSession() as session:
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+    yield org
+    async with _test_engine.begin() as conn:
+        from sqlalchemy import text
+        await conn.execute(text(f"DELETE FROM organizations WHERE id = '{org.id}'"))
+
+
+@pytest_asyncio.fixture
+async def sample_agent(sample_org: Organization) -> tuple[Agent, str]:
+    """
+    Create a test agent in sample_org.
+    Yields (agent, raw_key) — raw_key for use in X-Agent-Key header.
+    """
+    raw_key = "test-agent-key-for-pytest-only-do-not-use-in-prod"
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        org_id=sample_org.id,
+        label="pytest-agent",
+        key_hash=key_hash,
+        status="online",
+        is_active=True,
+    )
+    async with _TestSession() as session:
+        session.add(agent)
+        await session.commit()
+        await session.refresh(agent)
+    yield agent, raw_key
+    async with _test_engine.begin() as conn:
+        from sqlalchemy import text
+        await conn.execute(text(f"DELETE FROM agents WHERE id = '{agent.id}'"))
+
+
+@pytest_asyncio.fixture
+async def sample_metric(
+    core_client: AsyncClient,
+    sample_org: Organization,
+    sample_agent: tuple[Agent, str],
+) -> dict:
+    """
+    Post one heartbeat to /ingest/heartbeat and return the stored metric.
+    Uses X-Agent-Key authentication.
+    """
+    agent, raw_key = sample_agent
+    resp = await core_client.post(
+        "/ingest/heartbeat",
+        headers={"X-Agent-Key": raw_key},
+        json={
+            "org_id": sample_org.id,
+            "metrics": {
+                "cpu": 42.5,
+                "memory": 61.0,
+                "disk": 75.0,
+                "network_in": 1024,
+                "network_out": 512,
+            },
+        },
+    )
+    assert resp.status_code == 200, f"Heartbeat fixture failed: {resp.text}"
+    # Return the stored snapshot via the metrics API
+    token = make_jwt(
+        sub=str(uuid.uuid4()), role="admin", org_id=sample_org.id
+    )
+    list_resp = await core_client.get(
+        f"/api/orgs/{sample_org.id}/metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_resp.status_code == 200
+    snapshots = list_resp.json()
+    assert snapshots, "No metrics returned after heartbeat"
+    return snapshots[0]
+
+
+@pytest_asyncio.fixture
+async def sample_alert(
+    core_client: AsyncClient,
+    sample_org: Organization,
+) -> dict:
+    """Create one alert via the API and return the response body."""
+    token = make_jwt(
+        sub=str(uuid.uuid4()), role="admin", org_id=sample_org.id
+    )
+    resp = await core_client.post(
+        f"/api/orgs/{sample_org.id}/alerts",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "severity": "high",
+            "category": "cpu",
+            "title": "CPU threshold exceeded",
+            "detail": "CPU at 92%, threshold 80%",
+            "metric_value": 92.0,
+            "threshold": 80.0,
+        },
+    )
+    assert resp.status_code == 201, f"Alert fixture failed: {resp.text}"
     return resp.json()

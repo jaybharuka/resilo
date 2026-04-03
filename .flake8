@@ -1,0 +1,20 @@
+[flake8]
+max-line-length = 100
+exclude = .venv,node_modules,migrations,alembic,app
+per-file-ignores =
+    app/api/*.py: E,F,W
+    bot/app.py: E,F,W
+    app/api/simple_api_server.py: E,F,W
+    app/api/_deprecated_*.py: E,F,W
+    app/analytics/*.py: E,F,W
+    app/monitoring/*.py: E,F,W
+    app/remediation/*.py: E,F,W
+    api/_legacy_bridge.py: W292
+    api/agents.py: W292
+    api/alerts.py: W292
+    api/auth.py: W292
+    api/health.py: W391
+    api/metrics.py: W292
+    api/stream.py: W292
+    api/websocket.py: W292
+    api/chat.py: W292

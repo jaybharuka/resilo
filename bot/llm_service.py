@@ -3,6 +3,7 @@ LLM Service for AIOps Bot - AI-Powered Alert Analysis and Fix Suggestions
 """
 import os
 import json
+from functools import lru_cache
 from typing import Dict, List, Optional
 from openai import OpenAI
 
@@ -234,5 +235,8 @@ The alert monitoring system is working correctly and ready for AI enhancement.
             "4. Escalate if issue impact is severe"
         ])
 
-# Global instance
-llm_service = LLMService()
+
+
+@lru_cache(maxsize=1)
+def get_llm_service() -> LLMService:
+    return LLMService()

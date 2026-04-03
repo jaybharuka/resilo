@@ -1,0 +1,6 @@
+{
+  "auth_p95_ms": 500,
+  "ingest_p95_ms": 200,
+  "dashboard_p95_ms": 300,
+  "error_rate_max_percent": 1
+}
