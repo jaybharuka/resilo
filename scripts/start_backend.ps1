@@ -22,9 +22,9 @@ if ($OpenRegistration) { $env:OPEN_REGISTRATION = 'true' }
 if ($AllowActions) { $env:ALLOW_SYSTEM_ACTIONS = 'true' }
 if ($AllowedOrigins) { $env:ALLOWED_ORIGINS = $AllowedOrigins }
 
-# Start Flask backend in a new window
+# Start the FastAPI unified backend in a new window
 $appPaths = "$repoRoot\app;$repoRoot\app\api;$repoRoot\app\auth;$repoRoot\app\core;$repoRoot\app\monitoring;$repoRoot\app\security;$repoRoot\app\analytics;$repoRoot\app\remediation;$repoRoot\app\integrations"
-$cmd = "cd `"$repoRoot`"; `$env:PYTHONPATH=`"$appPaths`"; python -u app\api\api_server.py"
+$cmd = "cd `"$repoRoot`"; `$env:PYTHONPATH=`"$appPaths`"; python -m uvicorn main:app --host 127.0.0.1 --port 5000"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command","$cmd" -WorkingDirectory $repoRoot | Out-Null
 
 # Wait for health

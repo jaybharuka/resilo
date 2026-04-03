@@ -76,8 +76,8 @@ class RealTimeMetricsStreamer:
         try:
             import sys
             sys.path.append('./bot')
-            from bot.analytics_service import analytics_service
-            self.analytics = analytics_service
+            from bot.analytics_service import get_analytics_service
+            self.analytics = get_analytics_service()
             logger.info("🧠 Analytics service with adaptive ML loaded")
         except Exception as e:
             logger.error(f"⚠️ Could not load analytics service: {e}")

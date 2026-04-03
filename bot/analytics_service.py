@@ -4,6 +4,7 @@ Provides ML-powered anomaly detection, time-series analysis, and predictive aler
 """
 import os
 import json
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -50,16 +51,27 @@ class AnomalyDetectionService:
         self.baseline_stats = {}  # Store baseline statistics per metric
         
         # Initialize adaptive ML manager
+        AdaptiveMLManager = None
         try:
-            import sys
-            sys.path.append('.')
-            from adaptive_ml import AdaptiveMLManager
-            self.adaptive_ml = AdaptiveMLManager(self.prometheus_url)
-            self.adaptive_ml.start_adaptation()
-            print("🧠 Adaptive ML models initialized and learning started")
-        except Exception as e:
-            print(f"⚠️ Could not initialize adaptive ML: {e}")
+            from app.analytics.adaptive_ml import AdaptiveMLManager
+        except ImportError:
+            try:
+                import importlib
+                AdaptiveMLManager = importlib.import_module("adaptive_ml").AdaptiveMLManager
+            except ImportError:
+                pass
+
+        if AdaptiveMLManager is None:
+            print("⚠️ Adaptive ML module not found; continuing without adaptive models")
             self.adaptive_ml = None
+        else:
+            try:
+                self.adaptive_ml = AdaptiveMLManager(self.prometheus_url)
+                self.adaptive_ml.start_adaptation()
+                print("🧠 Adaptive ML models initialized and learning started")
+            except Exception as e:
+                print(f"⚠️ Could not initialize adaptive ML: {e}")
+                self.adaptive_ml = None
         
         print("🔬 Advanced Analytics Service initialized")
         print(f"📊 Prometheus URL: {self.prometheus_url}")
@@ -955,5 +967,8 @@ class AnomalyDetectionService:
             print(f"❌ Error forcing retrain: {e}")
             return False
 
-# Global instance
-analytics_service = AnomalyDetectionService()
+
+
+@lru_cache(maxsize=1)
+def get_analytics_service() -> AnomalyDetectionService:
+    return AnomalyDetectionService()

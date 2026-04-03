@@ -11,23 +11,69 @@ env:
 
 jobs:
 
-  # ── 1. Frontend → Firebase Hosting ─────────────────────────────────────────
-  deploy-frontend:
-    name: Frontend → Firebase Hosting
+  # ── 0. Lint — warn only, runs in parallel with test ─────────────────────────
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install flake8
+        run: pip install flake8
+      - name: Run flake8
+        run: flake8 . --max-line-length=100 --exclude=.venv,node_modules,migrations,alembic
+
+  # ── 1. Test — MUST pass before any deploy runs ──────────────────────────────
+  test:
+    name: Test (pytest + coverage)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+      - name: Check coverage threshold
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=40 \
+            -q
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
 
+  # ── 2. Frontend → Firebase Hosting ─────────────────────────────────────────
+  # NOTE: Staging deploy (Issue #32) will be inserted here.
+  #       Change to: needs: [test, deploy-staging]
+  deploy-frontend:
+    name: Frontend → Firebase Hosting
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: dashboard/package-lock.json
-
       - name: Install
         run: npm ci
         working-directory: dashboard
-
       - name: Build
         run: npm run build
         working-directory: dashboard
@@ -39,7 +85,6 @@ jobs:
           REACT_APP_SOCKET_URL:   https://resilo-ai.web.app
           REACT_APP_USE_MOCKS:    false
           REACT_APP_DIRECT_MODE:  false
-
       - name: Deploy to Firebase Hosting
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -50,10 +95,12 @@ jobs:
           firebase deploy --only hosting --project resilo-ai --non-interactive
           rm -f /tmp/firebase-sa.json
 
-  # ── 2. Core API → Cloud Run ─────────────────────────────────────────────────
+  # ── 3. Core API → Cloud Run ─────────────────────────────────────────────────
   deploy-core-api:
     name: Core API → Cloud Run
     runs-on: ubuntu-latest
+    needs: [test]
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +112,16 @@ jobs:
           gcloud auth configure-docker gcr.io --quiet
           rm /tmp/sa-key.json
 
+      - name: Store previous image (for rollback)
+        id: prev_image
+        run: |
+          PREV=$(gcloud run services describe core-api \
+            --region ${{ env.GCP_REGION }} \
+            --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || echo "")
+          echo "tag=${PREV}" >> "$GITHUB_OUTPUT"
+
       - name: Build & Push image
+        # Images tagged with both commit SHA and latest so any SHA is re-deployable
         run: |
           IMAGE=gcr.io/${{ env.GCP_PROJECT }}/core-api
           docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest -f Dockerfile.core .
@@ -80,10 +136,49 @@ jobs:
             --platform managed \
             --quiet
 
-  # ── 3. Auth API → Cloud Run ─────────────────────────────────────────────────
+      - name: Post-deploy verification (4-service health check)
+        id: verify_core
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.DEPLOY_SLACK_WEBHOOK_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          SERVICE_URL=$(gcloud run services describe core-api \
+            --region ${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          export DEPLOY_HOST="$SERVICE_URL"
+          bash scripts/verify_deploy.sh
+
+      - name: Rollback core-api on verification failure
+        if: failure() && steps.verify_core.outcome == 'failure'
+        env:
+          PREV_IMAGE: ${{ steps.prev_image.outputs.tag }}
+          SLACK_WEBHOOK_URL: ${{ secrets.DEPLOY_SLACK_WEBHOOK_URL }}
+        run: |
+          echo "Verification failed — initiating rollback for core-api."
+          if [ -n "$PREV_IMAGE" ]; then
+            gcloud run deploy core-api \
+              --image "$PREV_IMAGE" \
+              --region ${{ env.GCP_REGION }} \
+              --platform managed \
+              --quiet
+            echo "Rollback to $PREV_IMAGE complete."
+            if [ -n "$SLACK_WEBHOOK_URL" ]; then
+              curl -s -X POST "$SLACK_WEBHOOK_URL" \
+                -H 'Content-Type: application/json' \
+                -d "{\"text\":\"core-api rolled back to $PREV_IMAGE after failed health verification (sha=${{ github.sha }})\"}" \
+                > /dev/null || true
+            fi
+          else
+            echo "No previous image recorded — manual intervention required."
+          fi
+          exit 1
+
+  # ── 4. Auth API → Cloud Run ─────────────────────────────────────────────────
   deploy-auth-api:
     name: Auth API → Cloud Run
     runs-on: ubuntu-latest
+    needs: [test]
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +189,14 @@ jobs:
           gcloud config set project ${{ env.GCP_PROJECT }}
           gcloud auth configure-docker gcr.io --quiet
           rm /tmp/sa-key.json
+
+      - name: Store previous image (for rollback)
+        id: prev_image
+        run: |
+          PREV=$(gcloud run services describe auth-api \
+            --region ${{ env.GCP_REGION }} \
+            --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || echo "")
+          echo "tag=${PREV}" >> "$GITHUB_OUTPUT"
 
       - name: Build & Push image
         run: |
@@ -109,3 +212,39 @@ jobs:
             --region ${{ env.GCP_REGION }} \
             --platform managed \
             --quiet
+
+      - name: Post-deploy health check (auto rollback on failure)
+        env:
+          PREV_IMAGE: ${{ steps.prev_image.outputs.tag }}
+        run: |
+          SERVICE_URL=$(gcloud run services describe auth-api \
+            --region ${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "Health-checking $SERVICE_URL/health ..."
+          HEALTHY=false
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health" || echo "000")
+            echo "  attempt $i/12: HTTP $HTTP"
+            if [ "$HTTP" = "200" ]; then
+              HEALTHY=true
+              break
+            fi
+            sleep 10
+          done
+          if [ "$HEALTHY" = "true" ]; then
+            echo "Health check passed."
+          else
+            echo "Deploy failed health check after 120s."
+            if [ -n "$PREV_IMAGE" ]; then
+              echo "Rolling back auth-api to $PREV_IMAGE ..."
+              gcloud run deploy auth-api \
+                --image "$PREV_IMAGE" \
+                --region ${{ env.GCP_REGION }} \
+                --platform managed \
+                --quiet
+              echo "Rollback complete."
+            else
+              echo "No previous image recorded — manual intervention required."
+            fi
+            exit 1
+          fi

@@ -239,7 +239,7 @@ class SystemInterface:
                 return {
                     'success': True,
                     'message': 'Process list retrieved',
-                    'output': 'PID  COMMAND\n1234 python aiops_orchestrator.py\n5678 python api_gateway.py\n9012 python performance_monitor.py'
+                    'output': 'PID  COMMAND\n1234 python aiops_orchestrator.py\n5678 python main.py\n9012 python performance_monitor.py'
                 }
             elif command.startswith('df'):
                 return {

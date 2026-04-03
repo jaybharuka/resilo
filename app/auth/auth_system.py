@@ -16,9 +16,12 @@ import hmac
 import struct
 import time
 import base64
+import logging
 import os
 from functools import wraps
 from flask import request, jsonify, current_app
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Pure-Python TOTP (RFC 6238) — uses only stdlib, no pyotp needed
@@ -122,6 +125,18 @@ ROLE_PERMISSIONS = {
     ]
 }
 
+def verify_schema_exists(db_path: str) -> None:
+    """Ensure the authentication SQLite schema is up to date.
+
+    Delegates to the SQLite migrator using the bundled auth migration files.
+    Safe to call on every startup — already-applied migrations are skipped.
+    """
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _migrations_dir = os.path.join(_here, "..", "..", "migrations", "sqlite", "auth")
+    from app.core.sqlite_migrator import run_sqlite_migrations
+    run_sqlite_migrations(db_path, _migrations_dir)
+
+
 class AuthenticationSystem:
     def __init__(self, db_path: str = "auth.db", secret_key: str = None):
         self.db_path = db_path
@@ -129,118 +144,14 @@ class AuthenticationSystem:
         if not self.secret_key:
             raise RuntimeError(
                 "JWT_SECRET_KEY is not set. Add it to your .env file. "
-                "Run: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+                "Generate one with: python -c 'import secrets; secrets.token_urlsafe(48)'"
             )
         self._init_database()
         self._create_default_admin()
-    
+
     def _init_database(self):
-        """Initialize authentication database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Companies table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS companies (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                domain TEXT UNIQUE NOT NULL,
-                is_active BOOLEAN DEFAULT TRUE,
-                max_devices INTEGER DEFAULT 100,
-                max_users INTEGER DEFAULT 50,
-                created_at TEXT NOT NULL
-            )
-        ''')
-        
-        # Users table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                full_name TEXT NOT NULL,
-                role TEXT NOT NULL,
-                department TEXT,
-                company_id TEXT,
-                is_active BOOLEAN DEFAULT TRUE,
-                last_login TEXT,
-                created_at TEXT NOT NULL,
-                must_change_password BOOLEAN DEFAULT FALSE,
-                FOREIGN KEY (company_id) REFERENCES companies (id)
-            )
-        ''')
-        # Add column to existing databases that predate this migration
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE")
-        except Exception:
-            pass  # Column already exists
-        
-        # Sessions table for token management
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                token_hash TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                is_revoked BOOLEAN DEFAULT FALSE,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # Device assignments table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_devices (
-                user_id TEXT,
-                device_id TEXT,
-                assigned_at TEXT NOT NULL,
-                PRIMARY KEY (user_id, device_id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # Password reset tokens table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                token_hash TEXT UNIQUE NOT NULL,
-                expires_at TEXT NOT NULL,
-                used BOOLEAN DEFAULT FALSE,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-
-        # TOTP 2FA columns (migrate existing DBs).
-        # Column names and types are a closed whitelist — never sourced from user
-        # input.  We validate against the whitelist before building the DDL so
-        # that this pattern cannot silently become injectable if the list grows.
-        _SAFE_MIGRATIONS = {
-            'totp_secret':  'TEXT',
-            'totp_enabled': 'BOOLEAN DEFAULT FALSE',
-        }
-        for col, definition in _SAFE_MIGRATIONS.items():
-            # Guard: reject anything that isn't in our known-safe set
-            if col not in _SAFE_MIGRATIONS or definition != _SAFE_MIGRATIONS[col]:
-                raise RuntimeError(f"Unexpected migration column: {col!r}")
-            try:
-                cursor.execute(
-                    'ALTER TABLE users ADD COLUMN ' + col + ' ' + definition
-                )
-            except Exception:
-                pass  # Column already exists
-
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_reset_tokens ON password_reset_tokens(token_hash)')
-
-        conn.commit()
-        conn.close()
+        """Apply schema migrations for the authentication SQLite database."""
+        verify_schema_exists(self.db_path)
     
     def _create_default_admin(self):
         """Create default admin user if none exists"""
@@ -258,14 +169,14 @@ class AuthenticationSystem:
                 VALUES (?, ?, ?, ?)
             ''', (company_id, "Default Company", "company.local", datetime.now().isoformat()))
             
-            # Create default admin — password sourced from env; random if unset
+            # Create default admin — password sourced from env and required.
             admin_id = self._generate_id()
             _default_pw = os.environ.get("ADMIN_DEFAULT_PASSWORD")
             if not _default_pw:
-                import secrets as _sec
-                _default_pw = _sec.token_urlsafe(16)
-                print(f"\n⚠️  ADMIN_DEFAULT_PASSWORD not set — generated random admin password: {_default_pw}")
-                print(   "   Set ADMIN_DEFAULT_PASSWORD in your .env file to use a fixed value.\n")
+                raise RuntimeError(
+                    "ADMIN_DEFAULT_PASSWORD is not set. Add it to your .env file "
+                    "before starting the authentication system."
+                )
             password_hash = self._hash_password(_default_pw)
 
             cursor.execute('''
@@ -277,7 +188,7 @@ class AuthenticationSystem:
                 "System Administrator", UserRole.ADMIN.value, "IT",
                 company_id, datetime.now().isoformat(), True
             ))
-            print(f"⚠️  Default admin created (admin@company.local). You MUST change the password on first login.")
+            logger.warning("Default admin created (admin@company.local). You MUST change the password on first login.")
             
             conn.commit()
         
@@ -855,10 +766,10 @@ if __name__ == "__main__":
     # Create a test company
     try:
         company = auth.create_company("Test Company", "test.com")
-        print(f"Created company: {company.name}")
-    except:
+        logger.info("Created company: %s", company.name)
+    except Exception:
         pass  # Company might already exist
-    
+
     # Test authentication — password read from env, never hardcoded
     _demo_pw = os.environ.get("ADMIN_DEFAULT_PASSWORD")
     if not _demo_pw:
@@ -867,18 +778,13 @@ if __name__ == "__main__":
         )
     success, user, error = auth.authenticate_user("admin", _demo_pw)
     if success:
-        print(f"Authenticated user: {user.username}")
-        
-        # Generate token
+        logger.info("Authenticated user: %s", user.username)
         token = auth.generate_token(user)
-        print(f"Generated token: {token[:50]}...")
-        
-        # Verify token
+        logger.info("Generated token: %s...", token[:50])
         valid, auth_token, error = auth.verify_token(token)
         if valid:
-            print(f"Token valid for user: {auth_token.username}")
-            print(f"Permissions: {auth_token.permissions}")
+            logger.info("Token valid for user: %s | Permissions: %s", auth_token.username, auth_token.permissions)
         else:
-            print(f"Token verification failed: {error}")
+            logger.error("Token verification failed: %s", error)
     else:
-        print(f"Authentication failed: {error}")
+        logger.error("Authentication failed: %s", error)

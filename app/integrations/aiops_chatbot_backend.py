@@ -88,7 +88,7 @@ except Exception as _log_e:
 # You can further customize by setting ALLOWED_ORIGINS env var to a comma-separated list, e.g.:
 #   ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000,http://192.168.29.75:3000"
 def _build_allowed_origins():
-    env_val = os.getenv('ALLOWED_ORIGINS', '')
+    env_val = os.getenv('ALLOWED_ORIGINS') or ''
     env_list = [o.strip() for o in env_val.split(',') if o.strip()]
     defaults = [
         'http://localhost:3000', 'http://127.0.0.1:3000',
@@ -209,51 +209,14 @@ def _db():
     return conn
 
 def _migrate_db():
-    try:
-        conn = _db()
-        with conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    name TEXT,
-                    role TEXT NOT NULL DEFAULT 'employee',
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS refresh_tokens (
-                    token TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    FOREIGN KEY(user_id) REFERENCES users(id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS invites (
-                    token TEXT PRIMARY KEY,
-                    email TEXT,
-                    role TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    used_at TEXT,
-                    used_by INTEGER,
-                    FOREIGN KEY(used_by) REFERENCES users(id)
-                )
-                """
-            )
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    """Apply schema migrations for the chatbot SQLite database."""
+    import os as _os
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _migrations_dir = _os.path.join(
+        _here, "..", "..", "migrations", "sqlite", "chatbot"
+    )
+    from app.core.sqlite_migrator import run_sqlite_migrations
+    run_sqlite_migrations(DB_PATH, _migrations_dir)
 
 def _bootstrap_admin():
     email = os.getenv('ADMIN_EMAIL')

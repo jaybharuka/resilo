@@ -3,13 +3,15 @@ import requests
 import json
 import os
 from datetime import datetime
-from llm_service import llm_service
-from analytics_service import analytics_service
+from llm_service import get_llm_service
+from analytics_service import get_analytics_service
 
 app = Flask(__name__)
 
-# Discord webhook URL (you'll need to set this)
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/YOUR_WEBHOOK_URL')
+
+
+def _get_discord_webhook_url():
+    return os.getenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/YOUR_WEBHOOK_URL')
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -25,6 +27,7 @@ def dashboard():
 def detect_anomalies_endpoint(metric_name):
     """Detect anomalies in a specific metric"""
     try:
+        analytics_service = get_analytics_service()
         hours_back = request.args.get('hours', 24, type=int)
         
         print(f"🔬 Analyzing anomalies for {metric_name} (last {hours_back}h)")
@@ -78,6 +81,7 @@ def detect_anomalies_endpoint(metric_name):
 def analytics_summary():
     """Get analytics summary for key metrics"""
     try:
+        analytics_service = get_analytics_service()
         print("📊 Generating analytics summary...")
         
         # Key metrics to analyze
@@ -160,6 +164,8 @@ def analytics_summary():
 def receive_alert():
     """Receive alerts from Alertmanager, analyze with AI and ML, and forward enriched data"""
     try:
+        llm_service = get_llm_service()
+        analytics_service = get_analytics_service()
         alert_data = request.json
         print(f"📥 Received alert: {json.dumps(alert_data, indent=2)}")
         
@@ -379,8 +385,9 @@ def send_enhanced_notification(alert, ai_analysis, ml_analysis=None):
         }
         
         # Send to Discord (only if webhook URL is configured)
-        if DISCORD_WEBHOOK_URL and 'YOUR_WEBHOOK_URL' not in DISCORD_WEBHOOK_URL:
-            response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        discord_webhook_url = _get_discord_webhook_url()
+        if discord_webhook_url and 'YOUR_WEBHOOK_URL' not in discord_webhook_url:
+            response = requests.post(discord_webhook_url, json=payload)
             if response.status_code == 204:
                 print(f"✅ Enhanced alert sent to Discord: {alert_name} (Priority {priority})")
             else:
@@ -396,17 +403,6 @@ def send_enhanced_notification(alert, ai_analysis, ml_analysis=None):
     
     except Exception as e:
         print(f"❌ Error sending enhanced notification: {e}")
-
-def send_discord_notification(alert):
-    """Legacy function - now redirects to enhanced notification"""
-    # For backward compatibility, create basic AI analysis
-    mock_analysis = {
-        'ai_analysis': 'Basic alert processing (legacy mode)',
-        'suggested_actions': ['Review alert details and take appropriate action'],
-        'impact_assessment': 'Impact assessment required',
-        'priority_level': 3
-    }
-    send_enhanced_notification(alert, mock_analysis, None)
 
 if __name__ == '__main__':
     print("🤖 AIOps Bot with AI + ML Analytics starting...")

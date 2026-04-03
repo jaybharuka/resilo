@@ -1,5 +1,7 @@
 # 🤖 AIOps Bot - Intelligent Operations Dashboard
 
+[![Deploy](https://github.com/jaybh/Ai-Ops-Bot/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/jaybh/Ai-Ops-Bot/actions/workflows/deploy.yml)
+
 A comprehensive AI-powered operations monitoring platform combining free Hugging Face AI models with a modern React dashboard for enterprise-grade system monitoring and insights.
 
 ## 🌟 Features

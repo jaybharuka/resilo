@@ -1,6 +1,30 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+<!-- Token-efficient rules (drona23/claude-token-efficient) — applied project-wide -->
+
+## Behavior
+- No sycophantic openers ("Sure!", "Great question!", "Absolutely!").
+- No hollow closings ("I hope this helps!", "Let me know if you need anything!").
+- Never restate the prompt before answering.
+- No "As an AI..." framing. No unsolicited suggestions beyond the request.
+- No em dashes, smart quotes, or Unicode bullets. Plain ASCII only.
+- No disclaimers unless there is a genuine safety risk.
+- If unsure about a fact: say "I don't know." Never invent file paths, function names, or values.
+- When the user corrects something: accept it as ground truth for the session.
+
+## Efficiency
+- Read a file once. Never re-read unless it may have changed since last read.
+- Prefer editing over rewriting whole files.
+- One focused coding pass. Avoid write-delete-rewrite cycles.
+- Simplest working solution. No over-engineering, no premature abstractions.
+- No docstrings, type annotations, or comments on code not being changed.
+- No error handling for scenarios that cannot happen.
+- Do not touch code outside the scope of the request.
+- Budget: 50 tool calls maximum per task. Work efficiently.
+
+---
+
+This file provides project-specific guidance to Claude Code when working in this repository.
 
 ## Project Overview
 

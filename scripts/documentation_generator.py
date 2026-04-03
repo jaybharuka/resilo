@@ -389,7 +389,7 @@ Generated on: {datetime.now().isoformat()}
 # Login to get JWT token
 curl -X POST http://localhost:8090/auth/login \\
   -H "Content-Type: application/json" \\
-  -d '{"username": "admin", "password": "admin123"}'
+  -d '{"username": "admin", "password": "<your-admin-password>"}'
 
 # Use token in subsequent requests
 curl -H "Authorization: Bearer <token>" \\
@@ -413,7 +413,7 @@ Authenticate user and receive JWT token.
 ```json
 {
   "username": "admin",
-  "password": "admin123"
+  "password": "<your-admin-password>"
 }
 ```
 
