@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from flask_cors import CORS
 import json
 import threading
@@ -11,6 +12,18 @@ import logging
 from collections import deque
 
 from flask import current_app
+
+try:
+    from celery import Celery
+    _CELERY_AVAILABLE = True
+except ImportError:
+    _CELERY_AVAILABLE = False
+
+try:
+    import redis
+    _REDIS_AVAILABLE = True
+except ImportError:
+    _REDIS_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # In-memory login rate limiter
@@ -162,20 +175,6 @@ def _setup_logging():
 _setup_logging()
 logger = logging.getLogger("aiops.api")
 
-# Add the current directory and sibling app subdirs to the Python path
-_api_dir = os.path.dirname(os.path.abspath(__file__))
-_app_dir = os.path.dirname(_api_dir)          # app/
-_repo_dir = os.path.dirname(_app_dir)         # repo root
-for _p in [_api_dir, _app_dir, _repo_dir,
-           os.path.join(_app_dir, 'auth'),
-           os.path.join(_app_dir, 'core'),
-           os.path.join(_app_dir, 'integrations'),
-           os.path.join(_app_dir, 'monitoring'),
-           os.path.join(_app_dir, 'security'),
-           os.path.join(_app_dir, 'analytics'),
-           os.path.join(_app_dir, 'remediation')]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 # --- Load .env file if present ---
 try:
@@ -200,29 +199,121 @@ except Exception as _vault_err:
 try:
     from enhanced_aiops_chatbot import EnhancedAIOpsBot
 except ImportError as e:
-    print(f"Warning: Could not import EnhancedAIOpsBot: {e}")
+    logger.warning(f"Could not import EnhancedAIOpsBot: {e}")
     EnhancedAIOpsBot = None
 
 try:
     from huggingface_ai_integration import HuggingFaceAIEngine
 except ImportError:
+    logger.warning("Could not import HuggingFaceAIEngine")
     HuggingFaceAIEngine = None  # optional — requires transformers + torch
 
 try:
     from intelligent_remediation import IntelligentRemediationEngine
     from enhanced_remediation_engine import EnhancedRemediationEngine
 except ImportError as e:
-    print(f"Warning: Could not import remediation engines: {e}")
+    logger.warning(f"Could not import remediation engines: {e}")
     IntelligentRemediationEngine = None
     EnhancedRemediationEngine = None
 
 try:
     from auth_system import AuthenticationSystem
 except ImportError as e:
-    print(f"Warning: Could not import auth system: {e}")
+    logger.warning(f"Could not import auth system: {e}")
     AuthenticationSystem = None
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Message Queue / Event Architecture (Celery + Redis)
+# ---------------------------------------------------------------------------
+celery_app = None
+redis_client = None
+
+if _CELERY_AVAILABLE:
+    try:
+        celery_app = Celery(
+            'aiops',
+            broker=os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0'),
+            backend=os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+        )
+        celery_app.conf.update(
+            task_serializer='json',
+            accept_content=['json'],
+            result_serializer='json',
+            timezone='UTC',
+            enable_utc=True,
+        )
+        logger.info("Celery message queue initialized")
+    except Exception as e:
+        logger.warning(f"Celery initialization failed: {e}")
+        celery_app = None
+
+if _REDIS_AVAILABLE:
+    try:
+        redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+        redis_client.ping()
+        logger.info("Redis message broker connected")
+    except Exception as e:
+        logger.warning(f"Redis connection failed: {e}")
+        redis_client = None
+
+if not _CELERY_AVAILABLE and not _REDIS_AVAILABLE:
+    logger.warning("No message queue system available (Celery/Redis not installed)")
+
+# ---------------------------------------------------------------------------
+# Message Queue Helper Functions
+# ---------------------------------------------------------------------------
+def publish_event(event_type: str, payload: dict, priority: str = 'normal') -> bool:
+    """Publish an event to the message queue (Celery/Redis)."""
+    try:
+        message = {
+            'event_type': event_type,
+            'payload': payload,
+            'priority': priority,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if celery_app:
+            try:
+                celery_app.send_task('process_event', args=[message], priority=priority)
+                logger.debug(f"Event published via Celery: {event_type}")
+                return True
+            except Exception as celery_err:
+                logger.warning(f"Celery task failed for {event_type}: {celery_err}")
+        elif redis_client:
+            import json
+            queue_key = f"events:{priority}"
+            redis_client.lpush(queue_key, json.dumps(message))
+            logger.debug(f"Event published via Redis: {event_type}")
+            return True
+        else:
+            logger.warning(f"No message queue available for event: {event_type}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to publish event {event_type}: {e}")
+        return False
+
+def consume_events(queue_type: str = 'normal', max_count: int = 10) -> list:
+    """Consume events from the message queue."""
+    try:
+        if redis_client:
+            import json
+            queue_key = f"events:{queue_type}"
+            events = []
+            for _ in range(max_count):
+                msg = redis_client.rpop(queue_key)
+                if not msg:
+                    break
+                events.append(json.loads(msg))
+            return events
+        else:
+            logger.warning("No Redis client available for consuming events")
+            return []
+    except Exception as e:
+        logger.error(f"Failed to consume events: {e}")
+        return []
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # All localhost ports are trusted for local development.  Production deployments
@@ -523,12 +614,12 @@ hf_engine = None
 try:
     if EnhancedAIOpsBot:
         aiops_bot = EnhancedAIOpsBot()
-        print("✅ Enhanced AIOps Bot initialized successfully")
+        logger.info("Enhanced AIOps Bot initialized successfully")
     if HuggingFaceAIEngine:
         hf_engine = HuggingFaceAIEngine()
-        print("✅ Hugging Face AI Engine initialized successfully")
+        logger.info("Hugging Face AI Engine initialized successfully")
 except Exception as e:
-    print(f"⚠️ Warning: Could not initialize AI components: {e}")
+    logger.warning(f"Could not initialize AI components: {e}")
 
 # Initialize remediation engines
 remediation_engine = None
@@ -537,21 +628,21 @@ enhanced_engine = None
 try:
     if IntelligentRemediationEngine:
         remediation_engine = IntelligentRemediationEngine()
-        print("Intelligent Remediation Engine initialized successfully")
+        logger.info("Intelligent Remediation Engine initialized successfully")
     if EnhancedRemediationEngine:
         enhanced_engine = EnhancedRemediationEngine()
-        print("Enhanced Remediation Engine initialized successfully")
+        logger.info("Enhanced Remediation Engine initialized successfully")
 except Exception as e:
-    print(f"Warning: Could not initialize remediation engines: {e}")
+    logger.warning(f"Could not initialize remediation engines: {e}")
 
 auth_system = None
 try:
     if AuthenticationSystem:
         auth_system = AuthenticationSystem(db_path="aiops_auth.db")
         app.auth_system = auth_system
-        print("Auth system initialized successfully")
+        logger.info("Auth system initialized successfully")
 except Exception as e:
-    print(f"Warning: Could not initialize auth system: {e}")
+    logger.warning(f"Could not initialize auth system: {e}")
 
 def _get_auth_system():
     global auth_system
@@ -571,7 +662,7 @@ def _get_auth_system():
             app.auth_system = a
             return a
         except Exception as e:
-            print(f"Warning: Could not initialize auth system: {e}")
+            logger.warning(f"Could not initialize auth system: {e}")
             return None
     return None
 
@@ -622,7 +713,7 @@ def collect_real_system_data():
             system_data.update(snap)
             _perf_history.append(snap)
         except Exception as e:
-            print(f"Error in system data collection: {e}")
+            logger.error(f"Error in system data collection: {e}")
 
         time.sleep(_interval)
 
@@ -647,6 +738,11 @@ def health_check():
 def get_system_data():
     """Get current system metrics"""
     return jsonify(system_data)
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 @app.route('/api/insights', methods=['GET'])
 def get_ai_insights():
@@ -692,11 +788,11 @@ def chat_with_ai():
                         "source": "enhanced_aiops_bot"
                     })
                 except FutureTimeout:
-                    print("AIOps bot timed out after 12 s — falling back to psutil snapshot")
+                    logger.warning("AIOps bot timed out after 12 s — falling back to psutil snapshot")
                 except Exception as e:
-                    print(f"Error with AIOps bot: {e}")
+                    logger.error(f"Error with AIOps bot: {e}")
             except Exception as e:
-                print(f"Error with AIOps bot: {e}")
+                logger.error(f"Error with AIOps bot: {e}")
         
         # Build a context-aware response from live psutil data
         try:
@@ -871,21 +967,21 @@ def auth_login():
     email = (data.get('email') or '').strip()
     password = data.get('password') or ''
 
-    print(f"[LOGIN] attempt — email={email!r} has_password={bool(password)} origin={request.headers.get('Origin','')!r}", flush=True)
+    logger.info(f"[LOGIN] attempt — email={email!r} has_password={bool(password)} origin={request.headers.get('Origin','')!r}")
 
     if not email or not password:
-        print("[LOGIN] rejected — missing email or password", flush=True)
+        logger.warning("[LOGIN] rejected - missing email or password")
         return jsonify({'error': 'Email and password are required'}), 400
     a = _get_auth_system()
     if not a:
-        print("[LOGIN] rejected — auth_system is None", flush=True)
+        logger.warning("[LOGIN] rejected - auth_system is None")
         return jsonify({'error': 'Auth system unavailable'}), 503
 
     # Rate limiting: per-IP and per-email lockout
     client_ip = request.remote_addr or '0.0.0.0'
     allowed, retry_after = _check_rate_limit(client_ip, email)
     if not allowed:
-        print(f"[LOGIN] rate-limited — email={email!r} retry_after={retry_after}s", flush=True)
+        logger.warning(f"[LOGIN] rate-limited - email={email!r} retry_after={retry_after}s")
         resp = jsonify({'error': f'Too many login attempts. Please try again in {retry_after}s.'})
         resp.headers['Retry-After'] = str(retry_after)
         return resp, 429
@@ -897,18 +993,18 @@ def auth_login():
         row = cursor.fetchone()
         conn.close()
     except Exception as e:
-        print(f"[LOGIN] db error — {e}", flush=True)
+        logger.error(f"[LOGIN] db error - {e}")
         return jsonify({'error': f'Database error: {e}'}), 500
 
     if not row:
-        print(f"[LOGIN] no user found for email={email!r}", flush=True)
+        logger.warning(f"[LOGIN] no user found for email={email!r}")
         _record_attempt(client_ip, email, success=False)
         return jsonify({'error': 'Invalid credentials'}), 401
 
-    print(f"[LOGIN] found username={row[0]!r} — verifying password", flush=True)
+    logger.info(f"[LOGIN] found username={row[0]!r} - verifying password")
     success, user, error = a.authenticate_user(row[0], password)
     if not success:
-        print(f"[LOGIN] password mismatch — error={error!r}", flush=True)
+        logger.warning(f"[LOGIN] password mismatch - error={error!r}")
         _record_attempt(client_ip, email, success=False)
         return jsonify({'error': error or 'Invalid credentials'}), 401
 
