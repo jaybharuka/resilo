@@ -5,9 +5,21 @@ Routes everything else      → Flask API (port 5000)
 Listens on port 8080
 """
 import threading
+import re
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
+
+_LOCALHOST_RE = re.compile(r'^https?://(localhost|127\.0\.0\.1)(:\d+)?$')
+_RAW = os.environ.get('ALLOWED_ORIGINS', '')
+_ALLOWED = {o.strip() for o in _RAW.split(',') if o.strip()}
+
+def _cors_origin(handler) -> str:
+    origin = handler.headers.get('Origin', '')
+    if origin and (_LOCALHOST_RE.match(origin) or origin in _ALLOWED):
+        return origin
+    return ''
 
 FLASK_URL   = "http://127.0.0.1:5000"
 FASTAPI_URL = "http://127.0.0.1:5001"
@@ -39,8 +51,9 @@ class Proxy(BaseHTTPRequestHandler):
                 for k, v in resp.headers.items():
                     if k.lower() in ("content-type", "content-length", "set-cookie", "authorization"):
                         self.send_header(k, v)
-                # Always allow CORS from Firebase
-                self.send_header("Access-Control-Allow-Origin", "*")
+                _co = _cors_origin(self)
+                if _co:
+                    self.send_header("Access-Control-Allow-Origin", _co)
                 self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
                 self.end_headers()
@@ -49,20 +62,26 @@ class Proxy(BaseHTTPRequestHandler):
             data = e.read()
             self.send_response(e.code)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            _co = _cors_origin(self)
+            if _co:
+                self.send_header("Access-Control-Allow-Origin", _co)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            _co = _cors_origin(self)
+            if _co:
+                self.send_header("Access-Control-Allow-Origin", _co)
             self.end_headers()
             self.wfile.write(f'{{"error":"proxy error: {e}"}}'.encode())
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        _co = _cors_origin(self)
+        if _co:
+            self.send_header("Access-Control-Allow-Origin", _co)
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
         self.end_headers()
