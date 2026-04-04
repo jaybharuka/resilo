@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 import os
 import sys
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 # Add app to path so we can import models
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,11 +20,24 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _to_sync_url(url: str) -> str:
+    """Convert async SQLAlchemy URLs to sync driver URLs for Alembic."""
+    if url.startswith("postgresql+asyncpg://"):
+        url = "postgresql+psycopg2://" + url.split("postgresql+asyncpg://", 1)[1]
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params.pop("channel_binding", None)
+    clean_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=clean_query))
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
     if not url:
         url = DATABASE_URL
+    url = _to_sync_url(url)
     
     context.configure(
         url=url,
@@ -39,7 +53,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     configuration = config.get_section(config.config_ini_section)
-    configuration["sqlalchemy.url"] = DATABASE_URL
+    configuration["sqlalchemy.url"] = _to_sync_url(DATABASE_URL)
     
     connectable = engine_from_config(
         configuration,

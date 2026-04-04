@@ -29,10 +29,9 @@ if (SENTRY_DSN) {
 
 const DEFAULT_PORT = Number(process.env.PORT) || 3001;
 const HOST = (process.env.HOST || '0.0.0.0').trim();
-const FLASK_BASE_URL = process.env.FLASK_BASE_URL || 'http://localhost:5000';
-const CHAT_API_URL = process.env.CHAT_API_URL || `${FLASK_BASE_URL}/chat`;
-const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || `${FLASK_BASE_URL}/chat/stream`;
 const CORE_API_URL = process.env.CORE_API_URL || 'http://localhost:8000';
+const CHAT_API_URL = process.env.CHAT_API_URL || `${CORE_API_URL}/api/v1/chat`;
+const CHAT_STREAM_URL = process.env.CHAT_STREAM_URL || `${CORE_API_URL}/api/v1/chat/stream`;
 
 // Allow all localhost ports + any configured origins — broad for dev/LAN, lock down in prod
 const _rawOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
@@ -74,8 +73,8 @@ app.use((_req, res, next) => {
   next();
 });
 
-// ── Flask reverse proxy (MUST be before express.json — body stream must be intact) ──
-// Forwards /auth/*, /api/performance, /api/insights, /api/chat, etc. to Flask.
+// ── FastAPI reverse proxy (MUST be before express.json — body stream must be intact) ──
+// Forwards /auth/*, /api/performance, /api/insights, /api/chat, etc. to FastAPI.
 // express.json() would consume the body before the proxy can stream it upstream.
 const _EXPRESS_NATIVE_PREFIXES = [
   '/api/system', '/api/processes', '/api/network', '/api/alerts',
@@ -92,7 +91,7 @@ const _isExpressNative = (path) => {
 };
 
 const _flaskProxy = createProxyMiddleware({
-  target: FLASK_BASE_URL,
+  target: CORE_API_URL,
   changeOrigin: true,
   pathFilter: (path) => {
     if (path.startsWith('/static/') || path.startsWith('/socket.io')) return false;
@@ -101,7 +100,7 @@ const _flaskProxy = createProxyMiddleware({
   },
   on: {
     error(err, req, res) {
-      console.warn(`[proxy→flask] ${req.method} ${req.url} — ${err.message}`);
+      console.warn(`[proxy→fastapi] ${req.method} ${req.url} — ${err.message}`);
       if (!res.headersSent) {
         res.status(502).json({ error: 'Backend unavailable', detail: err.message });
       }
@@ -110,7 +109,7 @@ const _flaskProxy = createProxyMiddleware({
 });
 app.use(_flaskProxy);
 
-// JSON body parser — after proxy so Flask-bound requests keep their raw body stream intact
+// JSON body parser — after proxy so upstream-bound requests keep their raw body stream intact
 app.use(express.json());
 
 // Cache for system data to reduce load (kept minimal, no synthetic defaults in Option A mode)
@@ -560,15 +559,15 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ---- Actions: system operations (proxy to Flask if present) ----
+// ---- Actions: system operations (proxy to FastAPI if present) ----
 async function proxyOrAck(req, res, path, data = {}) {
-  if (FLASK_BASE_URL) {
+  if (CORE_API_URL) {
     try {
-      const out = await axios.post(`${FLASK_BASE_URL}${path}`, data, { timeout: 30000 });
+      const out = await axios.post(`${CORE_API_URL}${path}`, data, { timeout: 30000 });
       return res.json(out.data);
     } catch (e) {
       // Fallthrough to local ack below
-      console.warn(`Proxy to Flask failed for ${path}:`, e.message);
+      console.warn(`Proxy to FastAPI failed for ${path}:`, e.message);
     }
   }
   // Local acknowledgement with real system context (non-hardcoded)
@@ -595,7 +594,7 @@ app.post('/api/actions/disk-cleanup', (req, res) => proxyOrAck(req, res, '/actio
 app.post('/api/actions/process-monitor', (req, res) => proxyOrAck(req, res, '/actions/process-monitor'));
 app.post('/api/actions/emergency-stop', (req, res) => proxyOrAck(req, res, '/actions/emergency-stop'));
 
-// ---- AI actions (proxy to Flask if present) ----
+// ---- AI actions (proxy to FastAPI if present) ----
 app.post('/api/ai/retrain', (req, res) => proxyOrAck(req, res, '/ai/retrain'));
 app.post('/api/ai/diagnostics', (req, res) => proxyOrAck(req, res, '/ai/diagnostics'));
 app.post('/api/ai/update-params', (req, res) => proxyOrAck(req, res, '/ai/update-params', req.body || {}));
@@ -661,7 +660,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Chat streaming: prefer Flask SSE /chat/stream, fallback to /chat full response
+  // Chat streaming: prefer FastAPI SSE /chat/stream, fallback to /chat full response
   socket.on('chat:send', async ({ message, streamId, token }) => {
     if (!message || !streamId) return;
     // Cleanup any prior stream with same id

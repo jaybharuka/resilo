@@ -809,31 +809,7 @@ function WMIModal({ orgId, onClose, onCreated }) {
       setCountdown(Math.max(0, Math.round((expMs - Date.now()) / 1000)));
       setStep('waiting');
 
-      // Countdown ticker
-      timerRef.current = setInterval(() => {
-        setCountdown(c => {
-          if (c <= 1) { clearInterval(timerRef.current); return 0; }
-          return c - 1;
-        });
-      }, 1000);
-
-      // Poll for completion every 3s
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await wmiApi.pollInvite(orgId, data.invite_id);
-          if (status.used) {
-            clearInterval(pollRef.current);
-            clearInterval(timerRef.current);
-            setResult({ machine_label: status.machine_label, agent_id: status.registered_agent_id });
-            setStep('done');
-            onCreated?.();
-          } else if (status.expired) {
-            clearInterval(pollRef.current);
-            clearInterval(timerRef.current);
-            setStep('expired');
-          }
-        } catch (_) { /* silent — keep polling */ }
-      }, 3000);
+      setCountdown(0);
     } catch (e) {
       setStep('error');
       setError(e?.response?.data?.detail || e?.message || 'Failed to generate invite');
@@ -1213,8 +1189,7 @@ export default function InfraHub() {
     fetchAll();
     fetchLocalAgents();
     fetchWmiTargets();
-    intervalRef.current = setInterval(() => { fetchAll(); fetchLocalAgents(); fetchWmiTargets(); }, 15000);
-    return () => clearInterval(intervalRef.current);
+    return () => {};
   }, [fetchAll, fetchLocalAgents, fetchWmiTargets]);
 
   const handleToggleUser = async (user) => {

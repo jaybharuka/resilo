@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import threading
@@ -14,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
+from app.integrations.gemini_integration import get_gemini_assistant
 
 router = APIRouter(prefix="/api/v1")
 legacy_router = APIRouter()
@@ -24,6 +26,7 @@ class ChatState:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._perf_history: list[dict[str, Any]] = []
         self._chat_hits: dict[str, list[float]] = {}
+        self._chat_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -92,6 +95,35 @@ class ChatState:
                 return []
             return list(self._perf_history[-size:])
 
+    def _cache_key(self, message: str) -> str:
+        return hashlib.sha256(message.strip().lower().encode("utf-8")).hexdigest()
+
+    def get_cached_chat(self, message: str, ttl_seconds: int = 60) -> dict[str, Any] | None:
+        key = self._cache_key(message)
+        now = time.time()
+        with self._lock:
+            entry = self._chat_cache.get(key)
+            if entry is None:
+                return None
+            created_at, payload = entry
+            if now - created_at > ttl_seconds:
+                self._chat_cache.pop(key, None)
+                return None
+            return dict(payload)
+
+    def set_cached_chat(self, message: str, payload: dict[str, Any]) -> None:
+        key = self._cache_key(message)
+        with self._lock:
+            self._chat_cache[key] = (time.time(), dict(payload))
+
+
+def _fallback_ai_response(system_data: dict[str, Any]) -> str:
+    return (
+        "AI unavailable right now. "
+        f"Current system snapshot: CPU {system_data['cpu']:.1f}%, "
+        f"Memory {system_data['memory']:.1f}%, Disk {system_data['disk']:.1f}%."
+    )
+
 
 def _get_chat_state(request: Request) -> ChatState:
     state = getattr(request.app.state, "chat_state", None)
@@ -107,18 +139,53 @@ class ChatRequest(BaseModel):
 async def _chat_impl(message: str, state: ChatState) -> dict[str, Any]:
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is required")
+
+    cached = state.get_cached_chat(message, ttl_seconds=60)
+    if cached is not None:
+        return {
+            **cached,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "cache": "hit",
+        }
+
     state.track_performance()
     cpu = psutil.cpu_percent(interval=0.1)
     mem = psutil.virtual_memory().percent
     disk = psutil.disk_usage("/").percent
-    return {
-        "response": (
-            f"System snapshot: CPU {cpu:.1f}%, Memory {mem:.1f}%, Disk {disk:.1f}%. "
-            "Legacy Flask chat endpoint migrated to FastAPI."
-        ),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+
+    system_data = {
+        "cpu": cpu,
+        "memory": mem,
+        "disk": disk,
+        "status": "healthy" if max(cpu, mem, disk) < 85 else "warning",
+        "active_processes": len(psutil.pids()),
     }
 
+    try:
+        assistant = get_gemini_assistant()
+        if assistant is None:
+            raise RuntimeError("assistant unavailable")
+        ai_payload = await asyncio.wait_for(
+            assistant.chat(message=message, system_data=system_data),
+            timeout=10,
+        )
+        result = {
+            "response": ai_payload.get("response") or _fallback_ai_response(system_data),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": ai_payload.get("source", "gemini"),
+            "cache": "miss",
+        }
+        state.set_cached_chat(message, result)
+        return result
+    except Exception:
+        fallback = {
+            "response": _fallback_ai_response(system_data),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "fallback",
+            "error": "AI unavailable",
+            "cache": "miss",
+        }
+        return fallback
 
 def _enforce_chat_guards(state: ChatState, request: Request, message: str) -> None:
     forwarded_for = request.headers.get("X-Forwarded-For", "")

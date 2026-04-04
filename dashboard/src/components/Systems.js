@@ -14,8 +14,6 @@ const Systems = () => {
   });
 
   useEffect(() => {
-    let pollInterval = null;
-
     const onProcesses = (list) => {
       setProcesses((list || []).slice(0, 10));
     };
@@ -36,15 +34,8 @@ const Systems = () => {
     };
 
     fetchAll();
-    const ensurePolling = () => {
-      // Ensure some polling regardless of socket presence
-      pollInterval = setInterval(fetchAll, 5000);
-    };
-    const t = setTimeout(ensurePolling, 1000);
 
     return () => {
-      clearTimeout(t);
-      if (pollInterval) clearInterval(pollInterval);
       unsub && unsub();
     };
   }, []);

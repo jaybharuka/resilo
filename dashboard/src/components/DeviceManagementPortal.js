@@ -402,8 +402,7 @@ export default function DeviceManagementPortal() {
 
   useEffect(() => {
     fetchAll();
-    const id = setInterval(fetchAll, 15_000);
-    return () => clearInterval(id);
+    return () => {};
   }, [fetchAll]);
 
   // ── if an agent is selected, render its detail page full-screen ───────────

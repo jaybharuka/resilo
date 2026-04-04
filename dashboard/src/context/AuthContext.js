@@ -31,7 +31,7 @@ export function AuthProvider({ children }) {
         setTokenGetter(() => storedToken); // Synchronous token getter for custom JWT
         try {
           const meData = await authApi.me();
-          // FastAPI returns user directly; legacy Flask wraps in {user: ...}
+          // FastAPI returns user directly; legacy API wraps in {user: ...}
           const u = meData?.id ? meData : meData?.user;
           if (u) {
             setUser(u);
@@ -78,7 +78,7 @@ export function AuthProvider({ children }) {
         throw new Error('Invalid response from server.');
       }
     } catch (err) {
-      // FastAPI uses {detail: "..."}, legacy Flask uses {error: "..."}
+      // FastAPI uses {detail: "..."}, legacy API uses {error: "..."}
       const serverError = err?.response?.data?.detail || err?.response?.data?.error;
       const status = err?.response?.status;
       let msg;

@@ -39,12 +39,9 @@ export const useResiloStore = create((set, get) => ({
     }
   },
 
-  // Start a polling loop every 15 seconds for real-time updates
+  // Backward-compatible API: now a one-shot hydration (streaming is handled elsewhere).
   startPolling: () => {
-    get().fetchDashboardData(); // Initial fetch
-    const interval = setInterval(() => {
-      get().fetchDashboardData();
-    }, 15000);
-    return () => clearInterval(interval);
+    get().fetchDashboardData();
+    return () => {};
   },
 }));

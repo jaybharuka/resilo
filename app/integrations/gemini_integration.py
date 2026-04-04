@@ -2,6 +2,7 @@ from openai import OpenAI
 import os
 from typing import Dict, List, Optional
 import json
+from functools import lru_cache
 
 class GeminiAIAssistant:
     def __init__(self, api_key: Optional[str] = None):
@@ -242,16 +243,15 @@ class GeminiAIAssistant:
         
         return "I'm here to help with your AIOps needs. Please try again in a moment while I reconnect."
 
-# Singleton instance
-_gemini_assistant = None
+@lru_cache(maxsize=1)
+def _create_gemini_assistant() -> GeminiAIAssistant:
+    """Create and cache a single assistant instance per process."""
+    return GeminiAIAssistant()
 
 def get_gemini_assistant() -> GeminiAIAssistant:
     """Get or create Gemini AI Assistant instance"""
-    global _gemini_assistant
-    if _gemini_assistant is None:
-        try:
-            _gemini_assistant = GeminiAIAssistant()
-        except ValueError as e:
-            print(f"Gemini AI not available: {e}")
-            return None
-    return _gemini_assistant
+    try:
+        return _create_gemini_assistant()
+    except ValueError as e:
+        print(f"Gemini AI not available: {e}")
+        return None

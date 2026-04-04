@@ -45,9 +45,9 @@ jobs:
 
       - name: Validate required secrets
         env:
-          AGENT_KEY: ${{ secrets.LOAD_TEST_AGENT_KEY }}
-          ORG_ID: ${{ secrets.LOAD_TEST_ORG_ID }}
-          LOAD_TEST_PASSWORD: ${{ secrets.LOAD_TEST_PASSWORD }}
+          AGENT_KEY: ${{ secrets['LOAD_TEST_AGENT_KEY'] }}
+          ORG_ID: ${{ secrets['LOAD_TEST_ORG_ID'] }}
+          LOAD_TEST_PASSWORD: ${{ secrets['LOAD_TEST_PASSWORD'] }}
         run: |
           set -euo pipefail
           missing=0
@@ -67,10 +67,10 @@ jobs:
           AUTH_API_HOST: ${{ github.event.inputs.auth_api_host }}
           CORE_API_HOST: ${{ github.event.inputs.core_api_host }}
           DURATION:      ${{ github.event.inputs.duration }}
-          AGENT_KEY:     ${{ secrets.LOAD_TEST_AGENT_KEY }}
-          ORG_ID:        ${{ secrets.LOAD_TEST_ORG_ID }}
-          LOAD_TEST_EMAIL:    ${{ github.event.inputs.load_test_email || secrets.LOAD_TEST_EMAIL }}
-          LOAD_TEST_PASSWORD: ${{ secrets.LOAD_TEST_PASSWORD }}
+          AGENT_KEY:     ${{ secrets['LOAD_TEST_AGENT_KEY'] }}
+          ORG_ID:        ${{ secrets['LOAD_TEST_ORG_ID'] }}
+          LOAD_TEST_EMAIL:    ${{ github.event.inputs.load_test_email || secrets['LOAD_TEST_EMAIL'] }}
+          LOAD_TEST_PASSWORD: ${{ secrets['LOAD_TEST_PASSWORD'] }}
         run: bash tests/load/run_load_tests.sh
 
       - name: Upload results

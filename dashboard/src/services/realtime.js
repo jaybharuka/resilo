@@ -19,6 +19,10 @@ const inferSocketUrl = () => {
   }
 };
 
+const getStoredToken = () => {
+  try { return localStorage.getItem('aiops:token') || ''; } catch { return ''; }
+};
+
 class RealtimeClient {
   constructor() {
     this.socket = null;
@@ -27,9 +31,19 @@ class RealtimeClient {
   }
 
   connect() {
-    if (this.socket) return this.socket;
+    if (this.socket && this.socket.connected) return this.socket;
     const url = inferSocketUrl();
-    this.socket = io(url, { transports: ['websocket'], autoConnect: true });
+    const token = getStoredToken();
+    if (this.socket) {
+      try { this.socket.disconnect(); } catch {}
+      this.socket = null;
+    }
+    this.socket = io(url, {
+      transports: ['websocket'],
+      autoConnect: true,
+      auth: token ? { token } : undefined,
+      extraHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
 
     this.socket.on('connect', () => {
       this.connected = true;

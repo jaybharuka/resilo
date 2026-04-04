@@ -10,7 +10,7 @@ This document records the issue-by-issue audit resolvement that was implemented,
 Reference implementation areas:
 - Unified API/runtime: app/api/runtime.py, app/api/auth_api.py, app/api/core_api.py, main.py
 - Security/env: config/env_validator.py
-- Data/migrations: alembic/*, app/core/sqlite_migrator.py
+- Data/migrations: alembic/*
 - Operations scripts: scripts/backup.sh, scripts/restore.sh, scripts/rollback.sh, scripts/verify_deploy.sh, scripts/scale.sh
 - Observability/shutdown: config/logger.py, config/otel.py, config/loki.yml, config/promtail.yml, config/shutdown.py
 - CI/CD workflows: .github/workflows/main.yml, .github/workflows/load-tests.yml, .github/workflows/rollback.yml
@@ -113,7 +113,7 @@ Reference implementation areas:
   - alembic.ini
   - alembic/env.py
   - alembic/versions/001_initial_postgresql_schema.py
-  - app/core/sqlite_migrator.py (for scoped sqlite migration handling)
+  - legacy migration helper removed in the PostgreSQL-only cleanup
 
 ### Issue #19 - No backup strategy
 - Category: Database

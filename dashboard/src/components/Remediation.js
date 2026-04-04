@@ -600,8 +600,7 @@ export default function Remediation() {
       });
     };
     fetchIssues();
-    const id = setInterval(fetchIssues, 5_000);
-    return () => clearInterval(id);
+    return () => {};
   }, []);
 
   // ── History poll (3s) — also drives activity feed ────────────────────────
@@ -616,8 +615,7 @@ export default function Remediation() {
       }
     };
     pollHistory();
-    const id = setInterval(pollHistory, 3_000);
-    return () => clearInterval(id);
+    return () => {};
   }, []);
 
   // ── Autonomous mode initial load ─────────────────────────────────────────
@@ -628,8 +626,7 @@ export default function Remediation() {
   // ── Bootstrap ────────────────────────────────────────────────────────────
   useEffect(() => {
     fetchAll().finally(() => setLoading(false));
-    const id = setInterval(fetchAll, 30_000);
-    return () => clearInterval(id);
+    return () => {};
   }, [fetchAll]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────

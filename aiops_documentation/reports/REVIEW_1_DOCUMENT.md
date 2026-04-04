@@ -231,7 +231,7 @@ A pure Monolithic architecture would not scale to 10,000+ events/second. A pure 
           |                   |                       |
 +------------------------------------------------------------------+
 |              LAYER 4: DATA LAYER                                 |
-|  SQLite (Auth/Config) | Time-Series (Metrics) | Audit Logs DB   |
+|  PostgreSQL (Auth/Config) | Time-Series (Metrics) | Audit Logs DB   |
 +------------------------------------------------------------------+
           |                   |
 +------------------------------------------------------------------+
@@ -337,7 +337,7 @@ User/System       Metric Collector    ML Engine     Alert Correlator    Remediat
 - Single machine running all services locally
 - `python api_server.py` on port 5000
 - `npm start` React dashboard on port 3000
-- SQLite databases on local filesystem
+- PostgreSQL databases managed centrally
 
 **Production Deployment (Docker):**
 - `docker-compose.yml` orchestrates:

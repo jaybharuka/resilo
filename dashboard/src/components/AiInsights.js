@@ -30,8 +30,7 @@ const AIInsights = () => {
     };
 
     fetchAIData();
-    const interval = setInterval(fetchAIData, 3000);
-    return () => clearInterval(interval);
+    return () => {};
   }, []);
 
   const getStatusColor = (status) => {

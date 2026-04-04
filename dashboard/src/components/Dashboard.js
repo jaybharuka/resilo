@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService, systemApi, realTimeService } from '../services/api';
+import realtime from '../services/realtime';
 import { metricStatus } from '../utils/thresholds';
 import { useResiloStore } from '../store/useResiloStore';
 import ActionPanel from './ActionPanel';
@@ -21,7 +22,7 @@ const PANEL = {
 };
 
 export default function Dashboard() {
-  const { alerts, startPolling } = useResiloStore();
+  const { alerts, fetchDashboardData } = useResiloStore();
 
   const [systemData, setSystemData] = useState({
     cpu: 0, memory: 0, disk: 0, network_in: 0, network_out: 0, status: 'unknown', temperature: null,
@@ -31,10 +32,8 @@ export default function Dashboard() {
 
   useEffect(() => {
     let mounted = true;
-    let pollInterval = null;
-    let infoInterval = null;
-
-    const stopResiloPolling = startPolling();
+    const socket = realtime.connect();
+    fetchDashboardData();
 
     const normalizeAndSet = (data) => {
       if (!mounted) return;
@@ -72,21 +71,17 @@ export default function Dashboard() {
 
     const ensureData = async () => {
       await Promise.all([fetchOnce(), fetchInfo()]);
-      pollInterval = setInterval(fetchOnce, 4000);
-      infoInterval = setInterval(fetchInfo, 5000);
     };
 
     const timer = setTimeout(ensureData, 100);
 
     return () => {
       mounted = false;
-      stopResiloPolling();
       clearTimeout(timer);
-      if (pollInterval) clearInterval(pollInterval);
-      if (infoInterval) clearInterval(infoInterval);
+      if (socket) realtime.disconnect();
       unsub && unsub();
     };
-  }, [startPolling]);
+  }, [fetchDashboardData]);
 
   const displayMetrics = metricsHistory.length > 2 ? metricsHistory : [{ time: '...', cpu: 0, memory: 0 }];
 

@@ -220,11 +220,10 @@ export default function Insights() {
     } catch {} finally { setPerfLoading(false); }
   }, []);
 
-  // Initial load + polling
+  // Initial load
   useEffect(() => {
     fetchCore();
-    const id = setInterval(fetchCore, 10000);
-    return () => clearInterval(id);
+    return () => {};
   }, [fetchCore]);
 
   // Predictive + perf whenever range changes

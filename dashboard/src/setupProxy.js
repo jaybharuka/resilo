@@ -1,7 +1,7 @@
 // Development proxy configuration for Create React App
 // This file is used only when running `npm start` (development server).
 // It proxies frontend requests beginning with /api, /actions, /ai, and key backend paths
-// directly to the Flask backend so you can run without the Node/Express wrapper during dev.
+// directly to the backend so you can run without the Node/Express wrapper during dev.
 
 const { createProxyMiddleware } = require('http-proxy-middleware');
 

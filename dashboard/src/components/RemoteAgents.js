@@ -141,17 +141,7 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
       setResult(data);
       setStep('created');
       onCreated(data.agent_id);
-      // Start polling to detect when agent comes live
-      setWaiting(true);
-      pollRef.current = setInterval(async () => {
-        try {
-          const agent = await agentApi.get(data.agent_id);
-          if (agent.status === 'live') {
-            clearInterval(pollRef.current);
-            setWaiting(false);
-          }
-        } catch {}
-      }, 2000);
+      setWaiting(false);
     } catch (e) {
       setError(e?.response?.data?.error || 'Failed to create token.');
     } finally {
@@ -554,10 +544,6 @@ function CommandHistory({ agentId, refreshTick }) {
   }, [agentId]);
 
   useEffect(() => { load(); }, [load, refreshTick]);
-  useEffect(() => {
-    const id = setInterval(load, 4000);
-    return () => clearInterval(id);
-  }, [load]);
 
   const all = [...data.pending.map(c => ({ ...c, _pending: true })), ...data.history];
   if (!all.length) {
@@ -678,8 +664,7 @@ export function AgentDetail({ agentId, onBack }) {
 
   useEffect(() => {
     fetch();
-    const id = setInterval(fetch, 3000);
-    return () => clearInterval(id);
+    return () => {};
   }, [fetch]);
 
   if (!agent) {
@@ -912,8 +897,7 @@ export default function RemoteAgents() {
   // Poll every 3s to keep status fresh
   useEffect(() => {
     fetchAgents();
-    const id = setInterval(fetchAgents, 3000);
-    return () => clearInterval(id);
+    return () => {};
   }, [fetchAgents]);
 
   const handleRemove = async (id) => {

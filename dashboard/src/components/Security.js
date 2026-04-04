@@ -315,8 +315,7 @@ export default function Security() {
   useEffect(() => {
     mounted.current = true;
     fetchAll();
-    const id = setInterval(() => fetchAll(false), 30000);
-    return () => { mounted.current = false; clearInterval(id); };
+    return () => { mounted.current = false; };
   }, [fetchAll]);
 
   const handleRevoke = useCallback(async (sessionId) => {

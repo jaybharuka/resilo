@@ -2,14 +2,14 @@ import axios from 'axios';
 
 // --- Direct Mode Flag ---
 // When REACT_APP_DIRECT_MODE is set to '1' or 'true', the frontend will bypass
-// all Node/Express proxy logic and talk straight to the Flask backend (port 5000 by default).
+// all Node/Express proxy logic and talk straight to the backend (port 5000 by default).
 // This is useful when the Node layer is unreachable or you want a lighter stack.
 export const DIRECT_MODE = /^(1|true)$/i.test(process.env.REACT_APP_DIRECT_MODE || '');
 export const USE_MOCKS = /^(1|true)$/i.test(process.env.REACT_APP_USE_MOCKS || '');
 
 // Determine API base URL.
 // Priority: REACT_APP_API_BASE_URL env var → same origin (window.location.origin).
-// Using same-origin means the Express server (which proxies Flask) is always the
+// Using same-origin means the Express server (which proxies the backend) is always the
 // single gateway — no hardcoded ports, works on localhost AND any deployed host.
 export const API_BASE_URL = (() => {
   const env = process.env.REACT_APP_API_BASE_URL;
@@ -22,7 +22,7 @@ export const API_BASE_URL = (() => {
   return 'http://localhost:3001';
 })();
 
-// Auth API base URL — same origin as API (Express proxies /auth/* to Flask).
+// Auth API base URL — same origin as API (Express proxies /auth/* to the backend).
 export const AUTH_BASE_URL = (() => {
   const env = process.env.REACT_APP_AUTH_API_URL;
   if (env && env.trim()) return env.trim();
@@ -228,14 +228,14 @@ export const apiService = {
     }
   },
 
-  // Get system metrics (prefers core API snapshot, falls back to Flask)
+  // Get system metrics (prefers core API snapshot, falls back to legacy endpoints)
   async getSystemData() {
     // Production path: core API proxied via Firebase /api/** rewrite
     try {
       const response = await api.get('/api/dashboard-snapshot', { timeout: 5000 });
       return response.data;
     } catch (_coreErr) {}
-    // Legacy Flask snapshot
+    // Legacy snapshot
     try {
       const response = await api.get('/dashboard-snapshot');
       return response.data;
@@ -246,10 +246,10 @@ export const apiService = {
         return res2.data;
       } catch (e2) {
         if (DIRECT_MODE) {
-          console.warn('Direct mode: Flask snapshot & system-health failed; returning minimal offline state. Error:', error?.message || error);
+          console.warn('Direct mode: snapshot & system-health failed; returning minimal offline state. Error:', error?.message || error);
           return { status: 'offline', last_updated: new Date().toISOString(), source: 'direct' };
         }
-        console.warn('Flask system endpoints failed, trying Node /api/system ...', error?.message || error);
+        console.warn('Legacy system endpoints failed, trying Node /api/system ...', error?.message || error);
         // Try Node realtime API for live data
         try {
           const res = await nodeApi.get('/api/system');
@@ -270,7 +270,7 @@ export const apiService = {
         } catch (err2) {
           console.error('Node /api/system failed:', err2?.message || err2);
           // Return mock data as last resort
-          return { status: 'offline', error: 'Both Flask and Node system endpoints unavailable', last_updated: new Date().toISOString() };
+          return { status: 'offline', error: 'Both legacy and Node system endpoints unavailable', last_updated: new Date().toISOString() };
         }
       }
     }
@@ -322,7 +322,7 @@ export const apiService = {
   async sendChatMessage(message, extra = {}) {
     try {
       const payload = { message, ...(extra || {}) };
-      const response = await api.post('/chat', payload);
+      const response = await api.post('/api/v1/chat', payload);
       return response.data;
     } catch (error) {
       console.error('Chat request failed:', error);
@@ -409,7 +409,7 @@ export const apiService = {
   },
 };
 
-// Additional helpers aligned with Flask endpoints
+// Additional helpers aligned with legacy endpoints
 export const systemApi = {
   getProcesses: async () => {
     try { return (await api.get('/processes')).data; }
@@ -588,27 +588,82 @@ export const jobsApi = {
   downloadUrl: (jobId) => `${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/download`,
 };
 
-// SSE subscription for system snapshots
+async function getStreamToken() {
+  try {
+    const response = await api.post('/stream/token');
+    return response?.data?.token || '';
+  } catch {
+    return '';
+  }
+}
+
+// SSE subscription for org-scoped metrics stream
 export function subscribeSystemSSE(onData, onStatus) {
   if (typeof window === 'undefined' || !window.EventSource) return () => {};
-  try {
-    const es = new EventSource(`${API_BASE_URL}/events/system`);
-    if (onStatus) {
-      try { es.onopen = () => onStatus('open'); } catch {}
-      try { es.onerror = () => onStatus('error'); } catch {}
-    }
-    const handler = (ev) => {
-      if (ev?.data && ev.type !== 'heartbeat') {
-        try { const parsed = JSON.parse(ev.data); onData && onData(parsed); } catch {}
+  let es = null;
+  let closed = false;
+  (async () => {
+    const streamToken = await getStreamToken();
+    if (!streamToken || closed) return;
+    try {
+      es = new EventSource(`${API_BASE_URL}/stream/metrics?token=${encodeURIComponent(streamToken)}`);
+      if (onStatus) {
+        try { es.onopen = () => onStatus('open'); } catch {}
+        try { es.onerror = () => onStatus('error'); } catch {}
       }
-    };
-    es.onmessage = handler;
-    es.addEventListener('heartbeat', () => {});
-    return () => { try { es.close(); } catch {} };
-  } catch (e) {
-    console.warn('SSE not available:', e?.message || e);
-    return () => {};
-  }
+      const handler = (ev) => {
+        if (ev?.data && ev.type !== 'heartbeat') {
+          try {
+            const parsed = JSON.parse(ev.data);
+            onData && onData({
+              cpu: parsed.cpu ?? 0,
+              memory: parsed.memory ?? 0,
+              disk: parsed.disk ?? 0,
+              network_in: parsed.network_in ?? 0,
+              network_out: parsed.network_out ?? 0,
+              temperature: parsed.temperature ?? null,
+              status: parsed.status || 'unknown',
+              last_updated: parsed.timestamp || new Date().toISOString(),
+            });
+          } catch {}
+        }
+      };
+      es.addEventListener('metric_update', handler);
+      es.addEventListener('heartbeat', () => {});
+    } catch {}
+  })();
+
+  return () => {
+    closed = true;
+    try { es?.close(); } catch {}
+  };
+}
+
+export function subscribeAlertsSSE(onData) {
+  if (typeof window === 'undefined' || !window.EventSource) return () => {};
+  let es = null;
+  let closed = false;
+  (async () => {
+    const streamToken = await getStreamToken();
+    if (!streamToken || closed) return;
+    try {
+      es = new EventSource(`${API_BASE_URL}/stream/alerts?token=${encodeURIComponent(streamToken)}`);
+      const handler = (ev) => {
+        if (!ev?.data || ev.type === 'heartbeat') return;
+        try {
+          const parsed = JSON.parse(ev.data);
+          onData && onData(parsed);
+        } catch {}
+      };
+      es.addEventListener('alert_update', handler);
+      es.addEventListener('heartbeat', () => {});
+    } catch {}
+  })();
+
+  return () => {
+    closed = true;
+    try { es?.close(); } catch {}
+  };
 }
 
 // Real-time data service using polling
@@ -617,10 +672,12 @@ export class RealTimeService {
     this.listeners = new Map();
     this.polling = false;
     this.interval = null;
-    this.intervalMs = 5000; // default 5s, configurable
+    this.intervalMs = 5000;
     this._sseUnsub = null;
+    this._alertsSseUnsub = null;
     this.sseEnabled = (() => { try { return (localStorage.getItem('aiops:sse') ?? 'on') !== 'off'; } catch { return true; } })();
     this.sseConnected = false;
+    this.alertState = [];
     // Listen for global refresh events
     try {
       this._onRefresh = () => this.refreshNow();
@@ -635,9 +692,33 @@ export class RealTimeService {
     }
     this.listeners.get(eventType).push(callback);
 
-    // Start polling if not already started
+    // Start streams if not already started
     if (!this.polling) {
       this.startPolling();
+    } else if (this.sseEnabled) {
+      if (eventType === 'system' && !this._sseUnsub) {
+        this._sseUnsub = subscribeSystemSSE(
+          (snap) => this.emit('system', snap),
+          (status) => {
+            const connected = status === 'open';
+            if (this.sseConnected !== connected) {
+              this.sseConnected = connected;
+              this.emit('sse-status', { enabled: this.sseEnabled, connected: this.sseConnected });
+            }
+          }
+        );
+      }
+      if (eventType === 'alerts' && !this._alertsSseUnsub) {
+        this._alertsSseUnsub = subscribeAlertsSSE((alert) => {
+          const id = alert?.id;
+          if (id) {
+            const idx = this.alertState.findIndex(a => a.id === id);
+            if (idx >= 0) this.alertState[idx] = { ...this.alertState[idx], ...alert };
+            else this.alertState = [alert, ...this.alertState].slice(0, 200);
+          }
+          this.emit('alerts', [...this.alertState]);
+        });
+      }
     }
 
     // Return unsubscribe function
@@ -652,14 +733,14 @@ export class RealTimeService {
     };
   }
 
-  // Start polling for updates
+  // Start SSE streams for updates
   startPolling() {
     if (this.polling) return;
-    
-    this.polling = true;
-    console.log('🔄 Starting real-time data polling...');
 
-    // Try SSE for 'system' channel; if it pushes, we'll emit without waiting for ticks
+    this.polling = true;
+    console.log('🔄 Starting real-time streams...');
+
+    // Metrics stream
     if (this.listeners.has('system') && !this._sseUnsub && this.sseEnabled) {
       this._sseUnsub = subscribeSystemSSE(
         (snap) => this.emit('system', snap),
@@ -673,44 +754,51 @@ export class RealTimeService {
       );
     }
 
+    // Alerts stream
+    if (this.listeners.has('alerts') && !this._alertsSseUnsub && this.sseEnabled) {
+      this._alertsSseUnsub = subscribeAlertsSSE((alert) => {
+        const id = alert?.id;
+        if (id) {
+          const idx = this.alertState.findIndex(a => a.id === id);
+          if (idx >= 0) this.alertState[idx] = { ...this.alertState[idx], ...alert };
+          else this.alertState = [alert, ...this.alertState].slice(0, 200);
+        }
+        this.emit('alerts', [...this.alertState]);
+      });
+    }
+
+    // Initial snapshots for first paint.
+    this.refreshNow();
+
+    // Keep non-stream channels refreshed on startup and explicit refresh events.
     const tick = async () => {
       try {
-        // Fetch system data
-        if (this.listeners.has('system')) {
-          const systemData = await apiService.getSystemData();
-          this.emit('system', systemData);
+        if (!this.sseEnabled || !this.sseConnected) {
+          if (this.listeners.has('system')) {
+            const systemData = await apiService.getSystemData();
+            this.emit('system', systemData);
+          }
+          if (this.listeners.has('alerts')) {
+            const alerts = await apiService.getAlerts();
+            this.alertState = Array.isArray(alerts) ? [...alerts] : [];
+            this.emit('alerts', [...this.alertState]);
+          }
         }
-
-        // Fetch AI insights
         if (this.listeners.has('insights')) {
           const insights = await apiService.getAiInsights();
           this.emit('insights', insights);
         }
-
-        // Fetch alerts
-        if (this.listeners.has('alerts')) {
-          const alerts = await apiService.getAlerts();
-          this.emit('alerts', alerts);
-        }
-
-        // Fetch processes for Systems page if requested
         if (this.listeners.has('processes')) {
           try {
             const procs = await systemApi.getProcesses();
             this.emit('processes', procs);
-          } catch (e) {
-            // ignore errors for processes to avoid breaking other channels
-          }
+          } catch {}
         }
-
       } catch (error) {
-        console.error('Polling error:', error);
+        console.error('Realtime refresh error:', error);
       }
     };
-
-    // Run first tick immediately for responsiveness
     tick();
-    this.interval = setInterval(tick, this.intervalMs);
   }
 
   // Stop polling
@@ -720,10 +808,14 @@ export class RealTimeService {
       this.interval = null;
     }
     this.polling = false;
-    console.log('⏹️ Stopped real-time data polling');
+    console.log('⏹️ Stopped real-time streams');
     if (this._sseUnsub) {
       try { this._sseUnsub(); } catch {}
       this._sseUnsub = null;
+    }
+    if (this._alertsSseUnsub) {
+      try { this._alertsSseUnsub(); } catch {}
+      this._alertsSseUnsub = null;
     }
     if (this.sseConnected) {
       this.sseConnected = false;
@@ -765,6 +857,7 @@ export class RealTimeService {
       }
       if (this.listeners.has('alerts')) {
         const alerts = await apiService.getAlerts();
+        this.alertState = Array.isArray(alerts) ? [...alerts] : [];
         this.emit('alerts', alerts);
       }
       if (this.listeners.has('processes')) {
@@ -780,13 +873,8 @@ export class RealTimeService {
 
   // Update polling interval at runtime
   setIntervalMs(ms) {
-    const next = Number(ms) || 5000;
-    if (next === this.intervalMs) return;
-    this.intervalMs = next;
-    if (this.polling) {
-      this.stopPolling();
-      this.startPolling();
-    }
+    this.intervalMs = Number(ms) || 5000;
+    if (this.polling) this.refreshNow();
   }
   
   // Enable/disable SSE usage
@@ -798,6 +886,7 @@ export class RealTimeService {
     // Rewire subscription if polling
     if (this.polling) {
       if (this._sseUnsub) { try { this._sseUnsub(); } catch {}; this._sseUnsub = null; }
+      if (this._alertsSseUnsub) { try { this._alertsSseUnsub(); } catch {}; this._alertsSseUnsub = null; }
       this.sseConnected = false;
       this.emit('sse-status', { enabled: this.sseEnabled, connected: false });
       if (this.listeners.has('system') && this.sseEnabled) {
@@ -811,6 +900,17 @@ export class RealTimeService {
             }
           }
         );
+      }
+      if (this.listeners.has('alerts') && this.sseEnabled) {
+        this._alertsSseUnsub = subscribeAlertsSSE((alert) => {
+          const id = alert?.id;
+          if (id) {
+            const idx = this.alertState.findIndex(a => a.id === id);
+            if (idx >= 0) this.alertState[idx] = { ...this.alertState[idx], ...alert };
+            else this.alertState = [alert, ...this.alertState].slice(0, 200);
+          }
+          this.emit('alerts', [...this.alertState]);
+        });
       }
     }
   }
