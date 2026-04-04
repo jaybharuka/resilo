@@ -11,6 +11,41 @@ import os
 import logging
 from collections import deque
 
+# ---------------------------------------------------------------------------
+# Load .env early so vars set there are visible to the validation below.
+# ---------------------------------------------------------------------------
+_env_candidates = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+]
+for _env_candidate in _env_candidates:
+    _env_candidate = os.path.normpath(_env_candidate)
+    if os.path.exists(_env_candidate):
+        with open(_env_candidate) as _ef:
+            for _line in _ef:
+                _line = _line.strip()
+                if _line and not _line.startswith('#') and '=' in _line:
+                    _k, _v = _line.split('=', 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+        break
+
+# ---------------------------------------------------------------------------
+# Startup validation — fail immediately if required secrets are absent.
+# ---------------------------------------------------------------------------
+_REQUIRED_AT_STARTUP = [
+    ("JWT_SECRET_KEY",         "Secret key for signing JWT tokens"),
+    ("ADMIN_DEFAULT_PASSWORD", "Initial admin account password"),
+    ("ALLOWED_ORIGINS",        "Comma-separated list of allowed CORS origins"),
+]
+_missing = [f"  {v}: {d}" for v, d in _REQUIRED_AT_STARTUP if not os.getenv(v)]
+if _missing:
+    print(
+        "ERROR: Missing required environment variables:\n" + "\n".join(_missing) +
+        "\n\nAdd these to your .env file and restart.",
+        file=sys.stderr, flush=True,
+    )
+    sys.exit(1)
+
 from flask import current_app
 
 try:
@@ -41,26 +76,27 @@ def _prune_old(timestamps, window=_RATE_WINDOW):
     return [t for t in timestamps if now - t < window]
 
 def _check_rate_limit(ip: str, email: str):
-    """Return (allowed: bool, retry_after: int)"""
+    """Return (allowed: bool, retry_after: int, reason: str).
+    reason='account_locked' -> 403; reason='ip_rate' -> 429."""
     with _login_lock:
         ip_key = f'ip:{ip}'
         email_key = f'email:{email}'
         now = time.time()
 
-        # Per-IP rate check
+        # Per-IP rate check (429)
         _login_attempts[ip_key] = _prune_old(_login_attempts.get(ip_key, []))
         if len(_login_attempts[ip_key]) >= _RATE_MAX_IP:
-            return False, _RATE_WINDOW
+            return False, _RATE_WINDOW, 'ip_rate'
 
-        # Per-email lockout check (uses a separate list with a longer window)
+        # Per-email lockout check (403)
         attempts = _login_attempts.get(email_key, [])
         recent = [t for t in attempts if now - t < _LOCKOUT_SECS]
         if len(recent) >= _LOCKOUT_MAX:
             oldest = min(recent)
             retry_after = int(_LOCKOUT_SECS - (now - oldest))
-            return False, max(retry_after, 1)
+            return False, max(retry_after, 1), 'account_locked'
 
-        return True, 0
+        return True, 0, ''
 
 def _record_attempt(ip: str, email: str, success: bool):
     with _login_lock:
@@ -326,7 +362,7 @@ _ALLOWED_ORIGINS = [o.strip() for o in _RAW_ORIGINS.split(',') if o.strip()]
 _LOCALHOST_RE = __import__('re').compile(r'^https?://(localhost|127\.0\.0\.1)(:\d+)?$')
 
 CORS(app, resources={r"/*": {
-    "origins": _ALLOWED_ORIGINS or "*",
+    "origins": _ALLOWED_ORIGINS,
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     "allow_headers": ["Content-Type", "Authorization", "X-Request-ID"],
     "expose_headers": [
@@ -341,8 +377,8 @@ CORS(app, resources={r"/*": {
 def _add_cors_headers(response):
     """Guarantee CORS headers are present — belt-and-suspenders over flask-cors."""
     origin = request.headers.get('Origin', '')
-    if _LOCALHOST_RE.match(origin) or not origin:
-        response.headers['Access-Control-Allow-Origin'] = origin or '*'
+    if origin and _LOCALHOST_RE.match(origin):
+        response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS,PATCH'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Request-ID'
@@ -964,8 +1000,8 @@ def auth_login():
     """Login with email (or username) and password"""
     import sqlite3 as _sqlite3
     data = request.get_json() or {}
-    email = (data.get('email') or '').strip()
-    password = data.get('password') or ''
+    email = (data.get('email') or '').strip()[:254]
+    password = (data.get('password') or '')[:1000]
 
     logger.info(f"[LOGIN] attempt — email={email!r} has_password={bool(password)} origin={request.headers.get('Origin','')!r}")
 
@@ -979,12 +1015,12 @@ def auth_login():
 
     # Rate limiting: per-IP and per-email lockout
     client_ip = request.remote_addr or '0.0.0.0'
-    allowed, retry_after = _check_rate_limit(client_ip, email)
+    allowed, retry_after, lockout_reason = _check_rate_limit(client_ip, email)
     if not allowed:
-        logger.warning(f"[LOGIN] rate-limited - email={email!r} retry_after={retry_after}s")
-        resp = jsonify({'error': f'Too many login attempts. Please try again in {retry_after}s.'})
+        logger.warning(f"[LOGIN] blocked - email={email!r} reason={lockout_reason} retry_after={retry_after}s")
+        resp = jsonify({'error': f'Account locked. Too many failed attempts. Try again in {retry_after}s.'})
         resp.headers['Retry-After'] = str(retry_after)
-        return resp, 429
+        return resp, 403 if lockout_reason == 'account_locked' else 429
 
     try:
         conn = _sqlite3.connect(a.db_path)

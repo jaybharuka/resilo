@@ -41,7 +41,9 @@ except ImportError:
 def _fernet():
     from cryptography.fernet import Fernet
     import hashlib
-    raw = os.environ.get("JWT_SECRET_KEY", "dev-secret-change-me")
+    raw = os.environ.get("JWT_SECRET_KEY")
+    if not raw:
+        raise RuntimeError("JWT_SECRET_KEY is not set. Cannot initialize password encryption.")
     key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
     return Fernet(key)
 
