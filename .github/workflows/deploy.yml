@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test]
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ secrets['DATABASE_URL'] }}
     steps:
       - uses: actions/checkout@v4
 
@@ -165,7 +165,8 @@ jobs:
     name: Production Frontend → Firebase
     runs-on: ubuntu-latest
     needs: [security-scan, lint, test, migrate-schema]
-    environment: production
+    environment:
+      name: production
     steps:
       - uses: actions/checkout@v4
 
@@ -252,7 +253,8 @@ jobs:
     name: Production Core API → Cloud Run
     runs-on: ubuntu-latest
     needs: [security-scan, lint, test, migrate-schema]
-    environment: production
+    environment:
+      name: production
     steps:
       - uses: actions/checkout@v4
 
@@ -345,7 +347,8 @@ jobs:
     name: Production Auth API → Cloud Run
     runs-on: ubuntu-latest
     needs: [security-scan, lint, test, migrate-schema]
-    environment: production
+    environment:
+      name: production
     steps:
       - uses: actions/checkout@v4
 
