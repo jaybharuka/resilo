@@ -7,10 +7,10 @@ application imports, so the app sees the test secret and the test database.
 Design notes
 ────────────
 • database.py creates a global SQLAlchemy engine at module load time using
-  `_build_engine_args`, which corrupts SQLite URLs (strips netloc `//`).
-  To avoid this, we mock `create_async_engine` BEFORE importing database.py
-  so that `database.engine` and `database.SessionLocal` transparently use
-  the test engine (file-based SQLite with NullPool).
+    `_build_engine_args`, which can rewrite async database URLs. To avoid this,
+    we mock `create_async_engine` BEFORE importing database.py so that
+    `database.engine` and `database.SessionLocal` transparently use the test
+    engine with `NullPool`.
 
 • httpx ASGITransport does NOT trigger FastAPI startup/shutdown lifespan
   events.  Tables are therefore created and the admin is seeded manually
@@ -27,12 +27,13 @@ import os
 _TEST_JWT_SECRET = "test-jwt-secret-for-pytest-only-not-for-production-use"
 os.environ["JWT_SECRET_KEY"]         = _TEST_JWT_SECRET
 os.environ["ADMIN_DEFAULT_PASSWORD"] = "TestAdmin123!"
-os.environ["DATABASE_URL"]          = "sqlite+aiosqlite:///./tests/test_auth.db"
+os.environ["ADMIN_DEFAULT_EMAIL"]    = "admin@company.local"
+os.environ["DATABASE_URL"]          = "postgresql+asyncpg://test_user:test_pass@localhost:5433/resilo_test"
 os.environ["ALLOWED_ORIGINS"]       = "http://localhost:3000"
 os.environ["BACKUP_DIR"]            = "./backups"
 os.environ["DEPLOY_HOST"]           = "http://localhost:8000"
-# DATABASE_URL is intentionally left unset here; database.py's engine is
-# intercepted by the mock below so the URL value it reads doesn't matter.
+# DATABASE_URL points to the isolated test DB (port 5433). Start it with:
+#   docker-compose -f docker-compose.test.yml up -d
 
 import hashlib
 import sys
@@ -64,10 +65,8 @@ from helpers import make_jwt as _make_jwt_helper
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-# ── Test engine: file-based SQLite with no connection pooling ─────────────────
-# NullPool creates a fresh connection per request, allowing concurrent tests.
-_TEST_DB_FILE = Path(__file__).parent / "test_auth.db"
-_TEST_DB_URL  = f"sqlite+aiosqlite:///{_TEST_DB_FILE.as_posix()}"
+# ── Test engine: PostgreSQL with NullPool (one connection per request) ───────
+_TEST_DB_URL = os.environ["DATABASE_URL"]
 
 _test_engine  = create_async_engine(_TEST_DB_URL, poolclass=NullPool)
 _TestSession  = async_sessionmaker(
@@ -75,9 +74,9 @@ _TestSession  = async_sessionmaker(
 )
 
 # ── Inject test engine into database.py BEFORE importing it ───────────────────
-# database.py calls create_async_engine at module level; the corrupted URL it
-# builds for SQLite would fail.  We mock that call so database.engine becomes
-# _test_engine and database.SessionLocal binds to it automatically.
+# database.py calls create_async_engine at module level; we mock that call so
+# database.engine becomes _test_engine and database.SessionLocal binds to it
+# automatically.
 with patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=_test_engine):
     from database import Base, get_db, User, Organization  # noqa: E402
     from auth_api import app, _seed_admin                   # noqa: E402
@@ -102,8 +101,8 @@ make_jwt = _make_jwt_helper  # re-export for backward compat within this module
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _setup_database():
     """
-    Run once per test session:
-      1. Create all tables in the test SQLite file.
+        Run once per test session:
+            1. Create all tables in the test database.
       2. Seed the default admin user (via auth_api._seed_admin).
     Drop everything and delete the file on teardown.
     """
@@ -113,12 +112,20 @@ async def _setup_database():
     # _seed_admin uses database.SessionLocal, which now binds to _test_engine.
     await _seed_admin()
 
+    # Wire the real admin user ID into helpers so admin_jwt() tokens pass the
+    # DB user-existence check in _require_valid_access_payload.
+    from sqlalchemy import select as _sa_select
+    import helpers as _helpers_mod
+    async with _TestSession() as _s:
+        _result = await _s.execute(_sa_select(User).where(User.email == ADMIN_EMAIL))
+        _admin = _result.scalar_one()
+        _helpers_mod._TEST_ADMIN_ID = _admin.id
+
     yield
 
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await _test_engine.dispose()
-    _TEST_DB_FILE.unlink(missing_ok=True)
 
 
 # ── Per-test session wipe ─────────────────────────────────────────────────────
@@ -173,10 +180,11 @@ async def core_client() -> AsyncClient:
 @pytest_asyncio.fixture
 async def sample_org() -> Organization:
     """Create a test organization and clean it up after the test."""
+    suffix = str(uuid.uuid4())[:8]
     org = Organization(
         id=str(uuid.uuid4()),
-        name="Test Org",
-        slug="test-org",
+        name=f"Test Org {suffix}",
+        slug=f"test-org-{suffix}",
         plan="free",
         is_active=True,
     )
@@ -185,8 +193,12 @@ async def sample_org() -> Organization:
         await session.commit()
         await session.refresh(org)
     yield org
+    # Delete child records in FK order before removing the org.
     async with _test_engine.begin() as conn:
         from sqlalchemy import text
+        await conn.execute(text(f"DELETE FROM alert_records WHERE org_id = '{org.id}'"))
+        await conn.execute(text(f"DELETE FROM metric_snapshots WHERE org_id = '{org.id}'"))
+        await conn.execute(text(f"DELETE FROM agents WHERE org_id = '{org.id}'"))
         await conn.execute(text(f"DELETE FROM organizations WHERE id = '{org.id}'"))
 
 
@@ -211,8 +223,10 @@ async def sample_agent(sample_org: Organization) -> tuple[Agent, str]:
         await session.commit()
         await session.refresh(agent)
     yield agent, raw_key
+    # Delete metric_snapshots referencing this agent before removing the agent.
     async with _test_engine.begin() as conn:
         from sqlalchemy import text
+        await conn.execute(text(f"DELETE FROM metric_snapshots WHERE agent_id = '{agent.id}'"))
         await conn.execute(text(f"DELETE FROM agents WHERE id = '{agent.id}'"))
 
 
@@ -243,8 +257,9 @@ async def sample_metric(
     )
     assert resp.status_code == 200, f"Heartbeat fixture failed: {resp.text}"
     # Return the stored snapshot via the metrics API
+    import helpers as _helpers_mod
     token = make_jwt(
-        sub=str(uuid.uuid4()), role="admin", org_id=sample_org.id
+        sub=_helpers_mod._TEST_ADMIN_ID or str(uuid.uuid4()), role="admin", org_id=sample_org.id
     )
     list_resp = await core_client.get(
         f"/api/orgs/{sample_org.id}/metrics",
@@ -262,8 +277,9 @@ async def sample_alert(
     sample_org: Organization,
 ) -> dict:
     """Create one alert via the API and return the response body."""
+    import helpers as _helpers_mod
     token = make_jwt(
-        sub=str(uuid.uuid4()), role="admin", org_id=sample_org.id
+        sub=_helpers_mod._TEST_ADMIN_ID or str(uuid.uuid4()), role="admin", org_id=sample_org.id
     )
     resp = await core_client.post(
         f"/api/orgs/{sample_org.id}/alerts",

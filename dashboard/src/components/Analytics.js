@@ -106,7 +106,6 @@ export default function Analytics() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
   const [range, setRange]     = useState('1hour');
-  const [refreshAt, setRefreshAt] = useState(Date.now());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,19 +129,13 @@ export default function Analytics() {
     }
   }, [range]);
 
-  // Auto-refresh every 30 s so new history points appear without manual refresh
-  useEffect(() => {
-    const id = setInterval(() => setRefreshAt(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => { load(); }, [load, refreshAt]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    const handler = () => setRefreshAt(Date.now());
+    const handler = () => load();
     try { window.addEventListener('aiops:refresh', handler); } catch {}
     return () => { try { window.removeEventListener('aiops:refresh', handler); } catch {} };
-  }, []);
+  }, [load]);
 
   // Prepare chart data — label x-axis with formatted timestamps
   const chartData = perf.map(pt => ({

@@ -9,7 +9,7 @@ from asyncio import wait_for
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from config.shutdown import register_connection, unregister_connection
-from app.api.runtime import _subscribe_realtime_queue, _unsubscribe_realtime_queue
+from app.api.runtime import get_realtime_hub_from_app
 from app.core.database import SessionLocal, User
 
 router = APIRouter(prefix="/api/v1")
@@ -45,7 +45,8 @@ async def _realtime_socket(ws: WebSocket) -> None:
         await ws.close(code=1008, reason="Organization scope required")
         return
 
-    queue = _subscribe_realtime_queue(org_id)
+    hub = get_realtime_hub_from_app(ws.app)
+    queue = hub.subscribe(org_id)
     await ws.accept()
     register_connection(ws)
     try:
@@ -64,7 +65,7 @@ async def _realtime_socket(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         return
     finally:
-        _unsubscribe_realtime_queue(org_id, queue)
+        hub.unsubscribe(org_id, queue)
         unregister_connection(ws)
 
 

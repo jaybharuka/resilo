@@ -47,7 +47,7 @@ def get_shutdown_event() -> asyncio.Event:
     return _shutdown_event
 
 
-async def shutdown_handler(signal_name: str) -> None:
+async def shutdown_handler(signal_name: str, app: Any = None) -> None:
     """
     Async shutdown sequence:
     1. Signal all coroutines via the shutdown event.
@@ -55,7 +55,12 @@ async def shutdown_handler(signal_name: str) -> None:
     3. Wait up to SHUTDOWN_TIMEOUT_SECONDS for in-flight requests to drain.
     4. Exit 0.
     """
-    logger.info("Received %s — starting graceful shutdown", signal_name)
+    logger.info("Received %s - starting graceful shutdown", signal_name)
+    if app is not None:
+        try:
+            app.state.shutting_down = True
+        except Exception:
+            pass
     get_shutdown_event().set()
 
     timeout = int(os.getenv("SHUTDOWN_TIMEOUT_SECONDS", "30"))
@@ -68,7 +73,20 @@ async def shutdown_handler(signal_name: str) -> None:
             pass
 
     logger.info("Waiting up to %ds for in-flight requests to complete", timeout)
-    await asyncio.sleep(timeout)
+    started = asyncio.get_running_loop().time()
+    while True:
+        active = 0
+        if app is not None:
+            try:
+                active = int(getattr(app.state, "active_requests", 0))
+            except Exception:
+                active = 0
+        if active <= 0:
+            break
+        if asyncio.get_running_loop().time() - started >= timeout:
+            logger.warning("Shutdown timeout reached with %d in-flight requests", active)
+            break
+        await asyncio.sleep(0.2)
     logger.info("Shutdown complete")
     sys.exit(0)
 
@@ -90,13 +108,18 @@ def register_signal_handlers(app: Any = None) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(
                 sig,
-                lambda s=sig: asyncio.create_task(shutdown_handler(s.name)),
+                lambda s=sig: asyncio.create_task(shutdown_handler(s.name, app)),
             )
         logger.info("Graceful shutdown handlers registered (SIGTERM, SIGINT)")
     except (NotImplementedError, RuntimeError):
         # Windows does not support loop.add_signal_handler; Flask has no running loop.
         def _sync_handler(signum: int, frame: Any) -> None:
             logger.info("Received signal %d — shutting down", signum)
+            if app is not None:
+                try:
+                    app.state.shutting_down = True
+                except Exception:
+                    pass
             sys.exit(0)
 
         for sig in (signal.SIGTERM, signal.SIGINT):

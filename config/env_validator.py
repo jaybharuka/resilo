@@ -18,6 +18,11 @@ from __future__ import annotations
 import os
 import sys
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 # ---------------------------------------------------------------------------
 # Required vars -- app refuses to start if any are absent or empty.
 # Tuple: (VAR_NAME, human-readable description of what it is used for)
@@ -29,6 +34,7 @@ REQUIRED_ENV_VARS: list[tuple[str, str]] = [
     ("ALLOWED_ORIGINS",        "Comma-separated list of allowed CORS origins"),
     ("BACKUP_DIR",             "Directory path for database backups"),
     ("DEPLOY_HOST",            "Production hostname used by post-deploy health checks"),
+    ("ADMIN_DEFAULT_EMAIL",    "Bootstrap admin email address"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -45,6 +51,10 @@ OPTIONAL_ENV_VARS_WITH_DEFAULTS: list[tuple[str, str]] = [
     ("DB_CONNECT_RETRIES",       "5"),
     ("DB_CONNECT_RETRY_DELAY",   "3"),
     ("BACKUP_RETENTION_DAYS",    "7"),
+    ("DB_POOL_SIZE",             "5"),
+    ("DB_MAX_OVERFLOW",          "10"),
+    ("DB_POOL_TIMEOUT",          "30"),
+    ("DB_POOL_RECYCLE",          "1800"),
 ]
 
 
@@ -56,6 +66,9 @@ def validate_environment() -> None:
     Exits with code 1 immediately if any required variable is missing.
     Call this before any other import that reads os.getenv() at module level.
     """
+    if load_dotenv is not None:
+        load_dotenv(override=False)
+
     missing: list[str] = []
     for var, description in REQUIRED_ENV_VARS:
         if not os.getenv(var):

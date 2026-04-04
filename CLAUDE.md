@@ -92,12 +92,12 @@ Located in `dashboard/src/`:
 
 Uses: Material-UI, Recharts, Framer Motion, Socket.io-client, Axios, Tailwind CSS.
 
-### Databases (SQLite)
+### Databases (PostgreSQL)
 
 All in the root directory:
-- `aiops_auth.db` — Users and auth
-- `audit_logs.db` — Audit trail
-- `compliance.db`, `configuration.db`, `dashboard.db`, `data_integration.db`, `notifications.db`, `workflows.db`
+- PostgreSQL-backed users and auth tables
+- PostgreSQL-backed audit trail
+- PostgreSQL-backed compliance, configuration, dashboard, data integration, notifications, and workflow tables
 
 ### Key Configuration Files
 

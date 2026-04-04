@@ -22,7 +22,7 @@ Daily summary scheduler:
 Environment variables:
     ANOMALY_POLL_INTERVAL   seconds between detection cycles (default: 30)
     ANOMALY_VERIFY_DELAY    seconds before verifying remediation outcome (default: 60)
-    ANOMALY_AUTONOMOUS      global autonomous mode: "true"|"false"|"org" (default: org)
+    ANOMALY_AUTONOMOUS      fleet-wide autonomous mode: "true"|"false"|"org" (default: org)
     DAILY_SUMMARY_HOUR      UTC hour (0-23) to dispatch daily summary (default: 8)
 """
 
@@ -279,7 +279,7 @@ async def _check_custom_rules(
     """
     breaches = []
     for rule in rules:
-        # Scope: org must match; agent_id None = global (all agents)
+        # Scope: org must match; agent_id None = all agents
         if rule.org_id != snap.org_id:
             continue
         if rule.agent_id and rule.agent_id != snap.agent_id:

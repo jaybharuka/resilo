@@ -30,6 +30,11 @@ _TEST_JWT_SECRET = os.environ.get(
     "test-jwt-secret-for-pytest-only-not-for-production-use",
 )
 
+# Set by conftest._setup_database after the admin user is seeded.
+# Using the real admin user ID ensures tokens pass the DB-lookup in
+# _require_valid_access_payload (which rejects tokens whose sub has no DB row).
+_TEST_ADMIN_ID: str | None = None
+
 
 def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -> str:
     """Mint a signed HS256 JWT accepted by core_api's require() dependency."""
@@ -48,5 +53,10 @@ def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -
 
 
 def admin_jwt(org_id: str) -> str:
-    """Convenience wrapper: admin-role JWT for org_id."""
-    return make_jwt(sub=str(uuid.uuid4()), role="admin", org_id=org_id)
+    """Convenience wrapper: admin-role JWT for org_id.
+
+    Uses the real seeded admin user ID (populated by conftest) so the token
+    passes the DB user-existence check in _require_valid_access_payload.
+    Falls back to a random UUID when called outside a test session.
+    """
+    return make_jwt(sub=_TEST_ADMIN_ID or str(uuid.uuid4()), role="admin", org_id=org_id)

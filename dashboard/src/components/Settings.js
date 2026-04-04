@@ -674,7 +674,7 @@ export default function Settings() {
             <StatusBadge ok={sse.connected} label={sse.enabled ? (sse.connected ? 'connected' : 'pending') : 'disabled'} />
             <Toggle on={sse.enabled} onChange={v => { realTimeService.setSSEnabled(v); toast.success(`SSE ${v ? 'enabled' : 'disabled'}`); }} />
           </Row>
-          <Row label="Backend Health" hint="Check connection to Flask API server">
+          <Row label="Backend Health" hint="Check connection to backend API server">
             {health && (
               <StatusBadge
                 ok={health.status === 'ok' || health.status === 'healthy'}
@@ -811,7 +811,7 @@ export default function Settings() {
       {/* ══ 7. CONNECTIVITY ══ */}
       <div className="s-section" style={{ animationDelay: '240ms' }}>
         <Section icon={<Wifi size={14} />} title="Connectivity">
-          <Row label="Current Endpoint" hint="Active Flask API base URL">
+          <Row label="Current Endpoint" hint="Active API base URL">
             <span style={{ ...MONO, fontSize: '11px', color: teal }}>{currentApiUrl}</span>
           </Row>
           <div style={{ marginTop: '14px' }}>

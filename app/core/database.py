@@ -29,6 +29,10 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://aiops:aiops@localhost:5432/aiops"
 )
 TIMESCALE_RETENTION_DAYS = int(os.getenv("TIMESCALE_RETENTION_DAYS", "30"))
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
 
 # asyncpg does not accept sslmode/channel_binding as URL parameters.
 # Strip them out and pass ssl via connect_args instead.
@@ -53,8 +57,10 @@ engine = create_async_engine(
     _db_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_MAX_OVERFLOW,
+    pool_timeout=DB_POOL_TIMEOUT,
+    pool_recycle=DB_POOL_RECYCLE,
     connect_args=_connect_args,
 )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -175,12 +181,12 @@ class Agent(Base):
     remediations:  Mapped[list["RemediationRecord"]]= relationship("RemediationRecord", back_populates="agent")
 
 
-# ── Legacy: keep RemoteAgent for Flask backward compatibility ─────────────────
+# ── Legacy: keep RemoteAgent for backward compatibility ───────────────────────
 
 class RemoteAgent(Base):
     """
-    Legacy model used by Flask api_server.py and the SQLite migration path.
-    New code should use Agent. Keep this until Flask is fully decommissioned.
+    Legacy model used by api_server.py and the old auth migration path.
+    New code should use Agent. Keep this until the old stack is fully decommissioned.
     """
     __tablename__ = "remote_agents"
 
@@ -446,63 +452,6 @@ class WmiInvite(Base):
     created_at:          Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-# ── DB init ───────────────────────────────────────────────────────────────────
-
-async def _run_migrations() -> None:
-    """
-    Apply pending SQL migration files from the repo-root migrations/ directory.
-    Tracks applied migrations in a lightweight 'schema_migrations' table.
-    TimescaleDB migrations are skipped gracefully when the extension is absent.
-    """
-    import logging
-    import pathlib
-    log = logging.getLogger("database")
-
-    migrations_dir = pathlib.Path(__file__).parent.parent.parent / "migrations"
-    if not migrations_dir.exists():
-        return
-
-    async with engine.begin() as conn:
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    filename   TEXT PRIMARY KEY,
-                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-        )
-
-    for sql_file in sorted(migrations_dir.glob("*.sql")):
-        async with engine.begin() as conn:
-            row = await conn.execute(
-                __import__("sqlalchemy").text(
-                    "SELECT 1 FROM schema_migrations WHERE filename = :f"
-                ),
-                {"f": sql_file.name},
-            )
-            if row.fetchone():
-                continue  # already applied
-
-        sql = sql_file.read_text(encoding="utf-8")
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(__import__("sqlalchemy").text(sql))
-                await conn.execute(
-                    __import__("sqlalchemy").text(
-                        "INSERT INTO schema_migrations (filename) VALUES (:f)"
-                    ),
-                    {"f": sql_file.name},
-                )
-            log.info("Applied migration: %s", sql_file.name)
-        except Exception as exc:
-            log.info(
-                "Skipped migration %s (TimescaleDB likely absent): %s",
-                sql_file.name, exc,
-            )
-
-
 async def wait_for_db() -> None:
     """
     Retry the database connection until it succeeds or retries are exhausted.
@@ -546,16 +495,11 @@ async def wait_for_db() -> None:
 
 async def init_db() -> None:
     """
-    Create all ORM tables (idempotent), then apply SQL migrations.
+    Configure runtime DB policies after Alembic has created schema.
     Safe to call on every startup — call wait_for_db() first.
     """
     import logging
     log = logging.getLogger("database")
-
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda c: Base.metadata.create_all(c, checkfirst=True))
-
-    await _run_migrations()
 
     # Retention policy is kept in application code because it is driven by
     # TIMESCALE_RETENTION_DAYS, an operator-configurable env var.

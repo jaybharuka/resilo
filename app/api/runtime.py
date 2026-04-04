@@ -34,6 +34,7 @@ from app.core.database import (
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = int(os.getenv("JWT_ACCESS_TTL", "86400"))
 REFRESH_TTL_SECONDS = int(os.getenv("JWT_REFRESH_TTL", "2592000"))
+STREAM_TTL_SECONDS = int(os.getenv("JWT_STREAM_TTL", "60"))
 FAILED_ATTEMPT_LIMIT = 5
 LOCKOUT_MINUTES = 15
 PASSWORD_ITERATIONS = 260000
@@ -44,9 +45,46 @@ SSE_HEARTBEAT_SECONDS = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
 WS_QUEUE_MAX_SIZE = int(os.getenv("WS_QUEUE_MAX_SIZE", "100"))
 MAX_CONNECTED_CLIENTS = int(os.getenv("MAX_CONNECTED_CLIENTS", "50"))
 
-_realtime_lock = threading.Lock()
-_realtime_subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
-_realtime_clients = 0
+
+class RealtimeHub:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        self._clients = 0
+
+    def subscribe(self, org_id: str) -> asyncio.Queue[dict[str, Any]]:
+        with self._lock:
+            if self._clients >= MAX_CONNECTED_CLIENTS:
+                raise HTTPException(status_code=503, detail="Too many realtime clients connected")
+            queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=WS_QUEUE_MAX_SIZE)
+            self._subscribers.setdefault(org_id, set()).add(queue)
+            self._clients += 1
+            return queue
+
+    def unsubscribe(self, org_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        with self._lock:
+            subscribers = self._subscribers.get(org_id)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    self._subscribers.pop(org_id, None)
+            if self._clients > 0:
+                self._clients -= 1
+
+    def publish(self, event_type: str, payload: dict[str, Any], org_id: str) -> None:
+        event = {"type": event_type, "data": payload, "org_id": org_id}
+        with self._lock:
+            subscribers = list(self._subscribers.get(org_id, set()))
+        for queue in subscribers:
+            try:
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                queue.put_nowait(event)
+            except Exception:
+                continue
 
 
 class LoginRequest(BaseModel):
@@ -189,6 +227,10 @@ def _create_refresh_token(user: User, session_id: str | None = None) -> str:
     return _encode_token(_build_token_payload(user, "refresh", REFRESH_TTL_SECONDS, session_id=session_id))
 
 
+def _create_stream_token(user: User) -> str:
+    return _encode_token(_build_token_payload(user, "stream", STREAM_TTL_SECONDS))
+
+
 def _decode_token(token: str, token_type: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
@@ -304,52 +346,36 @@ async def _require_valid_access_payload(token: str) -> dict[str, Any]:
 
 async def _require_access_token(request: Request) -> dict[str, Any]:
     header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    return await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
+    if header.startswith("Bearer "):
+        return await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
+
+    token = request.query_params.get("token")
+    if token:
+        payload = _decode_token(token, "stream")
+        async with SessionLocal() as db:
+            user = await _get_user_by_id(db, payload["sub"])
+            if user is None or not user.is_active:
+                raise HTTPException(status_code=401, detail="Invalid token")
+        return payload
+
+    raise HTTPException(status_code=401, detail="Missing bearer token")
 
 
-def _subscribe_realtime_queue(org_id: str) -> asyncio.Queue[dict[str, Any]]:
-    global _realtime_clients
-    with _realtime_lock:
-        if _realtime_clients >= MAX_CONNECTED_CLIENTS:
-            raise HTTPException(status_code=503, detail="Too many realtime clients connected")
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=WS_QUEUE_MAX_SIZE)
-        _realtime_subscribers.setdefault(org_id, set()).add(queue)
-        _realtime_clients += 1
-        return queue
+def get_realtime_hub_from_app(app: Any) -> RealtimeHub:
+    hub = getattr(app.state, "realtime_hub", None)
+    if hub is None:
+        hub = RealtimeHub()
+        app.state.realtime_hub = hub
+    return hub
 
 
-def _unsubscribe_realtime_queue(org_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
-    global _realtime_clients
-    with _realtime_lock:
-        subscribers = _realtime_subscribers.get(org_id)
-        if subscribers is not None:
-            subscribers.discard(queue)
-            if not subscribers:
-                _realtime_subscribers.pop(org_id, None)
-        if _realtime_clients > 0:
-            _realtime_clients -= 1
-
-
-def _publish_realtime_event(event_type: str, payload: dict[str, Any], org_id: str) -> None:
-    event = {"type": event_type, "data": payload, "org_id": org_id}
-    with _realtime_lock:
-        subscribers = list(_realtime_subscribers.get(org_id, set()))
-    for queue in subscribers:
-        try:
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            queue.put_nowait(event)
-        except Exception:
-            continue
+def _get_realtime_hub(request: Request) -> RealtimeHub:
+    return get_realtime_hub_from_app(request.app)
 
 
 async def _stream_realtime_events(event_type: str, org_id: str, request: Request):
-    queue = _subscribe_realtime_queue(org_id)
+    hub = _get_realtime_hub(request)
+    queue = hub.subscribe(org_id)
     try:
         while True:
             if await request.is_disconnected():
@@ -363,15 +389,7 @@ async def _stream_realtime_events(event_type: str, org_id: str, request: Request
                 continue
             yield f"event: {event_type}\ndata: {json.dumps(event['data'])}\n\n"
     finally:
-        _unsubscribe_realtime_queue(org_id, queue)
-
-
-async def _require_access_token(request: Request) -> dict[str, Any]:
-    header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    payload = _decode_token(header.removeprefix("Bearer ").strip(), "access")
-    return payload
+        hub.unsubscribe(org_id, queue)
 
 
 async def _require_org_access(request: Request, org_id: str) -> dict[str, Any]:
@@ -564,7 +582,7 @@ def build_metrics_router() -> APIRouter:
         db.add(snapshot)
         await db.commit()
         await db.refresh(snapshot)
-        _publish_realtime_event("metric_update", _serialize_metric(snapshot), body.org_id)
+        _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), body.org_id)
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(), "snapshot": _serialize_metric(snapshot)}
 
     @router.get("/api/orgs/{org_id}/metrics/summary")
@@ -639,7 +657,7 @@ def build_alerts_router() -> APIRouter:
         db.add(alert)
         await db.commit()
         await db.refresh(alert)
-        _publish_realtime_event("alert_update", _serialize_alert(alert), org_id)
+        _get_realtime_hub(request).publish("alert_update", _serialize_alert(alert), org_id)
         return _serialize_alert(alert)
 
     @router.get("/api/orgs/{org_id}/alerts")
@@ -666,7 +684,7 @@ def build_alerts_router() -> APIRouter:
             alert.resolved_at = _now()
         await db.commit()
         await db.refresh(alert)
-        _publish_realtime_event("alert_update", _serialize_alert(alert), org_id)
+        _get_realtime_hub(request).publish("alert_update", _serialize_alert(alert), org_id)
         return _serialize_alert(alert)
 
     return router
@@ -778,6 +796,24 @@ def build_agents_router() -> APIRouter:
 def build_health_router() -> APIRouter:
     router = APIRouter()
 
+    async def _health_db(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            await db.execute(text("SELECT 1"))
+            return {
+                "status": "ok",
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+            }
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "degraded",
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "error": str(exc),
+                },
+            ) from exc
+
     async def _health(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         started = time.perf_counter()
         try:
@@ -802,6 +838,7 @@ def build_health_router() -> APIRouter:
 
     router.add_api_route("/health", _health, methods=["GET"])
     router.add_api_route("/api/health", _health, methods=["GET"])
+    router.add_api_route("/health/db", _health_db, methods=["GET"])
     return router
 
 
@@ -809,6 +846,14 @@ def build_stream_router() -> APIRouter:
     import psutil
 
     router = APIRouter()
+
+    @router.post("/stream/token")
+    async def create_stream_token(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        payload = await _require_access_token(request)
+        user = await _get_user_by_id(db, payload["sub"])
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"token": _create_stream_token(user), "token_type": "stream"}
 
     @router.get("/events/system")
     async def system_events() -> StreamingResponse:
