@@ -839,7 +839,7 @@ async def demonstrate_api_gateway():
                 print(f"Health Check: {health_data['status']}")
             
             # Login to get JWT token
-            login_data = {"username": "admin", "password": "admin123"}
+            login_data = {"username": "admin", "password": os.environ.get("ADMIN_DEFAULT_PASSWORD", "")}
             async with session.post(f"{base_url}/auth/login", json=login_data) as resp:
                 if resp.status == 200:
                     auth_data = await resp.json()
