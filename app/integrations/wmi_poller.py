@@ -284,5 +284,5 @@ class WMIPoller:
         self._running = False
 
 
-# Global singleton used by core_api.py
+# Shared singleton used by core_api.py
 wmi_poller = WMIPoller()

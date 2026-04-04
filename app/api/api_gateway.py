@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 AIOps API Gateway and Security System
 Comprehensive API gateway with authentication, authorization, rate limiting, and routing
@@ -68,7 +68,7 @@ class RateLimitType(Enum):
     PER_IP = "per_ip"
     PER_USER = "per_user"
     PER_API_KEY = "per_api_key"
-    GLOBAL = "global"
+    SYSTEM = "system"
 
 @dataclass
 class User:
@@ -141,7 +141,7 @@ class AuthenticationManager:
     """Authentication and authorization manager"""
 
     def __init__(self, jwt_secret: str = None):
-        # Never fall back to a hardcoded literal — an attacker who knows the
+        # Never fall back to a hardcoded literal â€” an attacker who knows the
         # default can forge arbitrary JWTs and impersonate any user.
         # Set GATEWAY_JWT_SECRET in your environment (min 32 chars recommended).
         configured = jwt_secret or os.environ.get('GATEWAY_JWT_SECRET', '')
@@ -212,7 +212,7 @@ class AuthenticationManager:
         self.users[operator_user.user_id] = operator_user
         self.users[viewer_user.user_id] = viewer_user
 
-        # Require passwords from environment — no hardcoded or random fallbacks.
+        # Require passwords from environment â€” no hardcoded or random fallbacks.
         # All user passwords must be explicitly set via environment variables.
         for _uname, _env_var in [
             ('admin',    'GATEWAY_ADMIN_PASSWORD'),

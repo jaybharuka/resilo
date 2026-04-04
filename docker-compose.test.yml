@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  test-db:
+    image: postgres:15
+    container_name: resilo-test-db
+    environment:
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_pass
+      POSTGRES_DB: resilo_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d resilo_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

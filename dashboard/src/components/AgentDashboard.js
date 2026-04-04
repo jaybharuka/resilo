@@ -395,8 +395,7 @@ export default function AgentDashboard({ agent, orgId, onClose }) {
 
   useEffect(() => {
     fetchData();
-    pollRef.current = setInterval(() => fetchData(), 10000);
-    return () => clearInterval(pollRef.current);
+    return () => {};
   }, [fetchData]);
 
   // ── ESC to close ──

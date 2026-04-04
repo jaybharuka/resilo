@@ -19,10 +19,8 @@ function App() {
   const [healthScore] = useState(98);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLastUpdated(new Date().toLocaleTimeString());
-    }, 2000);
-    return () => clearInterval(interval);
+    setLastUpdated(new Date().toLocaleTimeString());
+    return () => {};
   }, []);
 
   const menuItems = [

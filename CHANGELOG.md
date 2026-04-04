@@ -78,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - Legacy Flask API server
-- SQLite database support (production)
+- PostgreSQL database support (production)
 - Synchronous database operations
 
 ### Breaking Changes

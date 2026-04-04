@@ -8,7 +8,7 @@ New protocol (core_api.py / port 8000):
     AIOPS_SERVER=https://HOST  AIOPS_KEY=<api_key>  AIOPS_ORG=<org_id>  python app/integrations/remote_agent.py
     → uses POST /ingest/heartbeat with X-Agent-Key header + org_id in body
 
-Legacy protocol (Flask / port 5000):
+Legacy protocol (old API / port 5000):
     python app/integrations/remote_agent.py --server http://HOST:5000 --token YOUR_TOKEN
     → uses POST /agents/heartbeat with token in JSON body
 
@@ -273,7 +273,7 @@ def run(server: str, token: str, interval: int = 3,
 
     New protocol: if api_key and org_id are provided, uses X-Agent-Key header
                   and POST /ingest/heartbeat on the new core_api service.
-    Legacy:       falls back to token-in-body POST /agents/heartbeat (Flask).
+    Legacy:       falls back to token-in-body POST /agents/heartbeat (old API).
     """
     use_new_protocol = bool(api_key and org_id)
 
@@ -414,7 +414,7 @@ if __name__ == '__main__':
             '  AIOPS_ORG                  Organization ID for new protocol\n\n'
             'New protocol (core_api, recommended):\n'
             '  AIOPS_SERVER=https://HOST AIOPS_KEY=<key> AIOPS_ORG=<org> python app/integrations/remote_agent.py\n\n'
-            'Legacy protocol (Flask):\n'
+            'Legacy protocol (old API):\n'
             '  python app/integrations/remote_agent.py --server http://HOST:5000 --token abc123\n'
         ),
     )

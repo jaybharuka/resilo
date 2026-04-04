@@ -256,11 +256,11 @@ Generate a response that directly addresses their question with intelligent anal
         
         return response
 
-# Global instance for use in chatbot
-enhanced_ai = None
-
 def initialize_enhanced_ai(api_key):
     """Initialize the enhanced AI analyzer"""
-    global enhanced_ai
-    enhanced_ai = EnhancedAIAnalyzer(api_key)
-    return enhanced_ai
+    instance = EnhancedAIAnalyzer(api_key)
+    initialize_enhanced_ai.instance = instance
+    return instance
+
+
+initialize_enhanced_ai.instance = None

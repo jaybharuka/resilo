@@ -49,8 +49,7 @@ const PerformanceChart = () => {
       }
     };
     fetchData();
-    const id = setInterval(fetchData, 30000);
-    return () => { mounted = false; clearInterval(id); };
+    return () => { mounted = false; };
   }, []);
 
   const chartVariants = {

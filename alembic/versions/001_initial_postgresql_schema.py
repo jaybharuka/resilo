@@ -272,10 +272,35 @@ def upgrade() -> None:
     op.create_index("ix_metric_snapshots_timestamp", "metric_snapshots", ["timestamp"])
     op.create_index("ix_metric_org_ts", "metric_snapshots", ["org_id", "timestamp"])
     op.create_index("ix_metric_agent_ts", "metric_snapshots", ["agent_id", "timestamp"])
-    # Convert to TimescaleDB hypertable (no-op on plain PostgreSQL — skipped gracefully).
+    # Convert to TimescaleDB hypertable and enable 7-day compression when available.
     op.execute(
-        "SELECT create_hypertable('metric_snapshots', 'timestamp', "
-        "if_not_exists => TRUE, migrate_data => TRUE)"
+        """
+        DO $$
+        BEGIN
+            CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+            PERFORM create_hypertable(
+                'metric_snapshots',
+                'timestamp',
+                if_not_exists => TRUE,
+                migrate_data => TRUE
+            );
+
+            ALTER TABLE metric_snapshots SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'org_id,agent_id',
+                timescaledb.compress_orderby = 'timestamp DESC'
+            );
+
+            PERFORM add_compression_policy(
+                'metric_snapshots',
+                compress_after => INTERVAL '7 days',
+                if_not_exists => TRUE
+            );
+        EXCEPTION
+            WHEN undefined_function OR feature_not_supported OR invalid_parameter_value THEN
+                NULL;
+        END $$;
+        """
     )
 
     # ── alert_records ──────────────────────────────────────────────────────────

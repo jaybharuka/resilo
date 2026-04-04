@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from functools import lru_cache
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -382,15 +383,14 @@ The user is asking about system issues. Provide helpful technical guidance based
                 "fallback": True
             }
 
-# Global instance
-huggingface_ai = None
+@lru_cache(maxsize=1)
+def _get_huggingface_ai_engine() -> HuggingFaceAIEngine:
+    """Create and cache one Hugging Face engine instance per process."""
+    return HuggingFaceAIEngine()
 
 def initialize_huggingface_ai():
     """Initialize the Hugging Face AI engine"""
-    global huggingface_ai
-    if huggingface_ai is None:
-        huggingface_ai = HuggingFaceAIEngine()
-    return huggingface_ai
+    return _get_huggingface_ai_engine()
 
 def enhance_response_with_ai(user_message: str, base_response: str, system_data: Dict) -> Dict[str, Any]:
     """

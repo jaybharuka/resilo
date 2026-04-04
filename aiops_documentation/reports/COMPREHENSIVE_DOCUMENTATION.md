@@ -71,7 +71,7 @@ The AIOps Bot is a comprehensive **Artificial Intelligence for IT Operations** p
 ├─────────────────────────────────────────────────────────────────┤
 │  Data Collection & Storage Layer                              │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐             │
-│  │ Prometheus  │ │   SQLite    │ │  Time Series│             │
+│  │ Prometheus  │ │ PostgreSQL  │ │  Time Series│             │
 │  │  Metrics    │ │  Database   │ │    Data     │             │
 │  └─────────────┘ └─────────────┘ └─────────────┘             │
 ├─────────────────────────────────────────────────────────────────┤
@@ -102,7 +102,7 @@ The AIOps Bot is a comprehensive **Artificial Intelligence for IT Operations** p
 - Custom dashboards (Real-time monitoring)
 
 **Database & Storage:**
-- SQLite (Primary database)
+- PostgreSQL (Primary database)
 - Time-series databases (Metrics storage)
 - File-based configuration (YAML/JSON)
 

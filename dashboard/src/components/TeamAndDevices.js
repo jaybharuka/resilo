@@ -1316,8 +1316,7 @@ export default function TeamAndDevices() {
 
   useEffect(() => {
     fetchAll();
-    intervalRef.current = setInterval(() => fetchAll(), 15000);
-    return () => clearInterval(intervalRef.current);
+    return () => {};
   }, [fetchAll]);
 
   // Stats
