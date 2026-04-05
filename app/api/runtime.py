@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import hashlib
 import hmac
 import json
@@ -48,8 +47,6 @@ DEFAULT_ADMIN_ORG = "default"
 SSE_HEARTBEAT_SECONDS = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
 WS_QUEUE_MAX_SIZE = int(os.getenv("WS_QUEUE_MAX_SIZE", "100"))
 MAX_CONNECTED_CLIENTS = int(os.getenv("MAX_CONNECTED_CLIENTS", "50"))
-
-logger = logging.getLogger(__name__)
 
 ALERT_TO_PLAYBOOK = {
     "cpu": "high_cpu",
