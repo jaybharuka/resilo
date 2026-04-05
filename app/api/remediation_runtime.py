@@ -295,7 +295,8 @@ def build_remediation_router() -> APIRouter:
     @router.get("/api/remediation/mttr")
     async def mttr(request: Request, days: int = 14, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org = await _resolve_org(db, request)
-        cutoff = _now() - timedelta(days=max(1, min(days, 90)))
+        effective_days = max(1, min(days, 90))
+        cutoff = _now() - timedelta(days=effective_days)
         alerts = {
             a.id: a
             for a in (
@@ -325,9 +326,13 @@ def build_remediation_router() -> APIRouter:
         timeline: list[dict[str, Any]] = []
         ttr_vals: list[float] = []
         trend_buckets: dict[str, dict[str, Any]] = {}
+        seen_alert_ids: set[str] = set()
 
         for job in jobs:
-            alert = alerts.get(job.alert_id) if job.alert_id else None
+            if not job.alert_id or job.alert_id in seen_alert_ids:
+                continue
+
+            alert = alerts.get(job.alert_id)
             if alert is None:
                 continue
 
@@ -336,6 +341,7 @@ def build_remediation_router() -> APIRouter:
             if not alert_time or not success_time:
                 continue
 
+            seen_alert_ids.add(job.alert_id)
             ttr = max(0.0, (success_time - alert_time).total_seconds())
             ttr_vals.append(ttr)
 
@@ -374,7 +380,8 @@ def build_remediation_router() -> APIRouter:
             )
 
         return {
-            "window_days": days,
+            "window_days": effective_days,
+            "window_days_requested": days,
             "incident_count": len(timeline),
             "ttd_avg_seconds": 0.0,
             "ttr_avg_seconds": avg(ttr_vals),
