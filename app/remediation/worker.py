@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.database import AuditLog, RemediationJob, SessionLocal
@@ -13,19 +13,67 @@ from app.remediation.executor import execute_playbook
 
 logger = logging.getLogger(__name__)
 
+# Update running jobs periodically so long executions are not reclaimed as stale.
+HEARTBEAT_INTERVAL_SECONDS = 30
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def process_job(db: AsyncSession, job: RemediationJob) -> None:
-    job.status = "running"
-    job.attempts += 1
-    job.updated_at = _now_utc()
-    await db.commit()
+async def claim_pending_jobs(
+    db: AsyncSession,
+    batch_size: int,
+    lease_timeout_seconds: int = 300,
+) -> list[RemediationJob]:
+    # Claim work in a single transaction so parallel workers do not pick the same rows.
+    stale_before = _now_utc() - timedelta(seconds=lease_timeout_seconds)
 
+    async with db.begin():
+        jobs_result = await db.execute(
+            select(RemediationJob)
+            .where(
+                or_(
+                    RemediationJob.status == "pending",
+                    and_(
+                        RemediationJob.status == "running",
+                        RemediationJob.updated_at < stale_before,
+                    ),
+                )
+            )
+            .order_by(RemediationJob.created_at.asc())
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+        jobs = jobs_result.scalars().all()
+
+        for job in jobs:
+            if job.status == "running":
+                logger.warning("Reclaiming stale running job %s", job.id)
+            job.status = "running"
+            job.attempts += 1
+            job.updated_at = _now_utc()
+
+    return jobs
+
+
+async def _execute_playbook_with_heartbeat(db: AsyncSession, job: RemediationJob):
+    task = asyncio.create_task(execute_playbook(job.playbook_type, job.payload or {}))
+
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=HEARTBEAT_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            job.updated_at = _now_utc()
+            try:
+                await db.commit()
+            except Exception as exc:
+                logger.warning("Failed to commit heartbeat for job %s: %s", job.id, exc)
+
+
+async def process_job(db: AsyncSession, job: RemediationJob) -> None:
     try:
-        result = await execute_playbook(job.playbook_type, job.payload or {})
+        result = await _execute_playbook_with_heartbeat(db, job)
         if isinstance(result, dict) and result.get("status") == "failed":
             raise RuntimeError(result.get("error") or "Playbook execution failed")
 
@@ -84,16 +132,11 @@ async def worker_loop(
     db_factory: async_sessionmaker[AsyncSession] = SessionLocal,
     poll_interval: float = 1.0,
     batch_size: int = 5,
+    lease_timeout_seconds: int = 300,
 ) -> None:
     while True:
         async with db_factory() as db:
-            jobs_result = await db.execute(
-                select(RemediationJob)
-                .where(RemediationJob.status == "pending")
-                .order_by(RemediationJob.created_at.asc())
-                .limit(batch_size)
-            )
-            jobs = jobs_result.scalars().all()
+            jobs = await claim_pending_jobs(db, batch_size, lease_timeout_seconds)
 
             for job in jobs:
                 await process_job(db, job)
@@ -101,15 +144,14 @@ async def worker_loop(
         await asyncio.sleep(poll_interval)
 
 
-async def run_once(db_factory: async_sessionmaker[AsyncSession] = SessionLocal, batch_size: int = 5) -> None:
+async def run_once(
+    db_factory: async_sessionmaker[AsyncSession] = SessionLocal,
+    batch_size: int = 5,
+    lease_timeout_seconds: int = 300,
+) -> None:
     async with db_factory() as db:
-        jobs_result = await db.execute(
-            select(RemediationJob)
-            .where(RemediationJob.status == "pending")
-            .order_by(RemediationJob.created_at.asc())
-            .limit(batch_size)
-        )
-        for job in jobs_result.scalars().all():
+        jobs = await claim_pending_jobs(db, batch_size, lease_timeout_seconds)
+        for job in jobs:
             await process_job(db, job)
 
 
@@ -119,13 +161,25 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Process one batch and exit")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--poll-interval", type=float, default=1.0)
+    parser.add_argument("--lease-timeout-seconds", type=int, default=300)
     args = parser.parse_args()
 
     if args.once:
-        asyncio.run(run_once(batch_size=args.batch_size))
+        asyncio.run(
+            run_once(
+                batch_size=args.batch_size,
+                lease_timeout_seconds=args.lease_timeout_seconds,
+            )
+        )
         return
 
-    asyncio.run(worker_loop(batch_size=args.batch_size, poll_interval=args.poll_interval))
+    asyncio.run(
+        worker_loop(
+            batch_size=args.batch_size,
+            poll_interval=args.poll_interval,
+            lease_timeout_seconds=args.lease_timeout_seconds,
+        )
+    )
 
 
 if __name__ == "__main__":
