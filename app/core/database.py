@@ -291,10 +291,12 @@ class RemediationRecord(Base):
 class RemediationJob(Base):
     __tablename__ = "remediation_jobs"
     __table_args__ = (
+        Index("ix_remediation_jobs_org_created", "org_id", "created_at"),
         Index("ix_remediation_jobs_status_created", "status", "created_at"),
     )
 
     id:            Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id:        Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
     alert_id:      Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("alert_records.id", ondelete="SET NULL"), nullable=True, index=True)
     playbook_type: Mapped[str]            = mapped_column(String(100), nullable=False)
     status:        Mapped[str]            = mapped_column(String(20), nullable=False, default="pending")

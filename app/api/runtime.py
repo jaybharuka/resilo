@@ -685,6 +685,7 @@ def build_alerts_router() -> APIRouter:
             }
             db.add(
                 RemediationJob(
+                    org_id=org_id,
                     alert_id=alert.id,
                     playbook_type=playbook_type,
                     status="pending",

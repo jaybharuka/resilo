@@ -7,27 +7,42 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.remediation_runtime import _resolve_org
-from app.api.runtime import _as_utc, _now
+from app.api.runtime import _as_utc, _now, _require_valid_access_payload
 from app.core.database import AlertRecord, AuditLog, Organization, RemediationJob, RemediationRecord, get_db
 
+
+async def _resolve_jobs_org(db: AsyncSession, request: Request) -> Organization:
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    payload = await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization scope required")
+
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
 
 async def _resolve_job_context(
     db: AsyncSession,
     request: Request,
     job_id: int,
-) -> tuple[Organization, RemediationJob, AlertRecord | None]:
-    org = await _resolve_org(db, request)
-    result = await db.execute(select(RemediationJob).where(RemediationJob.id == job_id))
+) -> tuple[Organization, RemediationJob, AlertRecord]:
+    org = await _resolve_jobs_org(db, request)
+    result = await db.execute(select(RemediationJob).where(RemediationJob.id == job_id, RemediationJob.org_id == org.id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Remediation job not found")
 
     alert: AlertRecord | None = None
     if job.alert_id is not None:
-        alert_result = await db.execute(select(AlertRecord).where(AlertRecord.id == job.alert_id))
+        alert_result = await db.execute(select(AlertRecord).where(AlertRecord.id == job.alert_id, AlertRecord.org_id == org.id))
         alert = alert_result.scalar_one_or_none()
-        if alert is None or alert.org_id != org.id:
+        if alert is None:
             raise HTTPException(status_code=404, detail="Remediation job not found")
 
     return org, job, alert
@@ -215,10 +230,11 @@ def build_remediation_jobs_router() -> APIRouter:
 
     @router.get("/api/remediation/jobs")
     async def get_jobs(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
-        org = await _resolve_org(db, request)
+        org = await _resolve_jobs_org(db, request)
         effective_limit = max(1, min(limit, 100))
         jobs_result = await db.execute(
             select(RemediationJob)
+            .where(RemediationJob.org_id == org.id)
             .order_by(desc(RemediationJob.created_at))
             .limit(effective_limit)
         )
@@ -226,15 +242,14 @@ def build_remediation_jobs_router() -> APIRouter:
         alert_ids = [job.alert_id for job in jobs if job.alert_id]
         alert_map: dict[str, AlertRecord] = {}
         if alert_ids:
-            alerts_result = await db.execute(select(AlertRecord).where(AlertRecord.id.in_(alert_ids)))
+            alerts_result = await db.execute(
+                select(AlertRecord).where(AlertRecord.org_id == org.id, AlertRecord.id.in_(alert_ids))
+            )
             for alert in alerts_result.scalars().all():
-                if alert.org_id == org.id:
-                    alert_map[alert.id] = alert
+                alert_map[alert.id] = alert
 
         items: list[dict[str, Any]] = []
         for job in jobs:
-            if job.alert_id and job.alert_id not in alert_map:
-                continue
             items.append(_serialize_job(job, alert_map.get(job.alert_id)))
         return items
 
@@ -285,11 +300,13 @@ def build_remediation_jobs_router() -> APIRouter:
     @router.post("/api/remediation/jobs/{job_id}/cancel")
     async def cancel_job(job_id: int, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org, job, alert = await _resolve_job_context(db, request, job_id)
-        if job.status == "running":
-            raise HTTPException(status_code=409, detail="Running jobs cannot be cancelled")
+        if job.status not in {"pending", "failed"}:
+            raise HTTPException(status_code=409, detail="Only pending or failed jobs can be cancelled")
         _mark_job_cancelled(job)
         await _write_job_audit(db, org.id, "remediation.job.cancel", job)
         await db.commit()
         return {"status": job.status, "job": _serialize_job(job, alert), "message": "Job cancelled"}
 
     return router
+
+
