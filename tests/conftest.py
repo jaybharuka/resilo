@@ -108,12 +108,27 @@ def _should_run_db(pytestconfig) -> bool:
     if pytestconfig.getoption("--run-db"):
         return True
 
-    selected = [arg.replace("\\", "/") for arg in pytestconfig.args if arg and not arg.startswith("-")]
+    selected: list[str] = []
+    for arg in pytestconfig.args:
+        if not arg or arg.startswith("-"):
+            continue
+
+        node = arg.split("::", 1)[0]
+        node_path = Path(node)
+        if node_path.is_absolute():
+            try:
+                normalized = node_path.relative_to(_root).as_posix()
+            except ValueError:
+                normalized = node.replace("\\", "/")
+        else:
+            normalized = node_path.as_posix()
+
+        selected.append(normalized)
+
     if not selected:
         return True
 
-    return any(not arg.startswith("tests/unit") for arg in selected)
-
+    return any(not item.startswith("tests/unit") for item in selected)
 
 # ── Session-wide DB setup / teardown ──────────────────────────────────────────
 
@@ -322,3 +337,4 @@ async def sample_alert(
     )
     assert resp.status_code == 201, f"Alert fixture failed: {resp.text}"
     return resp.json()
+
