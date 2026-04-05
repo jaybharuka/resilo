@@ -264,7 +264,8 @@ def build_remediation_router() -> APIRouter:
     @router.get("/api/remediation/history")
     async def history(request: Request, limit: int = 50, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
         org = await _resolve_org(db, request)
-        rows = (await db.execute(select(RemediationRecord).where(RemediationRecord.org_id == org.id).order_by(desc(RemediationRecord.created_at)).limit(limit))).scalars().all()
+        effective_limit = max(1, min(limit, 200))
+        rows = (await db.execute(select(RemediationRecord).where(RemediationRecord.org_id == org.id).order_by(desc(RemediationRecord.created_at)).limit(effective_limit))).scalars().all()
         return [_serialize_record(row) for row in rows]
 
     @router.get("/api/remediation/stats")

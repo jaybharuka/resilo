@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiService } from '../services/api';
@@ -74,36 +74,71 @@ export default function RemediationJobsPanel() {
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(null);
+  const refreshRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const selectedJobIdRef = useRef(null);
 
   const refreshJobs = useCallback(async () => {
+    const requestId = refreshRequestIdRef.current + 1;
+    refreshRequestIdRef.current = requestId;
     setLoading(true);
     try {
       const daysParam = rangeFilter === 'all' ? 'all' : Number.parseInt(rangeFilter, 10);
       const data = await apiService.getRemediationJobs(100, { status: statusFilter, days: daysParam });
+      if (requestId !== refreshRequestIdRef.current) return;
+
       setJobs(Array.isArray(data) ? data : []);
       setSelectedJob(prev => {
         if (!prev) return prev;
-        return (Array.isArray(data) ? data : []).find(job => job.id === prev.id) || prev;
+        const next = (Array.isArray(data) ? data : []).find(job => job.id === prev.id);
+        if (!next) return prev;
+        return { ...prev, ...next };
       });
+
+      const selectedAtStart = selectedJobIdRef.current;
+      if (selectedAtStart != null) {
+        try {
+          const detail = await apiService.getRemediationJob(selectedAtStart);
+          if (requestId !== refreshRequestIdRef.current) return;
+          if (selectedJobIdRef.current !== selectedAtStart) return;
+          setSelectedJob(detail?.job || null);
+          setSelectedLogs(Array.isArray(detail?.logs) ? detail.logs : []);
+        } catch {
+          // Ignore detail refresh failures during background list polling.
+        }
+      }
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestIdRef.current) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [statusFilter, rangeFilter]);
 
   const loadJob = useCallback(async (jobId) => {
     if (jobId == null) return;
+    const detailRequestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = detailRequestId;
+    selectedJobIdRef.current = jobId;
     setSelectedJobId(jobId);
     setDetailLoading(true);
     try {
       const detail = await apiService.getRemediationJob(jobId);
+      if (detailRequestId !== detailRequestIdRef.current) return;
       setSelectedJob(detail?.job || null);
       setSelectedLogs(Array.isArray(detail?.logs) ? detail.logs : []);
     } catch (error) {
+      if (detailRequestId !== detailRequestIdRef.current) return;
       toast.error(error?.response?.data?.detail || 'Failed to load remediation job');
     } finally {
-      setDetailLoading(false);
+      if (detailRequestId === detailRequestIdRef.current) {
+        setDetailLoading(false);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    selectedJobIdRef.current = selectedJobId;
+  }, [selectedJobId]);
 
   useEffect(() => {
     refreshJobs();
