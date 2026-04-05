@@ -205,14 +205,61 @@ def build_remediation_router() -> APIRouter:
     @router.post("/api/remediation/rollback")
     async def rollback(body: RollbackRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org = await _resolve_org(db, request)
-        source = (await db.execute(select(RemediationRecord).where(RemediationRecord.id == body.remediation_id, RemediationRecord.org_id == org.id))).scalar_one_or_none()
+        source = (
+            (
+                await db.execute(
+                    select(RemediationRecord).where(
+                        RemediationRecord.id == body.remediation_id,
+                        RemediationRecord.org_id == org.id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
         if source is None:
             raise HTTPException(status_code=404, detail="Remediation record not found")
-        rollback_row = RemediationRecord(id=str(uuid.uuid4()), org_id=org.id, alert_id=source.alert_id, agent_id=source.agent_id, action=f"rollback_{source.action}", params={"source_remediation_id": source.id}, source="manual", status="success", before_metrics=source.after_metrics, after_metrics=source.before_metrics, verified=True, started_at=_now(), completed_at=_now(), result="Rollback completed")
+        if source.status != "success":
+            raise HTTPException(status_code=400, detail="Only successful remediations can be rolled back")
+        if (source.action or "").startswith("rollback_"):
+            raise HTTPException(status_code=400, detail="Rollback entries cannot be rolled back again")
+        if source.before_metrics is None or source.after_metrics is None:
+            raise HTTPException(status_code=400, detail="Rollback data unavailable for this remediation record")
+
+        rollback_row = RemediationRecord(
+            id=str(uuid.uuid4()),
+            org_id=org.id,
+            alert_id=source.alert_id,
+            agent_id=source.agent_id,
+            action=f"rollback_{source.action}",
+            params={"source_remediation_id": source.id},
+            source="manual",
+            status="success",
+            before_metrics=source.after_metrics,
+            after_metrics=source.before_metrics,
+            verified=True,
+            started_at=_now(),
+            completed_at=_now(),
+            result="Rollback completed",
+        )
         db.add(rollback_row)
-        await _write_audit(db, org.id, "playbook.rollback", {"source_remediation_id": source.id, "rollback_id": rollback_row.id})
+        await _write_audit(
+            db,
+            org.id,
+            "playbook.rollback",
+            {
+                "source_remediation_id": source.id,
+                "source_action": source.action,
+                "rollback_id": rollback_row.id,
+            },
+        )
         await db.commit()
-        return {"success": True, "message": "Rollback executed", "rollback_id": rollback_row.id, "source_remediation_id": source.id}
+        return {
+            "success": True,
+            "message": "Rollback executed",
+            "rollback_id": rollback_row.id,
+            "source_remediation_id": source.id,
+        }
 
     @router.get("/api/remediation/history")
     async def history(request: Request, limit: int = 50, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
