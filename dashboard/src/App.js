@@ -13,6 +13,8 @@ import Insights from './components/Insights';
 import Remediation from './components/Remediation';
 import Analytics from './components/Analytics';
 import InfraHub from './components/InfraHub';
+import MTTRDashboard from './components/MTTRDashboard';
+import OnboardingWizard from './components/OnboardingWizard';
 import NotificationSettings from './components/resilo/NotificationSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
@@ -103,7 +105,7 @@ function AppShell() {
         {isAuthenticated && <HealthRibbon />}
         <Routes>
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
-
+          <Route path="/onboarding"  element={<ProtectedRoute><ErrorBoundary fallbackTitle="Onboarding failed to load"><OnboardingWizard /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/insights"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Insights failed to load"><Insights /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/alerts"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Alerts failed to load"><Alerts /></ErrorBoundary></ProtectedRoute>} />
@@ -111,7 +113,8 @@ function AppShell() {
           <Route path="/security"    element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Security failed to load"><Security /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/analytics"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Analytics failed to load"><Analytics /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/infra"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Infrastructure Hub failed to load"><InfraHub /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/mttr"        element={<ProtectedRoute><ErrorBoundary fallbackTitle="MTTR Dashboard failed to load"><MTTRDashboard /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/infra"       element={<ProtectedRoute><ErrorBoundary fallbackTitle="Infrastructure Hub failed to load"><InfraHub /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/devices"       element={<Navigate to="/infra" replace />} />
           <Route path="/users"         element={<Navigate to="/infra" replace />} />
           <Route path="/remote-agents" element={<Navigate to="/infra" replace />} />

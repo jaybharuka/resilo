@@ -390,6 +390,17 @@ export const apiService = {
     try { return (await api.get('/api/remediation/autonomous')).data; }
     catch (e) { return { autonomous_mode: false }; }
   },
+  async rollbackRemediation(remediationId) {
+    return (await api.post('/api/remediation/rollback', { remediation_id: remediationId })).data;
+  },
+  async getMttrDashboard(days = 14) {
+    try { return (await api.get(/api/remediation/mttr?days=)).data; }
+    catch (e) { console.error('getMttrDashboard failed:', e?.message); return { incident_count: 0, timeline: [] }; }
+  },
+  async getOnboardingStatus() {
+    try { return (await api.get('/api/onboarding/status')).data; }
+    catch (e) { return { steps: { connect_first_agent: false, see_live_metrics: false, create_first_alert: false }, counts: { agents: 0, metrics: 0, alerts: 0 } }; }
+  },
 
   // Security (admin only)
   async getSecurityOverview() {
