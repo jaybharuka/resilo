@@ -288,6 +288,24 @@ class RemediationRecord(Base):
 
 # ── Audit Log (every significant action is logged here) ─────────────────────
 
+class RemediationJob(Base):
+    __tablename__ = "remediation_jobs"
+    __table_args__ = (
+        Index("ix_remediation_jobs_status_created", "status", "created_at"),
+    )
+
+    id:            Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alert_id:      Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("alert_records.id", ondelete="SET NULL"), nullable=True, index=True)
+    playbook_type: Mapped[str]            = mapped_column(String(100), nullable=False)
+    status:        Mapped[str]            = mapped_column(String(20), nullable=False, default="pending")
+    attempts:      Mapped[int]            = mapped_column(Integer, nullable=False, default=0)
+    max_retries:   Mapped[int]            = mapped_column(Integer, nullable=False, default=3)
+    payload:       Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    last_error:    Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     __table_args__ = (
