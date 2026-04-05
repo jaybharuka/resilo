@@ -1,6 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import uuid
 
 import pytest
@@ -66,7 +66,7 @@ async def test_mttr_uses_alert_detection_to_success_completion(core_client):
     org = await _create_org()
     user = await _create_user(org.id)
     alert_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     alert_time = now - timedelta(hours=3)
     success_time = alert_time + timedelta(minutes=90)
 
@@ -112,8 +112,8 @@ async def test_mttr_uses_alert_detection_to_success_completion(core_client):
         assert any(bucket.get("incidents", 0) >= 1 for bucket in data.get("trend", []))
     finally:
         async with SessionLocal() as session:
-            await session.execute(RemediationJob.__table__.delete())
-            await session.execute(AlertRecord.__table__.delete())
+            await session.execute(RemediationJob.__table__.delete().where(RemediationJob.org_id == org.id))
+            await session.execute(AlertRecord.__table__.delete().where(AlertRecord.org_id == org.id))
             await session.execute(User.__table__.delete().where(User.org_id == org.id))
             await session.delete(org)
             await session.commit()

@@ -100,8 +100,8 @@ async def test_jobs_are_scoped_by_org(core_client):
             await session.delete(user_a)
             await session.delete(user_b)
             await session.execute(User.__table__.delete().where(User.org_id.in_([org_a.id, org_b.id])))
-            await session.execute(Base.metadata.tables["remediation_jobs"].delete())
-            await session.execute(Base.metadata.tables["alert_records"].delete())
+            await session.execute(Base.metadata.tables["remediation_jobs"].delete().where(Base.metadata.tables["remediation_jobs"].c.org_id.in_([org_a.id, org_b.id])))
+            await session.execute(Base.metadata.tables["alert_records"].delete().where(Base.metadata.tables["alert_records"].c.org_id.in_([org_a.id, org_b.id])))
             await session.delete(org_a)
             await session.delete(org_b)
             await session.commit()
@@ -147,8 +147,8 @@ async def test_rollback_is_scoped_by_org(core_client):
         assert allowed.status_code == 200, allowed.text
     finally:
         async with SessionLocal() as session:
-            await session.execute(Base.metadata.tables["audit_logs"].delete())
-            await session.execute(Base.metadata.tables["remediation_records"].delete())
+            await session.execute(Base.metadata.tables["audit_logs"].delete().where(Base.metadata.tables["audit_logs"].c.org_id.in_([org_a.id, org_b.id])))
+            await session.execute(Base.metadata.tables["remediation_records"].delete().where(Base.metadata.tables["remediation_records"].c.org_id.in_([org_a.id, org_b.id])))
             await session.execute(User.__table__.delete().where(User.org_id.in_([org_a.id, org_b.id])))
             await session.delete(org_a)
             await session.delete(org_b)
@@ -188,8 +188,8 @@ async def test_rollback_requires_successful_source(core_client):
         assert "successful remediations" in resp.text.lower()
     finally:
         async with SessionLocal() as session:
-            await session.execute(Base.metadata.tables["audit_logs"].delete())
-            await session.execute(Base.metadata.tables["remediation_records"].delete())
+            await session.execute(Base.metadata.tables["audit_logs"].delete().where(Base.metadata.tables["audit_logs"].c.org_id == org.id))
+            await session.execute(Base.metadata.tables["remediation_records"].delete().where(Base.metadata.tables["remediation_records"].c.org_id == org.id))
             await session.execute(User.__table__.delete().where(User.org_id == org.id))
             await session.delete(org)
             await session.commit()
