@@ -31,6 +31,8 @@ from app.core.database import (
     SessionLocal,
 )
 
+from app.remediation.executor import execute_playbook
+
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = int(os.getenv("JWT_ACCESS_TTL", "86400"))
 REFRESH_TTL_SECONDS = int(os.getenv("JWT_REFRESH_TTL", "2592000"))
@@ -44,6 +46,15 @@ DEFAULT_ADMIN_ORG = "default"
 SSE_HEARTBEAT_SECONDS = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
 WS_QUEUE_MAX_SIZE = int(os.getenv("WS_QUEUE_MAX_SIZE", "100"))
 MAX_CONNECTED_CLIENTS = int(os.getenv("MAX_CONNECTED_CLIENTS", "50"))
+
+ALERT_TO_PLAYBOOK = {
+    "cpu": "high_cpu",
+    "cpu_spike": "high_cpu",
+    "error_rate": "high_error_rate",
+    "error_spike": "high_error_rate",
+    "disk": "disk_full",
+    "disk_usage": "disk_full",
+}
 
 
 class RealtimeHub:
@@ -655,6 +666,25 @@ def build_alerts_router() -> APIRouter:
             status=body.status,
         )
         db.add(alert)
+
+        playbook_type = ALERT_TO_PLAYBOOK.get((body.category or "").strip().lower())
+        if playbook_type:
+            try:
+                context = {
+                    "org_id": org_id,
+                    "agent_id": body.agent_id,
+                    "severity": body.severity,
+                    "category": body.category,
+                    "title": body.title,
+                    "detail": body.detail,
+                    "metric_value": body.metric_value,
+                    "threshold": body.threshold,
+                    "status": body.status,
+                }
+                await execute_playbook(playbook_type, context=context)
+            except Exception as e:
+                print(f"Playbook execution failed: {e}")
+
         await db.commit()
         await db.refresh(alert)
         _get_realtime_hub(request).publish("alert_update", _serialize_alert(alert), org_id)
