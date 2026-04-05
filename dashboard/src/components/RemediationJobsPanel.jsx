@@ -78,7 +78,8 @@ export default function RemediationJobsPanel() {
   const refreshJobs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await apiService.getRemediationJobs();
+      const daysParam = rangeFilter === 'all' ? 'all' : Number.parseInt(rangeFilter, 10);
+      const data = await apiService.getRemediationJobs(100, { status: statusFilter, days: daysParam });
       setJobs(Array.isArray(data) ? data : []);
       setSelectedJob(prev => {
         if (!prev) return prev;
@@ -110,15 +111,6 @@ export default function RemediationJobsPanel() {
     return () => clearInterval(timer);
   }, [refreshJobs]);
 
-  const filteredJobs = jobs.filter((job) => {
-    if (statusFilter !== 'all' && job.status !== statusFilter) return false;
-    if (rangeFilter === 'all') return true;
-    const days = Number.parseInt(rangeFilter, 10);
-    if (!Number.isFinite(days) || days <= 0) return true;
-    const updated = new Date(job.updated_at).getTime();
-    if (!Number.isFinite(updated)) return false;
-    return updated >= Date.now() - (days * 24 * 60 * 60 * 1000);
-  });
 
   async function retryJob(jobId) {
     setActionLoading(`retry:${jobId}`);
@@ -134,6 +126,22 @@ export default function RemediationJobsPanel() {
     }
   }
 
+  async function rollbackJob(remediationId) {
+    if (!remediationId) return;
+    setActionLoading(`rollback:${remediationId}`);
+    try {
+      const res = await apiService.rollbackRemediation(remediationId);
+      toast.success(res?.message || 'Rollback executed');
+      await refreshJobs();
+      if (selectedJobId != null) {
+        await loadJob(selectedJobId);
+      }
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Failed to rollback remediation');
+    } finally {
+      setActionLoading(null);
+    }
+  }
   async function cancelJob(jobId) {
     setActionLoading(`cancel:${jobId}`);
     try {
@@ -153,7 +161,7 @@ export default function RemediationJobsPanel() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 18px', borderBottom: `1px solid ${C.border}` }}>
         <span style={{ color: C.amber }}><Activity size={14} /></span>
         <span style={{ fontSize: 13, fontWeight: 600, color: C.text1 }}>Remediation Jobs</span>
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: C.text3, fontFamily: C.mono }}>{loading ? 'LOADING' : `${filteredJobs.length}`}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: C.text3, fontFamily: C.mono }}>{loading ? 'LOADING' : `${jobs.length}`}</span>
       </div>
       <div style={{ display: 'flex', gap: 10, padding: '10px 18px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
         <select
@@ -179,7 +187,7 @@ export default function RemediationJobsPanel() {
           <option value="all">All time</option>
         </select>
       </div>
-      {filteredJobs.length === 0 ? (
+      {jobs.length === 0 ? (
         <div style={{ padding: '40px 24px', textAlign: 'center' }}>
           <Bot size={26} style={{ color: C.amber, margin: '0 auto 10px', opacity: 0.5 }} />
           <p style={{ fontSize: 13, color: C.text1, fontWeight: 600, margin: '0 0 4px' }}>No remediation jobs queued</p>
@@ -199,9 +207,9 @@ export default function RemediationJobsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {filteredJobs.map((job, index) => {
+                {jobs.map((job, index) => {
                   const isSelected = selectedJobId === job.id;
-                  const isLast = index === filteredJobs.length - 1;
+                  const isLast = index === jobs.length - 1;
                   return (
                     <tr
                       key={job.id}
@@ -299,6 +307,21 @@ export default function RemediationJobsPanel() {
                     >
                       {actionLoading === `cancel:${selectedJob.id}` ? 'Cancelling?' : 'Cancel'}
                     </button>
+                    {selectedJob.status === 'success' ? (
+                      <button
+                        type="button"
+                        onClick={() => rollbackJob(selectedJob.rollback_source_remediation_id)}
+                        disabled={actionLoading === `rollback:${selectedJob.rollback_source_remediation_id}` || !selectedJob.can_rollback}
+                        style={{
+                          padding: '7px 10px', borderRadius: 7, border: `1px solid rgba(245,158,11,0.35)`,
+                          background: 'rgba(245,158,11,0.12)', color: C.amber,
+                          cursor: actionLoading === `rollback:${selectedJob.rollback_source_remediation_id}` || !selectedJob.can_rollback ? 'not-allowed' : 'pointer',
+                          opacity: actionLoading === `rollback:${selectedJob.rollback_source_remediation_id}` || !selectedJob.can_rollback ? 0.5 : 1,
+                        }}
+                      >
+                        {actionLoading === `rollback:${selectedJob.rollback_source_remediation_id}` ? 'Rolling back?' : 'Rollback'}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
 

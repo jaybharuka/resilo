@@ -8,21 +8,21 @@ export const DIRECT_MODE = /^(1|true)$/i.test(process.env.REACT_APP_DIRECT_MODE 
 export const USE_MOCKS = /^(1|true)$/i.test(process.env.REACT_APP_USE_MOCKS || '');
 
 // Determine API base URL.
-// Priority: REACT_APP_API_BASE_URL env var → same origin (window.location.origin).
+// Priority: REACT_APP_API_BASE_URL env var Ã¢â€ â€™ same origin (window.location.origin).
 // Using same-origin means the Express server (which proxies the backend) is always the
-// single gateway — no hardcoded ports, works on localhost AND any deployed host.
+// single gateway Ã¢â‚¬â€ no hardcoded ports, works on localhost AND any deployed host.
 export const API_BASE_URL = (() => {
   const env = process.env.REACT_APP_API_BASE_URL;
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      return window.location.origin; // same host+port as the page — no :5000 hardcoding
+      return window.location.origin; // same host+port as the page Ã¢â‚¬â€ no :5000 hardcoding
     }
   } catch {}
   return 'http://localhost:3001';
 })();
 
-// Auth API base URL — same origin as API (Express proxies /auth/* to the backend).
+// Auth API base URL Ã¢â‚¬â€ same origin as API (Express proxies /auth/* to the backend).
 export const AUTH_BASE_URL = (() => {
   const env = process.env.REACT_APP_AUTH_API_URL;
   if (env && env.trim()) return env.trim();
@@ -37,7 +37,7 @@ export const AUTH_BASE_URL = (() => {
 const inferSocketUrl = () => {
   const env = process.env.REACT_APP_SOCKET_URL;
   if (env) return env;
-  // Socket.IO is on the Express server — same origin as the page
+  // Socket.IO is on the Express server Ã¢â‚¬â€ same origin as the page
   try {
     if (typeof window !== 'undefined' && window.location) {
       return window.location.origin;
@@ -61,7 +61,7 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
-// Auth API client — dedicated instance pointing at FastAPI auth service (port 5001)
+// Auth API client Ã¢â‚¬â€ dedicated instance pointing at FastAPI auth service (port 5001)
 const authAxios = axios.create({
   baseURL: AUTH_BASE_URL,
   timeout: 30000,
@@ -81,7 +81,7 @@ let refreshToken = null;
 let refreshing = false;
 let refreshQueue = [];
 
-// Firebase token bridge — set by AuthContext after Firebase Auth initialises
+// Firebase token bridge Ã¢â‚¬â€ set by AuthContext after Firebase Auth initialises
 let _auth0GetToken = null;
 export function setTokenGetter(fn) { _auth0GetToken = fn; }
 /** @deprecated use setTokenGetter */
@@ -119,10 +119,10 @@ export function setRefreshTokenOnClient(token) {
   if (token) setLocal('aiops:refresh', token); else setLocal('aiops:refresh', null);
 }
 
-// Request interceptor — prefers Auth0 token when available, falls back to legacy
+// Request interceptor Ã¢â‚¬â€ prefers Auth0 token when available, falls back to legacy
 api.interceptors.request.use(
   async (config) => {
-    console.log(`🔌 API Request: ${config.method?.toUpperCase()} ${config.url}`);
+    console.log(`Ã°Å¸â€Å’ API Request: ${config.method?.toUpperCase()} ${config.url}`);
     let token = authToken;
     if (_auth0GetToken) {
       try { token = await _auth0GetToken(); } catch {}
@@ -134,7 +134,7 @@ api.interceptors.request.use(
     return config;
   },
   (error) => {
-    console.error('❌ Request error:', error);
+    console.error('Ã¢ÂÅ’ Request error:', error);
     return Promise.reject(error);
   }
 );
@@ -142,12 +142,12 @@ api.interceptors.request.use(
 // Response interceptor
 api.interceptors.response.use(
   (response) => {
-    console.log(`✅ API Response: ${response.status} ${response.config.url}`);
+    console.log(`Ã¢Å“â€¦ API Response: ${response.status} ${response.config.url}`);
     return response;
   },
   async (error) => {
     const status = error?.response?.status;
-    console.error('❌ Response error:', status, error.message);
+    console.error('Ã¢ÂÅ’ Response error:', status, error.message);
     const original = error.config || {};
     // Only attempt refresh when:
     // - The response is 401
@@ -327,7 +327,7 @@ export const apiService = {
     } catch (error) {
       console.error('Chat request failed:', error);
       return {
-        response: "I'm currently offline, but I'll be back soon! In the meantime, check your system metrics above. 🤖",
+        response: "I'm currently offline, but I'll be back soon! In the meantime, check your system metrics above. Ã°Å¸Â¤â€“",
         timestamp: new Date().toISOString(),
         source: 'fallback'
       };
@@ -369,8 +369,13 @@ export const apiService = {
     try { return (await api.get('/api/remediation/history')).data; }
     catch (e) { console.error('getRemediationHistory failed:', e?.message); return []; }
   },
-  async getRemediationJobs(limit = 100) {
-    try { return (await api.get('/api/remediation/jobs', { params: { limit } })).data; }
+  async getRemediationJobs(limit = 100, filters = {}) {
+    const params = { limit };
+    if (filters?.status) params.status = filters.status;
+    if (filters?.days !== undefined && filters?.days !== null) {
+      params.days = String(filters.days);
+    }
+    try { return (await api.get('/api/remediation/jobs', { params })).data; }
     catch (e) { console.error('getRemediationJobs failed:', e?.message); return []; }
   },
   async getRemediationJob(jobId) {
@@ -474,7 +479,7 @@ export const systemApi = {
   getPredictive: async (timeframe = '1hour') => (await api.get(`/predictive-analytics?timeframe=${encodeURIComponent(timeframe)}`)).data,
 };
 
-// Authentication endpoints — all routed to FastAPI auth service (port 5001)
+// Authentication endpoints Ã¢â‚¬â€ all routed to FastAPI auth service (port 5001)
 export const authApi = {
   registerOrg: async ({ org_name, email, username, password, full_name }) =>
     (await authAxios.post('/auth/register', { org_name, email, username, password, full_name })).data,
@@ -518,7 +523,7 @@ export const authApi = {
     (await authAxios.post('/auth/accept-invite', { token, email, username, password, full_name })).data,
 };
 
-// User management — admin only, all routed to FastAPI auth service
+// User management Ã¢â‚¬â€ admin only, all routed to FastAPI auth service
 export const userApi = {
   list: async () => (await authAxios.get('/users')).data,
   create: async ({ email, username, password, role, full_name, must_change_password = true }) =>
@@ -766,7 +771,7 @@ export class RealTimeService {
     if (this.polling) return;
 
     this.polling = true;
-    console.log('🔄 Starting real-time streams...');
+    console.log('Ã°Å¸â€â€ž Starting real-time streams...');
 
     // Metrics stream
     if (this.listeners.has('system') && !this._sseUnsub && this.sseEnabled) {
@@ -836,7 +841,7 @@ export class RealTimeService {
       this.interval = null;
     }
     this.polling = false;
-    console.log('⏹️ Stopped real-time streams');
+    console.log('Ã¢ÂÂ¹Ã¯Â¸Â Stopped real-time streams');
     if (this._sseUnsub) {
       try { this._sseUnsub(); } catch {}
       this._sseUnsub = null;

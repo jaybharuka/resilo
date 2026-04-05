@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -229,12 +230,33 @@ def build_remediation_jobs_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/remediation/jobs")
-    async def get_jobs(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+    async def get_jobs(
+        request: Request,
+        limit: int = 100,
+        status: str = Query(default="all"),
+        days: str = Query(default="30"),
+        db: AsyncSession = Depends(get_db),
+    ) -> list[dict[str, Any]]:
         org = await _resolve_jobs_org(db, request)
         effective_limit = max(1, min(limit, 100))
+
+        query = select(RemediationJob).where(RemediationJob.org_id == org.id)
+        normalized_status = (status or "all").strip().lower()
+        if normalized_status != "all":
+            query = query.where(RemediationJob.status == normalized_status)
+
+        normalized_days = (days or "30").strip().lower()
+        if normalized_days != "all":
+            try:
+                parsed_days = int(normalized_days)
+            except ValueError:
+                parsed_days = 30
+            effective_days = max(1, min(parsed_days, 90))
+            cutoff = _now() - timedelta(days=effective_days)
+            query = query.where(RemediationJob.updated_at >= cutoff)
+
         jobs_result = await db.execute(
-            select(RemediationJob)
-            .where(RemediationJob.org_id == org.id)
+            query
             .order_by(desc(RemediationJob.created_at))
             .limit(effective_limit)
         )
@@ -266,10 +288,24 @@ def build_remediation_jobs_router() -> APIRouter:
             )
             remediations = list(remediation_result.scalars().all())
 
+        rollback_source = next(
+            (
+                record
+                for record in remediations
+                if record.status == "success" and not (record.action or "").startswith("rollback_")
+            ),
+            None,
+        )
+
         await _write_job_audit(db, org.id, "remediation.job.viewed", job)
         await db.commit()
+
+        job_payload = _serialize_job(job, alert)
+        job_payload["can_rollback"] = job.status == "success" and rollback_source is not None
+        job_payload["rollback_source_remediation_id"] = rollback_source.id if rollback_source else None
+
         return {
-            "job": _serialize_job(job, alert),
+            "job": job_payload,
             "logs": _build_job_logs(job, alert=alert, remediations=remediations),
         }
 
