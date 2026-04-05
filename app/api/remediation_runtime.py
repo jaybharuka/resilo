@@ -10,7 +10,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.runtime import _as_utc, _now, _require_access_token
-from app.core.database import Agent, AlertRecord, AuditLog, MetricSnapshot, Organization, RemediationRecord, get_db
+from app.core.database import Agent, AlertRecord, AuditLog, MetricSnapshot, Organization, RemediationJob, RemediationRecord, get_db
 
 
 class RemediationTriggerRequest(BaseModel):
@@ -249,26 +249,92 @@ def build_remediation_router() -> APIRouter:
     async def mttr(request: Request, days: int = 14, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org = await _resolve_org(db, request)
         cutoff = _now() - timedelta(days=max(1, min(days, 90)))
-        rem_rows = list((await db.execute(select(RemediationRecord).where(RemediationRecord.org_id == org.id, RemediationRecord.created_at >= cutoff).order_by(RemediationRecord.created_at.asc()))).scalars().all())
-        alerts = {a.id: a for a in (await db.execute(select(AlertRecord).where(AlertRecord.org_id == org.id, AlertRecord.created_at >= cutoff))).scalars().all()}
-        timeline, ttd_vals, ttr_vals, mttr_vals = [], [], [], []
-        for row in rem_rows:
-            started = _as_utc(row.started_at) or _as_utc(row.created_at)
-            completed = _as_utc(row.completed_at) or started
-            if not started or not completed:
+        alerts = {
+            a.id: a
+            for a in (
+                await db.execute(
+                    select(AlertRecord).where(
+                        AlertRecord.org_id == org.id,
+                        AlertRecord.created_at >= cutoff,
+                    )
+                )
+            ).scalars().all()
+        }
+        jobs = list(
+            (
+                await db.execute(
+                    select(RemediationJob)
+                    .where(
+                        RemediationJob.org_id == org.id,
+                        RemediationJob.status == "success",
+                        RemediationJob.updated_at >= cutoff,
+                        RemediationJob.alert_id.is_not(None),
+                    )
+                    .order_by(RemediationJob.updated_at.asc())
+                )
+            ).scalars().all()
+        )
+
+        timeline: list[dict[str, Any]] = []
+        ttr_vals: list[float] = []
+        trend_buckets: dict[str, dict[str, Any]] = {}
+
+        for job in jobs:
+            alert = alerts.get(job.alert_id) if job.alert_id else None
+            if alert is None:
                 continue
-            alert = alerts.get(row.alert_id) if row.alert_id else None
-            detected = _as_utc(alert.created_at) if alert else started
-            ttd = max(0.0, (started - detected).total_seconds()) if detected else 0.0
-            ttr = max(0.0, (completed - started).total_seconds())
-            mttr_value = ttd + ttr
-            ttd_vals.append(ttd)
+
+            alert_time = _as_utc(alert.created_at)
+            success_time = _as_utc(job.updated_at)
+            if not alert_time or not success_time:
+                continue
+
+            ttr = max(0.0, (success_time - alert_time).total_seconds())
             ttr_vals.append(ttr)
-            mttr_vals.append(mttr_value)
-            timeline.append({"incident_id": row.id, "action": row.action, "status": row.status, "detected_at": detected.isoformat() if detected else None, "started_at": started.isoformat(), "completed_at": completed.isoformat(), "ttd_seconds": round(ttd, 2), "ttr_seconds": round(ttr, 2), "mttr_seconds": round(mttr_value, 2)})
+
+            timeline.append(
+                {
+                    "incident_id": alert.id,
+                    "job_id": job.id,
+                    "action": job.playbook_type,
+                    "status": job.status,
+                    "detected_at": alert_time.isoformat(),
+                    "started_at": alert_time.isoformat(),
+                    "completed_at": success_time.isoformat(),
+                    "ttd_seconds": 0.0,
+                    "ttr_seconds": round(ttr, 2),
+                    "mttr_seconds": round(ttr, 2),
+                }
+            )
+
+            day_key = success_time.date().isoformat()
+            bucket = trend_buckets.setdefault(day_key, {"day": day_key, "incidents": 0, "total_ttr": 0.0})
+            bucket["incidents"] += 1
+            bucket["total_ttr"] += ttr
 
         avg = lambda vals: round(sum(vals) / len(vals), 2) if vals else 0.0
-        return {"window_days": days, "incident_count": len(timeline), "ttd_avg_seconds": avg(ttd_vals), "ttr_avg_seconds": avg(ttr_vals), "mttr_avg_seconds": avg(mttr_vals), "timeline": list(reversed(timeline[-100:]))}
+        trend = []
+        for key in sorted(trend_buckets.keys()):
+            bucket = trend_buckets[key]
+            incidents = int(bucket["incidents"])
+            total_ttr = float(bucket["total_ttr"])
+            trend.append(
+                {
+                    "day": bucket["day"],
+                    "incidents": incidents,
+                    "mttr_seconds": round(total_ttr / incidents, 2) if incidents else 0.0,
+                }
+            )
+
+        return {
+            "window_days": days,
+            "incident_count": len(timeline),
+            "ttd_avg_seconds": 0.0,
+            "ttr_avg_seconds": avg(ttr_vals),
+            "mttr_avg_seconds": avg(ttr_vals),
+            "timeline": list(reversed(timeline[-100:])),
+            "trend": trend,
+        }
 
     @router.get("/api/onboarding/status")
     async def onboarding_status(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
@@ -279,3 +345,4 @@ def build_remediation_router() -> APIRouter:
         return {"steps": {"connect_first_agent": agents_count > 0, "see_live_metrics": metrics_count > 0, "create_first_alert": alerts_count > 0}, "counts": {"agents": int(agents_count or 0), "metrics": int(metrics_count or 0), "alerts": int(alerts_count or 0)}}
 
     return router
+
