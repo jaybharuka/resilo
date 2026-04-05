@@ -260,7 +260,7 @@ def build_remediation_jobs_router() -> APIRouter:
         if job.alert_id:
             remediation_result = await db.execute(
                 select(RemediationRecord)
-                .where(RemediationRecord.alert_id == job.alert_id)
+                .where(RemediationRecord.org_id == org.id, RemediationRecord.alert_id == job.alert_id)
                 .order_by(desc(RemediationRecord.created_at))
                 .limit(20)
             )
@@ -275,12 +275,12 @@ def build_remediation_jobs_router() -> APIRouter:
 
     @router.get("/api/remediation/jobs/{job_id}/logs")
     async def get_job_logs(job_id: int, request: Request, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
-        _, job, alert = await _resolve_job_context(db, request, job_id)
+        org, job, alert = await _resolve_job_context(db, request, job_id)
         remediations: list[RemediationRecord] = []
         if job.alert_id:
             remediation_result = await db.execute(
                 select(RemediationRecord)
-                .where(RemediationRecord.alert_id == job.alert_id)
+                .where(RemediationRecord.org_id == org.id, RemediationRecord.alert_id == job.alert_id)
                 .order_by(desc(RemediationRecord.created_at))
                 .limit(20)
             )
@@ -308,5 +308,6 @@ def build_remediation_jobs_router() -> APIRouter:
         return {"status": job.status, "job": _serialize_job(job, alert), "message": "Job cancelled"}
 
     return router
+
 
 
