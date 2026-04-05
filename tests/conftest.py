@@ -95,17 +95,40 @@ ADMIN_PASSWORD  = "TestAdmin123!"
 
 make_jwt = _make_jwt_helper  # re-export for backward compat within this module
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-db",
+        action="store_true",
+        default=False,
+        help="Run database-backed integration fixtures/tests.",
+    )
+
+
+def _should_run_db(pytestconfig) -> bool:
+    if pytestconfig.getoption("--run-db"):
+        return True
+
+    selected = [arg.replace("\\", "/") for arg in pytestconfig.args if arg and not arg.startswith("-")]
+    if not selected:
+        return True
+
+    return any(not arg.startswith("tests/unit") for arg in selected)
+
 
 # ── Session-wide DB setup / teardown ──────────────────────────────────────────
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def _setup_database():
+async def _setup_database(pytestconfig):
     """
         Run once per test session:
             1. Create all tables in the test database.
       2. Seed the default admin user (via auth_api._seed_admin).
     Drop everything and delete the file on teardown.
     """
+    if not _should_run_db(pytestconfig):
+        yield
+        return
+
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -131,8 +154,12 @@ async def _setup_database():
 # ── Per-test session wipe ─────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture(autouse=True)
-async def _wipe_sessions():
+async def _wipe_sessions(pytestconfig):
     """Delete all user_sessions rows and reset lockout state after every test."""
+    if not _should_run_db(pytestconfig):
+        yield
+        return
+
     yield
     from sqlalchemy import text
     async with _test_engine.begin() as conn:
