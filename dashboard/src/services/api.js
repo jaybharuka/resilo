@@ -369,6 +369,23 @@ export const apiService = {
     try { return (await api.get('/api/remediation/history')).data; }
     catch (e) { console.error('getRemediationHistory failed:', e?.message); return []; }
   },
+  async getRemediationJobs(limit = 100) {
+    try { return (await api.get('/api/remediation/jobs', { params: { limit } })).data; }
+    catch (e) { console.error('getRemediationJobs failed:', e?.message); return []; }
+  },
+  async getRemediationJob(jobId) {
+    return (await api.get(`/api/remediation/jobs/${jobId}`)).data;
+  },
+  async getRemediationJobLogs(jobId) {
+    try { return (await api.get(`/api/remediation/jobs/${jobId}/logs`)).data; }
+    catch (e) { console.error('getRemediationJobLogs failed:', e?.message); return []; }
+  },
+  async retryRemediationJob(jobId) {
+    return (await api.post(`/api/remediation/jobs/${jobId}/retry`)).data;
+  },
+  async cancelRemediationJob(jobId) {
+    return (await api.post(`/api/remediation/jobs/${jobId}/cancel`)).data;
+  },
   async getRemediationStats() {
     try { return (await api.get('/api/remediation/stats')).data; }
     catch (e) { console.error('getRemediationStats failed:', e?.message); return null; }
@@ -394,7 +411,7 @@ export const apiService = {
     return (await api.post('/api/remediation/rollback', { remediation_id: remediationId })).data;
   },
   async getMttrDashboard(days = 14) {
-    try { return (await api.get(/api/remediation/mttr?days=)).data; }
+    try { return (await api.get(`/api/remediation/mttr?days=${encodeURIComponent(days)}`)).data; }
     catch (e) { console.error('getMttrDashboard failed:', e?.message); return { incident_count: 0, timeline: [] }; }
   },
   async getOnboardingStatus() {
@@ -936,4 +953,5 @@ export class RealTimeService {
 export const realTimeService = new RealTimeService();
 
 export default apiService;
+
 
