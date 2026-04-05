@@ -356,13 +356,13 @@ async def _require_valid_access_payload(token: str) -> dict[str, Any]:
     return payload
 
 
-async def _require_access_token(request: Request) -> dict[str, Any]:
+async def _require_access_token(request: Request, *, allow_stream_token: bool = False) -> dict[str, Any]:
     header = request.headers.get("authorization", "")
     if header.startswith("Bearer "):
         return await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
 
     token = request.query_params.get("token")
-    if token:
+    if allow_stream_token and token:
         payload = _decode_token(token, "stream")
         async with SessionLocal() as db:
             user = await _get_user_by_id(db, payload["sub"])
@@ -407,8 +407,9 @@ async def _stream_realtime_events(event_type: str, org_id: str, request: Request
 async def _require_org_access(request: Request, org_id: str) -> dict[str, Any]:
     payload = await _require_access_token(request)
     token_org = payload.get("org_id")
-    role = payload.get("role")
-    if token_org and token_org != org_id and role != "admin":
+    if not token_org:
+        raise HTTPException(status_code=403, detail="Organization scope required")
+    if token_org != org_id:
         raise HTTPException(status_code=403, detail="Forbidden for this organization")
     return payload
 
@@ -733,8 +734,16 @@ def build_agents_router() -> APIRouter:
 
     @router.get("/api/orgs")
     async def list_orgs(request: Request, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
-        await _require_access_token(request)
-        result = await db.execute(select(Organization).order_by(Organization.name))
+        payload = await _require_access_token(request)
+        token_org = payload.get("org_id")
+        if token_org:
+            result = await db.execute(
+                select(Organization)
+                .where(Organization.id == token_org)
+                .order_by(Organization.name)
+            )
+        else:
+            result = await db.execute(select(Organization).order_by(Organization.name))
         return [_serialize_org(org) for org in result.scalars().all()]
 
     @router.get("/api/orgs/{org_id}")
@@ -910,7 +919,7 @@ def build_stream_router() -> APIRouter:
 
     @router.get("/stream/metrics")
     async def metrics_stream(request: Request) -> StreamingResponse:
-        payload = await _require_access_token(request)
+        payload = await _require_access_token(request, allow_stream_token=True)
         org_id = payload.get("org_id")
         if not org_id:
             raise HTTPException(status_code=403, detail="Organization scope required")
@@ -918,10 +927,11 @@ def build_stream_router() -> APIRouter:
 
     @router.get("/stream/alerts")
     async def alerts_stream(request: Request) -> StreamingResponse:
-        payload = await _require_access_token(request)
+        payload = await _require_access_token(request, allow_stream_token=True)
         org_id = payload.get("org_id")
         if not org_id:
             raise HTTPException(status_code=403, detail="Organization scope required")
         return StreamingResponse(_stream_realtime_events("alert_update", org_id, request), media_type="text/event-stream")
 
     return router
+

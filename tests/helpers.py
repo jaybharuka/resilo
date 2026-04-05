@@ -36,7 +36,7 @@ _TEST_JWT_SECRET = os.environ.get(
 _TEST_ADMIN_ID: str | None = None
 
 
-def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -> str:
+def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local", token_type: str = "access") -> str:
     """Mint a signed HS256 JWT accepted by core_api's require() dependency."""
     from jose import jwt as _jose_jwt
 
@@ -46,7 +46,7 @@ def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -
         "org_id": org_id,
         "email": email,
         "username": email.split("@")[0],
-        "type": "access",
+        "type": token_type,
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }
     return _jose_jwt.encode(payload, _TEST_JWT_SECRET, algorithm="HS256")
@@ -60,3 +60,4 @@ def admin_jwt(org_id: str) -> str:
     Falls back to a random UUID when called outside a test session.
     """
     return make_jwt(sub=_TEST_ADMIN_ID or str(uuid.uuid4()), role="admin", org_id=org_id)
+

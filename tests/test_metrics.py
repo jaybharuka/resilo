@@ -172,3 +172,38 @@ async def test_metric_query_returns_latest_first(
         assert timestamps[i] >= timestamps[i + 1], (
             f"Not sorted newest-first at index {i}: {timestamps[i]} < {timestamps[i+1]}"
         )
+
+
+async def test_stream_token_cannot_access_non_stream_metrics_endpoint(
+    core_client: AsyncClient,
+    sample_org: Organization,
+):
+    """Stream tokens must not be accepted on regular API endpoints."""
+    import helpers as _helpers_mod
+
+    stream_token = _helpers_mod.make_jwt(
+        sub=_helpers_mod._TEST_ADMIN_ID or str(uuid.uuid4()),
+        role="admin",
+        org_id=sample_org.id,
+        token_type="stream",
+    )
+
+    resp = await core_client.get(
+        f"/api/orgs/{sample_org.id}/metrics?token={stream_token}",
+    )
+    assert resp.status_code == 401
+
+
+async def test_admin_token_cannot_cross_tenant_scope(
+    core_client: AsyncClient,
+    sample_org: Organization,
+):
+    """Admin-role tokens are still bound to their own org_id scope."""
+    token = _admin_token(sample_org.id)
+
+    other_org_id = str(uuid.uuid4())
+    resp = await core_client.get(
+        f"/api/orgs/{other_org_id}/metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
