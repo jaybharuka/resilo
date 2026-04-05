@@ -41,15 +41,38 @@ async def process_job(db: AsyncSession, job: RemediationJob) -> None:
             )
         )
     except Exception as exc:
-        job.status = "failed"
+        should_retry = job.attempts < job.max_retries
+        job.status = "pending" if should_retry else "failed"
         job.last_error = str(exc)
+        if should_retry:
+            logger.warning(
+                "Job %s failed on attempt %s/%s and will retry: %s",
+                job.id,
+                job.attempts,
+                job.max_retries,
+                exc,
+            )
+        else:
+            logger.error(
+                "Job %s exhausted retries (%s/%s): %s",
+                job.id,
+                job.attempts,
+                job.max_retries,
+                exc,
+            )
         db.add(
             AuditLog(
                 org_id=(job.payload or {}).get("org_id"),
-                action="playbook.job.failed",
+                action="playbook.job.retry" if should_retry else "playbook.job.failed",
                 resource_type="remediation_job",
                 resource_id=str(job.id),
-                detail={"playbook_type": job.playbook_type, "error": str(exc)},
+                detail={
+                    "playbook_type": job.playbook_type,
+                    "error": str(exc),
+                    "attempts": job.attempts,
+                    "max_retries": job.max_retries,
+                    "will_retry": should_retry,
+                },
             )
         )
 
