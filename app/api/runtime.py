@@ -14,7 +14,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
@@ -651,11 +651,20 @@ def build_metrics_router() -> APIRouter:
     return router
 
 
+
+async def _run_playbook_in_background(playbook_type: str, context: dict[str, Any]) -> None:
+    try:
+        result = await execute_playbook(playbook_type, context=context)
+        if isinstance(result, dict) and result.get("status") == "failed":
+            logger.error("Background playbook %s failed after retries: %s", playbook_type, result.get("error"))
+    except Exception:
+        logger.exception("Unhandled background playbook failure for %s", playbook_type)
+
 def build_alerts_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/orgs/{org_id}/alerts", status_code=status.HTTP_201_CREATED)
-    async def create_alert(org_id: str, body: AlertCreateRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    async def create_alert(org_id: str, body: AlertCreateRequest, request: Request, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         payload = await _require_org_access(request, org_id)
         alert = AlertRecord(
             org_id=org_id,
@@ -672,21 +681,22 @@ def build_alerts_router() -> APIRouter:
 
         playbook_type = ALERT_TO_PLAYBOOK.get((body.category or "").strip().lower())
         if playbook_type:
-            try:
-                context = {
-                    "org_id": org_id,
-                    "agent_id": body.agent_id,
-                    "severity": body.severity,
-                    "category": body.category,
-                    "title": body.title,
-                    "detail": body.detail,
-                    "metric_value": body.metric_value,
-                    "threshold": body.threshold,
-                    "status": body.status,
-                }
-                await execute_playbook(playbook_type, context=context)
-            except Exception as e:
-                logger.exception("Playbook execution failed for %s", playbook_type)
+            context = {
+                "org_id": org_id,
+                "agent_id": body.agent_id,
+                "severity": body.severity,
+                "category": body.category,
+                "title": body.title,
+                "detail": body.detail,
+                "metric_value": body.metric_value,
+                "threshold": body.threshold,
+                "status": body.status,
+            }
+            background_tasks.add_task(
+                _run_playbook_in_background,
+                playbook_type,
+                context,
+            )
 
         await db.commit()
         await db.refresh(alert)
