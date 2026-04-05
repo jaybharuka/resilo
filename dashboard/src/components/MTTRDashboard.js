@@ -33,10 +33,10 @@ function Stat({ icon, label, value, color }) {
 }
 
 export default function MTTRDashboard() {
-  const [data, setData] = useState({ incident_count: 0, timeline: [] });
+  const [data, setData] = useState({ incident_count: 0, timeline: [], trend: [] });
 
   useEffect(() => {
-    apiService.getMttrDashboard(14).then((d) => setData(d || { incident_count: 0, timeline: [] }));
+    apiService.getMttrDashboard(14).then((d) => setData(d || { incident_count: 0, timeline: [], trend: [] }));
   }, []);
 
   return (
@@ -71,6 +71,28 @@ export default function MTTRDashboard() {
           </table>
         ) : <div style={{ padding: 16, color: C.text3 }}>No incidents yet.</div>}
       </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}`, color: C.text2, fontFamily: C.mono, fontSize: 11 }}>MTTR TREND (DAILY)</div>
+        {data.trend?.length ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                {['Day', 'Incidents', 'MTTR'].map((h) => <th key={h} style={{ textAlign: 'left', padding: '10px 16px', color: C.text3, fontFamily: C.mono, fontSize: 10 }}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {data.trend.map((row) => (
+                <tr key={row.day} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: '10px 16px', color: C.text1, fontFamily: C.mono, fontSize: 11 }}>{row.day}</td>
+                  <td style={{ padding: '10px 16px', color: C.text2, fontFamily: C.mono, fontSize: 11 }}>{row.incidents}</td>
+                  <td style={{ padding: '10px 16px', color: C.text2, fontFamily: C.mono, fontSize: 11 }}>{fmt(row.mttr_seconds || 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <div style={{ padding: 16, color: C.text3 }}>No trend data yet.</div>}
+      </div>
     </div>
   );
 }
+
