@@ -11,6 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.runtime import _as_utc, _now, _require_valid_access_payload
 from app.core.database import AlertRecord, AuditLog, Organization, RemediationJob, RemediationRecord, get_db
 
+# Roles permitted to perform mutating job operations (retry, cancel).
+_MUTATING_ROLES: frozenset[str] = frozenset({"admin", "devops"})
+
+
+def _require_mutating_role(payload: dict[str, Any]) -> None:
+    """Raise 403 if the token's role is not admin or devops."""
+    role = payload.get("role", "")
+    if role not in _MUTATING_ROLES:
+        raise HTTPException(status_code=403, detail="Admin or DevOps role required for this operation")
+
 
 async def _resolve_jobs_org(db: AsyncSession, request: Request) -> Organization:
     header = request.headers.get("authorization", "")
@@ -64,7 +74,7 @@ def _serialize_job(job: RemediationJob, alert: AlertRecord | None = None) -> dic
         "last_error": job.last_error,
         "created_at": created_at.isoformat(),
         "updated_at": updated_at.isoformat(),
-        "can_retry": job.status != "running",
+        "can_retry": job.status == "failed",
         "can_cancel": job.status in {"pending", "failed"},
     }
 
@@ -202,8 +212,8 @@ def _build_job_logs(
 
 
 def _mark_job_pending(job: RemediationJob) -> None:
+    # Preserve attempts — resetting to zero would allow unlimited replay beyond max_retries.
     job.status = "pending"
-    job.attempts = 0
     job.last_error = None
     job.updated_at = _now()
 
@@ -288,11 +298,19 @@ def build_remediation_jobs_router() -> APIRouter:
             )
             remediations = list(remediation_result.scalars().all())
 
+        # Scope rollback source to remediations created at or after this job, preventing
+        # cross-job rollback where an unrelated earlier remediation on the same alert is targeted.
         rollback_source = next(
             (
                 record
                 for record in remediations
-                if record.status == "success" and not (record.action or "").startswith("rollback_")
+                if record.status == "success"
+                and not (record.action or "").startswith("rollback_")
+                and (
+                    record.created_at is None
+                    or job.created_at is None
+                    or record.created_at >= job.created_at
+                )
             ),
             None,
         )
@@ -326,8 +344,11 @@ def build_remediation_jobs_router() -> APIRouter:
     @router.post("/api/remediation/jobs/{job_id}/retry")
     async def retry_job(job_id: int, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org, job, alert = await _resolve_job_context(db, request, job_id)
-        if job.status == "running":
-            raise HTTPException(status_code=409, detail="Running jobs cannot be retried")
+        header = request.headers.get("authorization", "")
+        payload = await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
+        _require_mutating_role(payload)
+        if job.status != "failed":
+            raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
         _mark_job_pending(job)
         await _write_job_audit(db, org.id, "remediation.job.retry", job)
         await db.commit()
@@ -336,6 +357,9 @@ def build_remediation_jobs_router() -> APIRouter:
     @router.post("/api/remediation/jobs/{job_id}/cancel")
     async def cancel_job(job_id: int, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         org, job, alert = await _resolve_job_context(db, request, job_id)
+        header = request.headers.get("authorization", "")
+        payload = await _require_valid_access_payload(header.removeprefix("Bearer ").strip())
+        _require_mutating_role(payload)
         if job.status not in {"pending", "failed"}:
             raise HTTPException(status_code=409, detail="Only pending or failed jobs can be cancelled")
         _mark_job_cancelled(job)

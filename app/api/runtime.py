@@ -598,9 +598,19 @@ def build_metrics_router() -> APIRouter:
         _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), body.org_id)
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(), "snapshot": _serialize_metric(snapshot)}
 
+    # Allowed bucket/window intervals to prevent caller-supplied unbounded SQL interval strings.
+    _ALLOWED_BUCKETS = frozenset({"5 minutes", "15 minutes", "30 minutes", "1 hour", "6 hours", "12 hours", "1 day"})
+    _ALLOWED_WINDOWS = frozenset({"1 hour", "6 hours", "12 hours", "24 hours", "3 days", "7 days", "30 days"})
+    _METRICS_MAX_LIMIT = 500
+
     @router.get("/api/orgs/{org_id}/metrics/summary")
     async def metrics_summary(org_id: str, request: Request, bucket: str = "1 hour", window: str = "24 hours", limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
         await _require_org_access(request, org_id)
+        if bucket not in _ALLOWED_BUCKETS:
+            raise HTTPException(status_code=400, detail=f"Invalid bucket. Allowed: {sorted(_ALLOWED_BUCKETS)}")
+        if window not in _ALLOWED_WINDOWS:
+            raise HTTPException(status_code=400, detail=f"Invalid window. Allowed: {sorted(_ALLOWED_WINDOWS)}")
+        effective_limit = max(1, min(limit, _METRICS_MAX_LIMIT))
         result = await db.execute(
             text(
                 """
@@ -620,18 +630,19 @@ def build_metrics_router() -> APIRouter:
                 LIMIT :limit
                 """
             ),
-            {"bucket": bucket, "window": window, "org_id": org_id, "limit": limit},
+            {"bucket": bucket, "window": window, "org_id": org_id, "limit": effective_limit},
         )
         return [dict(row) for row in result.mappings().all()]
 
     @router.get("/api/orgs/{org_id}/metrics")
     async def list_metrics(org_id: str, request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
         await _require_org_access(request, org_id)
+        effective_limit = max(1, min(limit, _METRICS_MAX_LIMIT))
         result = await db.execute(
             select(MetricSnapshot)
             .where(MetricSnapshot.org_id == org_id)
             .order_by(desc(MetricSnapshot.timestamp))
-            .limit(limit)
+            .limit(effective_limit)
         )
         return [_serialize_metric(row) for row in result.scalars().all()]
 

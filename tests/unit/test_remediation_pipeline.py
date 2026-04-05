@@ -120,7 +120,7 @@ def test_job_state_helpers_reset_and_cancel():
 
     _mark_job_pending(job)
     assert job.status == "pending"
-    assert job.attempts == 0
+    assert job.attempts == 3  # attempts are preserved — not reset — to enforce max_retries ceiling
     assert job.last_error is None
 
     _mark_job_cancelled(job)

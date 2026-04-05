@@ -13,6 +13,30 @@ from app.api.runtime import _as_utc, _now, _require_access_token
 from app.core.database import Agent, AlertRecord, AuditLog, MetricSnapshot, Organization, RemediationJob, RemediationRecord, get_db
 
 
+# Roles permitted to perform mutating remediation operations.
+MUTATING_ROLES: frozenset[str] = frozenset({"admin", "devops"})
+
+
+def _require_mutating_role(payload: dict[str, Any]) -> None:
+    """Raise 403 if the token's role is not admin or devops."""
+    role = payload.get("role", "")
+    if role not in MUTATING_ROLES:
+        raise HTTPException(status_code=403, detail="Admin or DevOps role required for this operation")
+
+
+async def _resolve_org_and_payload(db: AsyncSession, request: Request) -> tuple[Organization, dict[str, Any]]:
+    """Resolve org + return decoded JWT payload for role checks."""
+    payload = await _require_access_token(request)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization scope required")
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org, payload
+
+
 class RemediationTriggerRequest(BaseModel):
     issue_type: str = Field(default="")
 
@@ -130,7 +154,8 @@ def build_remediation_router() -> APIRouter:
 
     @router.post("/api/remediation/rules/{rule_id}/toggle")
     async def toggle_rule(rule_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        org = await _resolve_org(db, request)
+        org, payload = await _resolve_org_and_payload(db, request)
+        _require_mutating_role(payload)
         settings = dict(org.settings or {})
         enabled_map = dict(settings.get("remediation_rules_enabled", {}))
         enabled = not bool(enabled_map.get(rule_id, True))
@@ -171,11 +196,26 @@ def build_remediation_router() -> APIRouter:
 
     @router.post("/api/remediation/trigger")
     async def trigger(body: RemediationTriggerRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        org = await _resolve_org(db, request)
+        payload = await _require_access_token(request)
+        _require_mutating_role(payload)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+
         issue_type = body.issue_type.strip().lower() or "cpu"
         rule = next((x for x in RULES if x["issue_type"] == issue_type), None)
         if rule is None:
             return {"success": False, "message": f"Unknown issue_type '{issue_type}'", "results": []}
+
+        # Lock the org row to serialize concurrent trigger requests for the same org.
+        # This prevents two concurrent requests from both passing the dedup read before
+        # either commits, which would cause duplicate remediation execution.
+        org_result = await db.execute(
+            select(Organization).where(Organization.id == org_id).with_for_update()
+        )
+        org = org_result.scalar_one_or_none()
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
 
         dedup_cutoff = _now() - timedelta(minutes=2)
         existing_result = await db.execute(
@@ -190,6 +230,7 @@ def build_remediation_router() -> APIRouter:
         )
         existing = existing_result.scalar_one_or_none()
         if existing is not None:
+            await db.commit()  # release the org lock
             return {"success": existing.status == "success", "message": "Playbook already executed recently", "results": [{"id": existing.id, "rule_name": rule["name"], "action": existing.action, "success": existing.status == "success", "status": existing.status}]}
 
         metric = await _latest_metric(db, org.id)
@@ -199,12 +240,13 @@ def build_remediation_router() -> APIRouter:
         db.add(record)
         await _write_audit(db, org.id, "playbook.started", {"issue_type": issue_type, "rule": rule["id"], "action": rule["action"]})
         await _write_audit(db, org.id, "playbook.completed", {"issue_type": issue_type, "rule": rule["id"], "status": record.status})
-        await db.commit()
+        await db.commit()  # releases the org lock
         return {"success": True, "message": record.result, "results": [{"id": record.id, "rule_name": rule["name"], "action": record.action, "success": True, "status": record.status}]}
 
     @router.post("/api/remediation/rollback")
     async def rollback(body: RollbackRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        org = await _resolve_org(db, request)
+        org, payload = await _resolve_org_and_payload(db, request)
+        _require_mutating_role(payload)
         source = (
             (
                 await db.execute(
@@ -285,7 +327,8 @@ def build_remediation_router() -> APIRouter:
 
     @router.post("/api/remediation/autonomous")
     async def set_autonomous(body: AutonomousModeRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        org = await _resolve_org(db, request)
+        org, payload = await _resolve_org_and_payload(db, request)
+        _require_mutating_role(payload)
         settings = dict(org.settings or {})
         settings["autonomous_mode"] = body.enabled
         org.settings = settings

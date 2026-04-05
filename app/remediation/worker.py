@@ -68,7 +68,20 @@ async def _execute_playbook_with_heartbeat(db: AsyncSession, job: RemediationJob
             try:
                 await db.commit()
             except Exception as exc:
-                logger.warning("Failed to commit heartbeat for job %s: %s", job.id, exc)
+                # Heartbeat commit failure means updated_at stops progressing.
+                # Another worker may reclaim this job as stale and execute it again.
+                # Cancel the task immediately to prevent duplicate side effects.
+                logger.error(
+                    "Heartbeat commit failed for job %s — cancelling task to prevent duplicate execution: %s",
+                    job.id,
+                    exc,
+                )
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise RuntimeError(f"Heartbeat lost for job {job.id}: {exc}") from exc
 
 
 async def process_job(db: AsyncSession, job: RemediationJob) -> None:
@@ -81,7 +94,7 @@ async def process_job(db: AsyncSession, job: RemediationJob) -> None:
         job.last_error = None
         db.add(
             AuditLog(
-                org_id=(job.payload or {}).get("org_id"),
+                org_id=job.org_id,
                 action="playbook.job.success",
                 resource_type="remediation_job",
                 resource_id=str(job.id),
@@ -110,7 +123,7 @@ async def process_job(db: AsyncSession, job: RemediationJob) -> None:
             )
         db.add(
             AuditLog(
-                org_id=(job.payload or {}).get("org_id"),
+                org_id=job.org_id,
                 action="playbook.job.retry" if should_retry else "playbook.job.failed",
                 resource_type="remediation_job",
                 resource_id=str(job.id),
