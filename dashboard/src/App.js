@@ -103,7 +103,7 @@ function AppShell() {
         {isAuthenticated && <HealthRibbon />}
         <Routes>
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
-
+          <Route path="/onboarding"  element={<ProtectedRoute><ErrorBoundary fallbackTitle="Onboarding failed to load"><OnboardingWizard /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/insights"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Insights failed to load"><Insights /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/alerts"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Alerts failed to load"><Alerts /></ErrorBoundary></ProtectedRoute>} />

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { apiService } from '../services/api';
 import InfoTip from './InfoTip';
+import RemediationJobsPanel from './RemediationJobsPanel';
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -799,6 +800,8 @@ export default function Remediation() {
 
       {/* Agent Activity Feed */}
       <ActivityFeed entries={activityFeed} />
+
+      <RemediationJobsPanel />
 
       {/* Playbook Rules */}
       {panel(

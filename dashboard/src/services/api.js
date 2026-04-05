@@ -81,7 +81,7 @@ let refreshToken = null;
 let refreshing = false;
 let refreshQueue = [];
 
-// Firebase token bridge — set by AuthContext after Firebase Auth initialises
+// Firebase token bridge Ã¢â‚¬â€ set by AuthContext after Firebase Auth initialises
 let _auth0GetToken = null;
 export function setTokenGetter(fn) { _auth0GetToken = fn; }
 /** @deprecated use setTokenGetter */
@@ -119,10 +119,10 @@ export function setRefreshTokenOnClient(token) {
   if (token) setLocal('aiops:refresh', token); else setLocal('aiops:refresh', null);
 }
 
-// Request interceptor — prefers Auth0 token when available, falls back to legacy
+// Request interceptor Ã¢â‚¬â€ prefers Auth0 token when available, falls back to legacy
 api.interceptors.request.use(
   async (config) => {
-    console.log(`🔌 API Request: ${config.method?.toUpperCase()} ${config.url}`);
+    console.log(`Ã°Å¸â€Å’ API Request: ${config.method?.toUpperCase()} ${config.url}`);
     let token = authToken;
     if (_auth0GetToken) {
       try { token = await _auth0GetToken(); } catch {}
@@ -134,7 +134,7 @@ api.interceptors.request.use(
     return config;
   },
   (error) => {
-    console.error('❌ Request error:', error);
+    console.error('Ã¢ÂÅ’ Request error:', error);
     return Promise.reject(error);
   }
 );
@@ -142,12 +142,12 @@ api.interceptors.request.use(
 // Response interceptor
 api.interceptors.response.use(
   (response) => {
-    console.log(`✅ API Response: ${response.status} ${response.config.url}`);
+    console.log(`Ã¢Å“â€¦ API Response: ${response.status} ${response.config.url}`);
     return response;
   },
   async (error) => {
     const status = error?.response?.status;
-    console.error('❌ Response error:', status, error.message);
+    console.error('Ã¢ÂÅ’ Response error:', status, error.message);
     const original = error.config || {};
     // Only attempt refresh when:
     // - The response is 401
@@ -327,7 +327,7 @@ export const apiService = {
     } catch (error) {
       console.error('Chat request failed:', error);
       return {
-        response: "I'm currently offline, but I'll be back soon! In the meantime, check your system metrics above. 🤖",
+        response: "I'm currently offline, but I'll be back soon! In the meantime, check your system metrics above. Ã°Å¸Â¤â€“",
         timestamp: new Date().toISOString(),
         source: 'fallback'
       };
@@ -369,6 +369,28 @@ export const apiService = {
     try { return (await api.get('/api/remediation/history')).data; }
     catch (e) { console.error('getRemediationHistory failed:', e?.message); return []; }
   },
+  async getRemediationJobs(limit = 100, filters = {}) {
+    const params = { limit };
+    if (filters?.status) params.status = filters.status;
+    if (filters?.days !== undefined && filters?.days !== null) {
+      params.days = String(filters.days);
+    }
+    try { return (await api.get('/api/remediation/jobs', { params })).data; }
+    catch (e) { console.error('getRemediationJobs failed:', e?.message); return []; }
+  },
+  async getRemediationJob(jobId) {
+    return (await api.get(`/api/remediation/jobs/${jobId}`)).data;
+  },
+  async getRemediationJobLogs(jobId) {
+    try { return (await api.get(`/api/remediation/jobs/${jobId}/logs`)).data; }
+    catch (e) { console.error('getRemediationJobLogs failed:', e?.message); return []; }
+  },
+  async retryRemediationJob(jobId) {
+    return (await api.post(`/api/remediation/jobs/${jobId}/retry`)).data;
+  },
+  async cancelRemediationJob(jobId) {
+    return (await api.post(`/api/remediation/jobs/${jobId}/cancel`)).data;
+  },
   async getRemediationStats() {
     try { return (await api.get('/api/remediation/stats')).data; }
     catch (e) { console.error('getRemediationStats failed:', e?.message); return null; }
@@ -389,6 +411,17 @@ export const apiService = {
   async getAutonomousMode() {
     try { return (await api.get('/api/remediation/autonomous')).data; }
     catch (e) { return { autonomous_mode: false }; }
+  },
+  async rollbackRemediation(remediationId) {
+    return (await api.post('/api/remediation/rollback', { remediation_id: remediationId })).data;
+  },
+  async getMttrDashboard(days = 14) {
+    try { return (await api.get(`/api/remediation/mttr?days=${encodeURIComponent(days)}`)).data; }
+    catch (e) { console.error('getMttrDashboard failed:', e?.message); return { incident_count: 0, timeline: [] }; }
+  },
+  async getOnboardingStatus() {
+    try { return (await api.get('/api/onboarding/status')).data; }
+    catch (e) { return { steps: { connect_first_agent: false, see_live_metrics: false, create_first_alert: false }, counts: { agents: 0, metrics: 0, alerts: 0 } }; }
   },
 
   // Security (admin only)
@@ -446,7 +479,7 @@ export const systemApi = {
   getPredictive: async (timeframe = '1hour') => (await api.get(`/predictive-analytics?timeframe=${encodeURIComponent(timeframe)}`)).data,
 };
 
-// Authentication endpoints — all routed to FastAPI auth service (port 5001)
+// Authentication endpoints Ã¢â‚¬â€ all routed to FastAPI auth service (port 5001)
 export const authApi = {
   registerOrg: async ({ org_name, email, username, password, full_name }) =>
     (await authAxios.post('/auth/register', { org_name, email, username, password, full_name })).data,
@@ -490,7 +523,7 @@ export const authApi = {
     (await authAxios.post('/auth/accept-invite', { token, email, username, password, full_name })).data,
 };
 
-// User management — admin only, all routed to FastAPI auth service
+// User management Ã¢â‚¬â€ admin only, all routed to FastAPI auth service
 export const userApi = {
   list: async () => (await authAxios.get('/users')).data,
   create: async ({ email, username, password, role, full_name, must_change_password = true }) =>
@@ -925,3 +958,5 @@ export class RealTimeService {
 export const realTimeService = new RealTimeService();
 
 export default apiService;
+
+
