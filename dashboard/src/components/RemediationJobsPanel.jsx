@@ -66,6 +66,8 @@ function LogRow({ log, isLast }) {
 
 export default function RemediationJobsPanel() {
   const [jobs, setJobs] = useState([]);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [rangeFilter, setRangeFilter] = useState('30');
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [selectedJob, setSelectedJob] = useState(null);
   const [selectedLogs, setSelectedLogs] = useState([]);
@@ -108,6 +110,16 @@ export default function RemediationJobsPanel() {
     return () => clearInterval(timer);
   }, [refreshJobs]);
 
+  const filteredJobs = jobs.filter((job) => {
+    if (statusFilter !== 'all' && job.status !== statusFilter) return false;
+    if (rangeFilter === 'all') return true;
+    const days = Number.parseInt(rangeFilter, 10);
+    if (!Number.isFinite(days) || days <= 0) return true;
+    const updated = new Date(job.updated_at).getTime();
+    if (!Number.isFinite(updated)) return false;
+    return updated >= Date.now() - (days * 24 * 60 * 60 * 1000);
+  });
+
   async function retryJob(jobId) {
     setActionLoading(`retry:${jobId}`);
     try {
@@ -141,10 +153,33 @@ export default function RemediationJobsPanel() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 18px', borderBottom: `1px solid ${C.border}` }}>
         <span style={{ color: C.amber }}><Activity size={14} /></span>
         <span style={{ fontSize: 13, fontWeight: 600, color: C.text1 }}>Remediation Jobs</span>
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: C.text3, fontFamily: C.mono }}>{loading ? 'LOADING' : `${jobs.length}`}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: C.text3, fontFamily: C.mono }}>{loading ? 'LOADING' : `${filteredJobs.length}`}</span>
       </div>
-
-      {jobs.length === 0 ? (
+      <div style={{ display: 'flex', gap: 10, padding: '10px 18px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ background: C.surface2, color: C.text1, border: `1px solid ${C.border}`, borderRadius: 7, padding: '6px 9px', fontSize: 11 }}
+        >
+          <option value="all">All status</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="running">Running</option>
+          <option value="pending">Pending</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <select
+          value={rangeFilter}
+          onChange={(e) => setRangeFilter(e.target.value)}
+          style={{ background: C.surface2, color: C.text1, border: `1px solid ${C.border}`, borderRadius: 7, padding: '6px 9px', fontSize: 11 }}
+        >
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      {filteredJobs.length === 0 ? (
         <div style={{ padding: '40px 24px', textAlign: 'center' }}>
           <Bot size={26} style={{ color: C.amber, margin: '0 auto 10px', opacity: 0.5 }} />
           <p style={{ fontSize: 13, color: C.text1, fontWeight: 600, margin: '0 0 4px' }}>No remediation jobs queued</p>
@@ -156,7 +191,7 @@ export default function RemediationJobsPanel() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                  {['ID', 'Playbook', 'Status', 'Attempts', 'Updated', ''].map((label) => (
+                  {['ID', 'Playbook', 'Status', 'Attempts', 'Created', 'Updated', ''].map((label) => (
                     <th key={label} style={{ padding: '10px 14px', fontSize: 9, fontWeight: 700, letterSpacing: '0.09em', color: C.text3, textAlign: 'left', fontFamily: C.mono, whiteSpace: 'nowrap' }}>
                       {label}
                     </th>
@@ -164,9 +199,9 @@ export default function RemediationJobsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job, index) => {
+                {filteredJobs.map((job, index) => {
                   const isSelected = selectedJobId === job.id;
-                  const isLast = index === jobs.length - 1;
+                  const isLast = index === filteredJobs.length - 1;
                   return (
                     <tr
                       key={job.id}
@@ -187,6 +222,9 @@ export default function RemediationJobsPanel() {
                         <span style={{ fontSize: 11, color: C.text2, fontFamily: C.mono }}>{job.attempts}/{job.max_retries}</span>
                       </td>
                       <td style={{ padding: '10px 14px', borderBottom: isLast ? 'none' : `1px solid ${C.border}` }}>
+                        <span style={{ fontSize: 11, color: C.text3, fontFamily: C.mono }}>{fmt(job.created_at)}</span>
+                      </td>
+                      <td style={{ padding: '10px 14px', borderBottom: isLast ? 'none' : `1px solid ${C.border}`}}>
                         <span style={{ fontSize: 11, color: C.text3, fontFamily: C.mono }}>{fmt(job.updated_at)}</span>
                       </td>
                       <td style={{ padding: '10px 14px', borderBottom: isLast ? 'none' : `1px solid ${C.border}` }}>
@@ -228,17 +266,22 @@ export default function RemediationJobsPanel() {
                     <p style={{ fontSize: 11, color: C.text3, margin: '6px 0 0', fontFamily: C.mono }}>
                       {selectedJob.playbook_type} {selectedJob.alert_title || selectedJob.alert_id ? `? ${selectedJob.alert_title || selectedJob.alert_id}` : ''}
                     </p>
+                    {selectedJob.last_error ? (
+                      <p style={{ fontSize: 11, color: C.red, margin: '8px 0 0', fontFamily: C.mono }}>
+                        Last error: {selectedJob.last_error}
+                      </p>
+                    ) : null}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button
                       type="button"
                       onClick={() => retryJob(selectedJob.id)}
-                      disabled={actionLoading === `retry:${selectedJob.id}` || selectedJob.status === 'running'}
+                      disabled={actionLoading === `retry:${selectedJob.id}` || !selectedJob.can_retry}
                       style={{
                         padding: '7px 10px', borderRadius: 7, border: `1px solid ${C.border}`,
                         background: 'transparent', color: C.text1,
-                        cursor: actionLoading === `retry:${selectedJob.id}` || selectedJob.status === 'running' ? 'not-allowed' : 'pointer',
-                        opacity: actionLoading === `retry:${selectedJob.id}` || selectedJob.status === 'running' ? 0.5 : 1,
+                        cursor: actionLoading === `retry:${selectedJob.id}` || !selectedJob.can_retry ? 'not-allowed' : 'pointer',
+                        opacity: actionLoading === `retry:${selectedJob.id}` || !selectedJob.can_retry ? 0.5 : 1,
                       }}
                     >
                       {actionLoading === `retry:${selectedJob.id}` ? 'Retrying?' : 'Retry'}
@@ -246,12 +289,12 @@ export default function RemediationJobsPanel() {
                     <button
                       type="button"
                       onClick={() => cancelJob(selectedJob.id)}
-                      disabled={actionLoading === `cancel:${selectedJob.id}` || selectedJob.status === 'running'}
+                      disabled={actionLoading === `cancel:${selectedJob.id}` || !selectedJob.can_cancel}
                       style={{
                         padding: '7px 10px', borderRadius: 7, border: `1px solid rgba(248,113,113,0.25)`,
                         background: 'rgba(248,113,113,0.08)', color: C.red,
-                        cursor: actionLoading === `cancel:${selectedJob.id}` || selectedJob.status === 'running' ? 'not-allowed' : 'pointer',
-                        opacity: actionLoading === `cancel:${selectedJob.id}` || selectedJob.status === 'running' ? 0.5 : 1,
+                        cursor: actionLoading === `cancel:${selectedJob.id}` || !selectedJob.can_cancel ? 'not-allowed' : 'pointer',
+                        opacity: actionLoading === `cancel:${selectedJob.id}` || !selectedJob.can_cancel ? 0.5 : 1,
                       }}
                     >
                       {actionLoading === `cancel:${selectedJob.id}` ? 'Cancelling?' : 'Cancel'}
@@ -295,3 +338,6 @@ export default function RemediationJobsPanel() {
     </section>
   );
 }
+
+
+
