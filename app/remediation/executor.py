@@ -1,3 +1,4 @@
+import app.remediation.sample_playbooks
 from app.remediation.playbooks import PLAYBOOKS
 
 async def execute_playbook(playbook_type: str, context: dict):
@@ -7,3 +8,4 @@ async def execute_playbook(playbook_type: str, context: dict):
         raise ValueError(f"Unknown playbook: {playbook_type}")
 
     return await playbook(context)
+
