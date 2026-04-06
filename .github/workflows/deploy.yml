@@ -63,9 +63,9 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test_auth
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+          POSTGRES_DB: resilo_test
         ports:
           - 5433:5432
         options: >-
@@ -74,7 +74,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5433/test_auth
+      DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5433/resilo_test
     steps:
       - uses: actions/checkout@v4
 
