@@ -4,8 +4,8 @@ Authorization helpers for multi-tenant access control.
 Provides functions to verify org-level access for admin operations.
 """
 
-from fastapi import HTTPException, status
 from database import User
+from fastapi import HTTPException, status
 
 
 async def require_org_access(admin: User, target_org_id: str) -> None:

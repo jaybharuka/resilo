@@ -32,15 +32,17 @@ log = logging.getLogger("wmi_poller")
 try:
     import winrm  # type: ignore
 except ImportError:
-    import subprocess, sys
+    import subprocess
+    import sys
     log.info("Installing pywinrm…")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pywinrm", "-q"])
     import winrm  # type: ignore
 
 # ── Password encryption (Fernet keyed from JWT_SECRET_KEY) ───────────────────
 def _fernet():
-    from cryptography.fernet import Fernet
     import hashlib
+
+    from cryptography.fernet import Fernet
     raw = os.environ.get("JWT_SECRET_KEY")
     if not raw:
         raise RuntimeError("JWT_SECRET_KEY is not set. Cannot initialize password encryption.")
@@ -230,8 +232,8 @@ class WMIPoller:
 
     async def _poll_and_store(self, target: dict, session_factory, loop):
         """Poll one target and persist results — runs poll in thread pool."""
+        from database import Agent, MetricSnapshot, WMITarget
         from sqlalchemy import select
-        from database import MetricSnapshot, Agent, WMITarget
 
         metrics = await loop.run_in_executor(None, self._poll_sync, target)
         now = datetime.now(timezone.utc)

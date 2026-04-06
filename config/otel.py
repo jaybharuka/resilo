@@ -19,12 +19,14 @@ from __future__ import annotations
 import os
 
 try:
-    from opentelemetry import trace, metrics
-    from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry import metrics, trace
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.resources import (SERVICE_NAME, SERVICE_VERSION,
+                                             Resource)
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import (BatchSpanProcessor,
+                                                ConsoleSpanExporter)
 
     _OTEL_AVAILABLE = True
 except ImportError:
@@ -76,14 +78,12 @@ def setup_otel(service_name: str):
     # ── Span exporter ────────────────────────────────────────────────────────
     if otlp_endpoint:
         if protocol == "http/protobuf":
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-                OTLPSpanExporter as HTTPSpanExporter,
-            )
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import \
+                OTLPSpanExporter as HTTPSpanExporter
             span_exporter = HTTPSpanExporter(endpoint=otlp_endpoint)
         else:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,
-            )
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import \
+                OTLPSpanExporter
             span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
     else:
         span_exporter = ConsoleSpanExporter()
@@ -96,14 +96,12 @@ def setup_otel(service_name: str):
     if otlp_endpoint:
         try:
             if protocol == "http/protobuf":
-                from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
-                    OTLPMetricExporter as HTTPMetricExporter,
-                )
+                from opentelemetry.exporter.otlp.proto.http.metric_exporter import \
+                    OTLPMetricExporter as HTTPMetricExporter
                 metric_exporter = HTTPMetricExporter(endpoint=otlp_endpoint)
             else:
-                from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
-                    OTLPMetricExporter,
-                )
+                from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import \
+                    OTLPMetricExporter
                 metric_exporter = OTLPMetricExporter(endpoint=otlp_endpoint)
 
             try:

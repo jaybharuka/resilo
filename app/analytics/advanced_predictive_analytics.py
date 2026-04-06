@@ -18,8 +18,10 @@ import asyncio
 import json
 import logging
 import time
+
 import numpy as np
 import pandas as pd
+
 try:
     import tensorflow as tf
     from tensorflow import keras
@@ -28,22 +30,23 @@ try:
 except ImportError:
     TENSORFLOW_AVAILABLE = False
     print("⚠️ TensorFlow not installed. Advanced ML features will be limited.")
+import pickle
+import random
+import uuid
+import warnings
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple, Union
-from dataclasses import dataclass, field
-from enum import Enum
-import uuid
-import random
-import warnings
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy import stats
 from scipy.signal import savgol_filter
-import joblib
-import pickle
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')

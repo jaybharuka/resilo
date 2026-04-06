@@ -9,6 +9,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.database import AuditLog, RemediationJob, SessionLocal
+from app.core.metrics import remediation_queue_depth
 from app.remediation.executor import execute_playbook
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ async def worker_loop(
         async with db_factory() as db:
             jobs = await claim_pending_jobs(db, batch_size, lease_timeout_seconds)
 
+            remediation_queue_depth.labels(service="api-gateway").set(len(jobs))
             for job in jobs:
                 await process_job(db, job)
 

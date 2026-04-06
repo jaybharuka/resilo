@@ -1,17 +1,81 @@
-"""
-Audit logging for sensitive operations.
+﻿"""SOC2-friendly structured audit logging."""
 
-Logs all user actions that modify data or access sensitive resources.
-Includes user_id, org_id, action, resource_type, resource_id, IP, user_agent.
-"""
+from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any, Optional
+
 from fastapi import Request
-from logging_config import get_logger
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from config.logger import get_logger
 
 log = get_logger("audit")
+
+
+class AuditService:
+    @staticmethod
+    async def write(
+        db: AsyncSession,
+        *,
+        action: str,
+        action_type: str,
+        resource_type: str,
+        resource_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        detail: Optional[dict[str, Any]] = None,
+        status: str = "success",
+        error_message: Optional[str] = None,
+        request: Optional[Request] = None,
+    ) -> None:
+        ip_address = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
+
+        await db.execute(
+            text(
+                """
+                INSERT INTO audit_logs (
+                    id, org_id, user_id, action, action_type, resource_type, resource_id,
+                    detail, ip_address, user_agent, status, error_message, created_at
+                ) VALUES (
+                    :id, :org_id, :user_id, :action, :action_type, :resource_type, :resource_id,
+                    :detail, :ip_address, :user_agent, :status, :error_message, :created_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "org_id": org_id,
+                "user_id": user_id,
+                "action": action,
+                "action_type": action_type,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "detail": detail,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
+                "status": status,
+                "error_message": error_message,
+                "created_at": datetime.now(timezone.utc),
+            },
+        )
+
+        log.info(
+            "audit_event",
+            extra={
+                "action": action,
+                "action_type": action_type,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "user_id": user_id,
+                "org_id": org_id,
+                "status": status,
+                "ip_address": ip_address,
+            },
+        )
 
 
 async def audit_log(
@@ -21,56 +85,21 @@ async def audit_log(
     resource_id: Optional[str] = None,
     user_id: Optional[str] = None,
     org_id: Optional[str] = None,
-    detail: Optional[Dict[str, Any]] = None,
+    detail: Optional[dict[str, Any]] = None,
     request: Optional[Request] = None,
+    status: str = "success",
+    error_message: Optional[str] = None,
 ) -> None:
-    """
-    Log a sensitive operation to the audit_logs table.
-    
-    Args:
-        db: AsyncSession for database access
-        action: Action performed (e.g., "user_created", "password_reset", "invite_accepted")
-        resource_type: Type of resource (e.g., "user", "organization", "invite")
-        resource_id: ID of the resource affected
-        user_id: ID of the user performing the action
-        org_id: ID of the organization context
-        detail: Additional details as JSON (e.g., {"email": "user@example.com", "role": "admin"})
-        request: FastAPI Request object to extract IP and user_agent
-    """
-    from database import AuditLog
-    import uuid
-    
-    ip_address = None
-    user_agent = None
-    
-    if request:
-        ip_address = request.client.host if request.client else None
-        user_agent = request.headers.get("user-agent")
-    
-    audit_entry = AuditLog(
-        id=str(uuid.uuid4()),
-        org_id=org_id,
-        user_id=user_id,
+    await AuditService.write(
+        db,
         action=action,
+        action_type=action.split(".")[0] if "." in action else "generic",
         resource_type=resource_type,
         resource_id=resource_id,
+        user_id=user_id,
+        org_id=org_id,
         detail=detail,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        created_at=datetime.now(timezone.utc),
-    )
-    
-    db.add(audit_entry)
-    
-    # Log to structured logs as well
-    log.info(
-        f"Audit: {action}",
-        extra={
-            "action": action,
-            "resource_type": resource_type,
-            "resource_id": resource_id,
-            "user_id": user_id,
-            "org_id": org_id,
-            "ip_address": ip_address,
-        },
+        request=request,
+        status=status,
+        error_message=error_message,
     )

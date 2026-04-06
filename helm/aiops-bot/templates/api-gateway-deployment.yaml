@@ -1,4 +1,4 @@
-{{- with .Values.services.apiGateway }}
+﻿{{- with .Values.services.apiGateway }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +16,7 @@ spec:
     metadata:
       labels:
         {{- include "aiops-bot.selectorLabels" (dict "name" .name "root" $) | nindent 8 }}
+        app.kubernetes.io/version: {{ .tag | quote }}
     spec:
       containers:
         - name: {{ .name }}
@@ -30,14 +31,26 @@ spec:
                 name: aiops-secrets
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: {{ .port }}
             initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: {{ .port }}
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: {{ .port }}
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
 {{- end }}

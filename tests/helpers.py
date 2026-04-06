@@ -1,4 +1,4 @@
-"""
+﻿"""
 tests/helpers.py — Shared utilities for test modules.
 
 Importable by test files; conftest.py also references make_jwt.
@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ── Ensure app packages are on sys.path ──────────────────────────────────────
@@ -25,10 +25,7 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-_TEST_JWT_SECRET = os.environ.get(
-    "JWT_SECRET_KEY",
-    "test-jwt-secret-for-pytest-only-not-for-production-use",
-)
+_DEFAULT_TEST_SIGNING_SEED = "pytest-signing-seed-not-prod"
 
 # Set by conftest._setup_database after the admin user is seeded.
 # Using the real admin user ID ensures tokens pass the DB-lookup in
@@ -40,6 +37,10 @@ def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -
     """Mint a signed HS256 JWT accepted by core_api's require() dependency."""
     from jose import jwt as _jose_jwt
 
+    # Read env at call-time so tests that temporarily override JWT secret
+    # do not leave this helper using a stale secret.
+    jwt_secret = os.environ.get("JWT_SECRET_KEY", _DEFAULT_TEST_SIGNING_SEED)
+
     payload = {
         "sub": sub,
         "role": role,
@@ -49,7 +50,7 @@ def make_jwt(sub: str, role: str, org_id: str, email: str = "test@test.local") -
         "type": "access",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }
-    return _jose_jwt.encode(payload, _TEST_JWT_SECRET, algorithm="HS256")
+    return _jose_jwt.encode(payload, jwt_secret, algorithm="HS256")
 
 
 def admin_jwt(org_id: str) -> str:
@@ -60,3 +61,5 @@ def admin_jwt(org_id: str) -> str:
     Falls back to a random UUID when called outside a test session.
     """
     return make_jwt(sub=_TEST_ADMIN_ID or str(uuid.uuid4()), role="admin", org_id=org_id)
+
+

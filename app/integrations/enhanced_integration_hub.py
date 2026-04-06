@@ -5,19 +5,20 @@ Universal notification system with multiple channels and intelligent routing
 """
 
 import asyncio
-import aiohttp
-import smtplib
 import json
-import yaml
-import requests
-from datetime import datetime
-from typing import Dict, List, Optional, Any
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import ssl
 import logging
+import smtplib
+import ssl
 from dataclasses import dataclass
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from enum import Enum
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+import requests
+import yaml
 
 logger = logging.getLogger(__name__)
 

@@ -4,10 +4,11 @@ AIOps 100% Potential Maximization Plan
 Unlock every capability of your enterprise AIOps platform
 """
 
-import os
 import json
+import os
 from datetime import datetime
 from typing import Dict, List
+
 
 class AIOpsMaximizationPlan:
     """Plan to maximize AIOps system potential"""

@@ -4,16 +4,17 @@ Intelligent AIOps Monitor - Production Ready
 AI-powered monitoring with automated solutions and intelligent notifications
 """
 
-import os
 import json
-import time
-import psutil
 import logging
-import requests
+import os
 import threading
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Tuple
+
+import psutil
+import requests
 import yaml
 
 # Configure logging

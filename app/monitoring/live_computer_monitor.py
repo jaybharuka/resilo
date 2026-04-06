@@ -4,15 +4,16 @@ Live Computer Monitor - Real-time system monitoring with spike detection
 Monitors your actual computer stats and sends alerts for unusual activity
 """
 
-import time
-import psutil
-import threading
 import json
-from datetime import datetime, timedelta
-from collections import deque
+import os
 import statistics
 import sys
-import os
+import threading
+import time
+from collections import deque
+from datetime import datetime, timedelta
+
+import psutil
 
 # Add project paths
 sys.path.append('.')
@@ -334,7 +335,7 @@ class LiveComputerMonitor:
             
             # Create data for ML analysis
             import pandas as pd
-            
+
             # CPU anomaly detection
             cpu_data = pd.DataFrame({
                 'timestamp': [stats['timestamp']],

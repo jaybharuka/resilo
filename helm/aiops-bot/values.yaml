@@ -27,6 +27,19 @@ services:
       maxReplicas: 10
       cpuThreshold: 70
       memoryThreshold: 80
+      # Custom metrics (requires prometheus-adapter configured in cluster)
+      # Scale when remediation queue exceeds 1000 jobs average across pods
+      queueDepthThreshold: "1000"
+      # Scale when WebSocket connections exceed 500 per pod
+      websocketConnectionsThreshold: "500"
+    blueGreen:
+      enabled: true
+      # activeVersion: which slot receives full traffic ("blue" or "green")
+      activeVersion: blue
+      # blueTag: image tag deployed to the blue (stable) slot
+      blueTag: stable
+      # greenTag: image tag deployed to the green (new release) slot
+      greenTag: latest
 
   orchestrator:
     name: orchestrator
@@ -63,6 +76,11 @@ services:
       maxReplicas: 8
       cpuThreshold: 70
       memoryThreshold: 80
+    blueGreen:
+      enabled: true
+      activeVersion: blue
+      blueTag: stable
+      greenTag: latest
     env:
       METRICS_INTERVAL: "30"
 
@@ -85,6 +103,11 @@ services:
       maxReplicas: 5
       cpuThreshold: 70
       memoryThreshold: 80
+    blueGreen:
+      enabled: true
+      activeVersion: blue
+      blueTag: stable
+      greenTag: latest
 
   configManager:
     name: config-manager

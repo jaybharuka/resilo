@@ -1,16 +1,18 @@
 """Alembic environment configuration for async SQLAlchemy."""
 
-from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
-from alembic import context
 import os
 import sys
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from logging.config import fileConfig
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Add app to path so we can import models
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.database import Base, DATABASE_URL
+from app.core.database import DATABASE_URL, Base
 
 config = context.config
 

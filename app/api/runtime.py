@@ -1,15 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import os
 import secrets
-import base64
-import uuid
-import time
 import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,16 +20,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import (
-    Agent,
-    AlertRecord,
-    MetricSnapshot,
-    Organization,
-    User,
-    UserSession,
-    get_db,
-    SessionLocal,
-)
+from app.core.database import (Agent, AlertRecord, MetricSnapshot,
+                               Organization, RemediationJob, SessionLocal,
+                               User, UserSession, get_db)
+from app.core.pricing import PricingService
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = int(os.getenv("JWT_ACCESS_TTL", "86400"))
@@ -204,6 +198,9 @@ def _encode_token(payload: dict[str, Any]) -> str:
 
 
 def _build_token_payload(user: User, token_type: str, ttl_seconds: int, *, session_id: str | None = None) -> dict[str, Any]:
+    if not user.org_id:
+        raise HTTPException(status_code=403, detail="User is missing org_id")
+
     now = _now()
     payload = {
         "sub": user.id,
@@ -396,7 +393,9 @@ async def _require_org_access(request: Request, org_id: str) -> dict[str, Any]:
     payload = await _require_access_token(request)
     token_org = payload.get("org_id")
     role = payload.get("role")
-    if token_org and token_org != org_id and role != "admin":
+    if not token_org:
+        raise HTTPException(status_code=403, detail="Organization scope required")
+    if token_org != org_id and role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden for this organization")
     return payload
 
@@ -416,7 +415,7 @@ async def seed_admin_user() -> None:
     from app.core.database import SessionLocal as _session_factory
 
     async with _session_factory() as db:
-        org_result = await db.execute(select(Organization).where(Organization.slug == DEFAULT_ADMIN_ORG))
+        org_result = await db.execute(select(Organization).where((Organization.slug == DEFAULT_ADMIN_ORG) | (Organization.name == "Default Organization")))
         org = org_result.scalar_one_or_none()
         if org is None:
             org = Organization(
@@ -640,9 +639,16 @@ def build_metrics_router() -> APIRouter:
 def build_alerts_router() -> APIRouter:
     router = APIRouter()
 
+    playbook_by_category = {
+        "cpu": "restart_service",
+        "memory": "restart_service",
+        "disk": "log_cleanup_script",
+        "error_rate": "rollback_last_deployment",
+    }
+
     @router.post("/api/orgs/{org_id}/alerts", status_code=status.HTTP_201_CREATED)
     async def create_alert(org_id: str, body: AlertCreateRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        payload = await _require_org_access(request, org_id)
+        await _require_org_access(request, org_id)
         alert = AlertRecord(
             org_id=org_id,
             agent_id=body.agent_id,
@@ -655,11 +661,29 @@ def build_alerts_router() -> APIRouter:
             status=body.status,
         )
         db.add(alert)
+        await db.flush()
+
+        db.add(
+            RemediationJob(
+                org_id=org_id,
+                alert_id=alert.id,
+                playbook_type=playbook_by_category.get(body.category, "restart_service"),
+                status="pending",
+                attempts=0,
+                max_retries=3,
+                payload={
+                    "severity": body.severity,
+                    "category": body.category,
+                    "metric_value": body.metric_value,
+                    "threshold": body.threshold,
+                },
+            )
+        )
+
         await db.commit()
         await db.refresh(alert)
         _get_realtime_hub(request).publish("alert_update", _serialize_alert(alert), org_id)
         return _serialize_alert(alert)
-
     @router.get("/api/orgs/{org_id}/alerts")
     async def list_alerts(org_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
         await _require_org_access(request, org_id)
@@ -729,6 +753,9 @@ def build_agents_router() -> APIRouter:
     @router.post("/api/orgs/{org_id}/agents")
     async def create_agent(org_id: str, body: AgentCreateRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         await _require_org_access(request, org_id)
+        pricing_service = PricingService()
+        await pricing_service.ensure_service_limit(db, org_id)
+
         raw_key = body.key or secrets.token_urlsafe(32)
         agent = Agent(
             org_id=org_id,
@@ -887,3 +914,20 @@ def build_stream_router() -> APIRouter:
         return StreamingResponse(_stream_realtime_events("alert_update", org_id, request), media_type="text/event-stream")
 
     return router
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

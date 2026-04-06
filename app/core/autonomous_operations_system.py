@@ -6,11 +6,13 @@ Proactive issue resolution with user permission management
 import asyncio
 import json
 import time
-import psutil
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
+from typing import Dict, List, Optional
+
+import psutil
+
 
 class ActionType(Enum):
     SAFE = "safe"           # Auto-approved actions

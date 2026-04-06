@@ -12,19 +12,20 @@ This system provides:
 - Load-aware scaling decisions
 """
 
-import psutil
-import time
 import json
 import logging
-import threading
-import subprocess
-from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Tuple, Any
-import statistics
-import random
-from collections import deque
 import math
+import random
+import statistics
+import subprocess
+import threading
+import time
+from collections import deque
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+import psutil
 
 # Configure logging
 logging.basicConfig(

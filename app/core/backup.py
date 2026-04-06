@@ -5,12 +5,12 @@ Implements automated backups using pg_dump for disaster recovery.
 Backups are stored locally with retention policy.
 """
 
+import logging
 import os
 import subprocess
-import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 log = logging.getLogger("backup")
 
@@ -39,7 +39,7 @@ def parse_database_url(url: str) -> dict:
     Returns: {host, port, user, password, database}
     """
     from urllib.parse import urlparse
-    
+
     # Remove the asyncpg driver part
     clean_url = url.replace("postgresql+asyncpg://", "postgresql://")
     parsed = urlparse(clean_url)

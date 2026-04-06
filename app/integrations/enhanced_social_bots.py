@@ -6,13 +6,15 @@ Interactive bots for casual conversation and team interaction
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-import aiohttp
+import random
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
-import random
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+
 
 # Mock Discord/Slack API classes for demonstration
 class BotPlatform(Enum):

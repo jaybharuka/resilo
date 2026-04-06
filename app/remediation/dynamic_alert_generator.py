@@ -4,15 +4,17 @@ Dynamic Alert Rules Generator for AIOps Bot
 Generates Prometheus alert rules based on real data analysis
 """
 
+import json
 import os
 import sys
-import yaml
+from datetime import datetime, timedelta
+from typing import Any, Dict, List
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Any
 import requests
-import json
+import yaml
+
 
 class DynamicAlertRulesGenerator:
     """Generate alert rules based on real data patterns"""

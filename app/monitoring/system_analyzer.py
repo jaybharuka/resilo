@@ -3,17 +3,19 @@ Enhanced System Analysis Commands for AIOps Chatbot
 Advanced diagnostics and automated problem detection
 """
 
-import psutil
-import subprocess
+import json
 import platform
 import socket
-import requests
-import json
+import subprocess
 from datetime import datetime, timedelta
-import wmi
-import win32evtlog
+
+import psutil
+import requests
 import win32api
 import win32con
+import win32evtlog
+import wmi
+
 
 class SystemAnalyzer:
     def __init__(self):

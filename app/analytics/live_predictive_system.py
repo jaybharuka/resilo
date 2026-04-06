@@ -4,14 +4,15 @@ Live Predictive Analytics Integration
 Connects predictive models with real-time system monitoring
 """
 
-import time
-import threading
-from datetime import datetime, timedelta
-from predictive_analytics import PredictiveAnalyticsEngine
-from live_computer_monitor import LiveComputerMonitor
-import psutil
-import logging
 import json
+import logging
+import threading
+import time
+from datetime import datetime, timedelta
+
+import psutil
+from live_computer_monitor import LiveComputerMonitor
+from predictive_analytics import PredictiveAnalyticsEngine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

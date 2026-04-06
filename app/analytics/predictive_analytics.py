@@ -4,28 +4,30 @@ Advanced Predictive Analytics System for AIOps Bot
 Predicts system failures, capacity planning, and proactive alerting
 """
 
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+import json
 import logging
 import pickle
-import json
 import threading
 import time
-from dataclasses import dataclass, field
-from collections import deque
 import warnings
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
 warnings.filterwarnings('ignore')
 
 # ML imports
 try:
-    from sklearn.ensemble import RandomForestRegressor, IsolationForest
-    from sklearn.linear_model import LinearRegression, Ridge
-    from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import mean_squared_error, r2_score
     import scipy.stats as stats
+    from sklearn.ensemble import IsolationForest, RandomForestRegressor
+    from sklearn.linear_model import LinearRegression, Ridge
+    from sklearn.metrics import mean_squared_error, r2_score
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import PolynomialFeatures, StandardScaler
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False

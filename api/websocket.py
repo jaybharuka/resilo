@@ -8,9 +8,11 @@ from asyncio import wait_for
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
-from config.shutdown import register_connection, unregister_connection
+
 from app.api.runtime import get_realtime_hub_from_app
 from app.core.database import SessionLocal, User
+from app.core.metrics import websocket_connections_active
+from config.shutdown import register_connection, unregister_connection
 
 router = APIRouter(prefix="/api/v1")
 legacy_router = APIRouter()
@@ -49,6 +51,7 @@ async def _realtime_socket(ws: WebSocket) -> None:
     queue = hub.subscribe(org_id)
     await ws.accept()
     register_connection(ws)
+    websocket_connections_active.inc()
     try:
         while True:
             try:
@@ -67,6 +70,7 @@ async def _realtime_socket(ws: WebSocket) -> None:
     finally:
         hub.unsubscribe(org_id, queue)
         unregister_connection(ws)
+        websocket_connections_active.dec()
 
 
 router.add_api_websocket_route("/ws", _realtime_socket)

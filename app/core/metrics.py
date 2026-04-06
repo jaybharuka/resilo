@@ -8,10 +8,12 @@ Collects:
 - Database query duration histogram
 """
 
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import time
+
 from fastapi import Request
 from fastapi.responses import Response
+from prometheus_client import (CONTENT_TYPE_LATEST, Counter, Gauge, Histogram,
+                               generate_latest)
 
 # Request latency histogram (in seconds)
 request_latency = Histogram(
@@ -41,6 +43,23 @@ db_query_duration = Histogram(
     "Database query duration in seconds",
     labelnames=["operation"],
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
+# --- Custom HPA metrics ---
+
+# Remediation job queue depth — used by HPA queueDepthThreshold
+# Increment when a job is enqueued; decrement when dequeued/completed.
+remediation_queue_depth = Gauge(
+    "resilo_remediation_queue_depth",
+    "Number of remediation jobs currently pending in the queue",
+    labelnames=["service"],
+)
+
+# Active WebSocket connections — used by HPA websocketConnectionsThreshold
+# Increment on WS connect; decrement on WS disconnect.
+websocket_connections_active = Gauge(
+    "resilo_websocket_connections_active",
+    "Number of active WebSocket connections on this pod",
 )
 
 

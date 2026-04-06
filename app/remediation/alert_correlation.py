@@ -4,17 +4,18 @@ Intelligent Alert Correlation System for AIOps Bot
 Analyzes metric relationships, suppresses duplicates, and identifies root causes
 """
 
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Set
-from dataclasses import dataclass, field
-from collections import defaultdict, deque
-import statistics
 import json
+import logging
+import statistics
 import threading
 import time
-import logging
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Set, Tuple
+
+import numpy as np
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

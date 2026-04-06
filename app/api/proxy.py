@@ -5,9 +5,9 @@ Listens on port 8080
 """
 import os
 import re
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 _LOCALHOST_RE = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
 _RAW = os.environ.get("ALLOWED_ORIGINS", "")

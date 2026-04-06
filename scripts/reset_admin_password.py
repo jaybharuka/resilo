@@ -9,6 +9,7 @@ Usage:
 import asyncio
 import os
 import sys
+
 import bcrypt
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -42,6 +43,7 @@ async def reset(new_password: str) -> None:
         if not row:
             # Create the admin user from scratch
             import uuid
+
             # Ensure org exists
             org_r = await conn.execute(text("SELECT id FROM organizations LIMIT 1"))
             org_row = org_r.fetchone()

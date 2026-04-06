@@ -7,8 +7,10 @@ Check what might be blocking our dashboard connections
 import socket
 import subprocess
 import sys
-import psutil
 from datetime import datetime
+
+import psutil
+
 
 def check_network_diagnostics():
     """Run comprehensive network diagnostics"""
@@ -112,7 +114,7 @@ def check_network_diagnostics():
     # 6. Python HTTP server test
     print("6. 🐍 PYTHON HTTP SERVER TEST:")
     try:
-        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from http.server import BaseHTTPRequestHandler, HTTPServer
         
         class TestHandler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -142,7 +144,7 @@ def run_simple_connectivity_test():
     try:
         import threading
         import time
-        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from http.server import BaseHTTPRequestHandler, HTTPServer
         
         class MinimalHandler(BaseHTTPRequestHandler):
             def do_GET(self):

@@ -8,10 +8,11 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import HTTPException, status, Header
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+
 from database import APIKey, Organization
+from fastapi import Header, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def generate_api_key() -> str:

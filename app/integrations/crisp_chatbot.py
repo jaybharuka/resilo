@@ -3,12 +3,13 @@ Enhanced Chatbot with Crisp, Actionable Responses
 Optimized for quick problem resolution and clear communication
 """
 
-import os
 import json
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
-from dotenv import load_dotenv
+
 import google.generativeai as genai
+from dotenv import load_dotenv
 
 load_dotenv()
 

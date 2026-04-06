@@ -9,19 +9,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-
-from app.api.remediation_jobs_runtime import (
-    _mark_job_pending,
-    _require_mutating_role,
-    _serialize_job,
-)
-from app.api.remediation_runtime import (
-    MUTATING_ROLES,
-    _require_mutating_role as _require_mutating_role_remediation,
-)
-from app.core.database import RemediationJob, RemediationRecord
 from fastapi import HTTPException
 
+from app.api.remediation_jobs_runtime import (_mark_job_pending,
+                                              _require_mutating_role,
+                                              _serialize_job)
+from app.api.remediation_runtime import MUTATING_ROLES
+from app.api.remediation_runtime import \
+    _require_mutating_role as _require_mutating_role_remediation
+from app.core.database import RemediationJob, RemediationRecord
 
 # ── RBAC helpers ─────────────────────────────────────────────────────────────
 

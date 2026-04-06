@@ -1,5 +1,5 @@
-"""
-tests/test_auth.py — 10 authentication flow tests for auth_api.py.
+﻿"""
+tests/test_auth.py â€” 10 authentication flow tests for auth_api.py.
 
 Covers: login success/failure, JWT validation, protected routes,
 token expiry, tampering, logout, refresh, and concurrent sessions.
@@ -7,21 +7,21 @@ token expiry, tampering, logout, refresh, and concurrent sessions.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
 from jose import jwt
 
-# Must match conftest.py — both define these so test_auth.py can be self-contained
+# Must match conftest.py â€” both define these so test_auth.py can be self-contained
 ADMIN_EMAIL     = "admin@company.local"
 ADMIN_PASSWORD  = "TestAdmin123!"
-TEST_JWT_SECRET = "test-jwt-secret-for-pytest-only-not-for-production-use"
+TEST_SIGNING_SEED = "pytest-signing-seed-not-prod"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 1. Successful login returns a valid JWT
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_login_returns_valid_jwt(client: AsyncClient, admin_creds: dict):
     """POST /auth/login with correct credentials returns a decodable JWT."""
@@ -33,16 +33,16 @@ async def test_login_returns_valid_jwt(client: AsyncClient, admin_creds: dict):
     assert "refresh_token" in data, "Response must contain 'refresh_token'"
 
     # Decode and verify JWT claims without validation (already verified by server)
-    payload = jwt.decode(data["token"], TEST_JWT_SECRET, algorithms=["HS256"])
+    payload = jwt.decode(data["token"], TEST_SIGNING_SEED, algorithms=["HS256"])
     assert payload["email"] == ADMIN_EMAIL
     assert payload["type"] == "access"
     assert "sub" in payload
     assert "exp" in payload
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 2. Login with wrong password returns 401
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_wrong_password_returns_401(client: AsyncClient):
     """POST /auth/login with the wrong password must return HTTP 401."""
@@ -53,9 +53,9 @@ async def test_wrong_password_returns_401(client: AsyncClient):
     assert resp.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 3. Login with missing fields returns 422
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_missing_fields_returns_422(client: AsyncClient):
     """POST /auth/login without the password field must return HTTP 422."""
@@ -63,9 +63,9 @@ async def test_missing_fields_returns_422(client: AsyncClient):
     assert resp.status_code == 422
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 4. Valid JWT grants access to a protected route
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_valid_jwt_accesses_protected_route(
     client: AsyncClient, logged_in: dict
@@ -81,9 +81,9 @@ async def test_valid_jwt_accesses_protected_route(
     assert data["role"] == "admin"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 5. Expired JWT is rejected
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_expired_jwt_is_rejected(client: AsyncClient):
     """GET /auth/me with an expired JWT must return HTTP 401."""
@@ -99,7 +99,7 @@ async def test_expired_jwt_is_rejected(client: AsyncClient):
             "iat": now - timedelta(hours=2),
             "exp": now - timedelta(hours=1),   # already expired
         },
-        TEST_JWT_SECRET,
+        TEST_SIGNING_SEED,
         algorithm="HS256",
     )
 
@@ -110,9 +110,9 @@ async def test_expired_jwt_is_rejected(client: AsyncClient):
     assert resp.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 6. Missing JWT on a protected route returns 401
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_missing_jwt_returns_401(client: AsyncClient):
     """GET /auth/me with no Authorization header must return HTTP 401."""
@@ -120,9 +120,9 @@ async def test_missing_jwt_returns_401(client: AsyncClient):
     assert resp.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 7. Tampered JWT is rejected
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_tampered_jwt_is_rejected(client: AsyncClient, logged_in: dict):
     """
@@ -140,9 +140,9 @@ async def test_tampered_jwt_is_rejected(client: AsyncClient, logged_in: dict):
     assert resp.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 8. Logout invalidates the session
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_logout_invalidates_session(client: AsyncClient, logged_in: dict):
     """
@@ -151,23 +151,23 @@ async def test_logout_invalidates_session(client: AsyncClient, logged_in: dict):
     """
     refresh_token = logged_in["refresh_token"]
 
-    # Logout — should succeed
+    # Logout â€” should succeed
     logout_resp = await client.post(
         "/auth/logout", json={"refresh_token": refresh_token}
     )
     assert logout_resp.status_code == 200
     assert logout_resp.json().get("ok") is True
 
-    # Attempt to refresh the revoked session — must be rejected
+    # Attempt to refresh the revoked session â€” must be rejected
     refresh_resp = await client.post(
         "/auth/refresh", json={"refresh_token": refresh_token}
     )
     assert refresh_resp.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 9. Token refresh works correctly (and old token is rotated out)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_token_refresh_works_and_rotates(
     client: AsyncClient, logged_in: dict
@@ -179,7 +179,7 @@ async def test_token_refresh_works_and_rotates(
     """
     old_refresh = logged_in["refresh_token"]
 
-    # First refresh — must succeed
+    # First refresh â€” must succeed
     resp1 = await client.post("/auth/refresh", json={"refresh_token": old_refresh})
     assert resp1.status_code == 200
     new_data = resp1.json()
@@ -187,21 +187,21 @@ async def test_token_refresh_works_and_rotates(
     assert "refresh_token" in new_data
     assert new_data["refresh_token"] != old_refresh, "Refresh token must be rotated"
 
-    # Replaying the old refresh token — must be rejected
+    # Replaying the old refresh token â€” must be rejected
     resp2 = await client.post("/auth/refresh", json={"refresh_token": old_refresh})
     assert resp2.status_code == 401
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 10. Concurrent logins from the same user work without conflict
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_concurrent_logins_do_not_conflict(
     client: AsyncClient, admin_creds: dict
 ):
     """
     Five simultaneous login requests from the same user must all succeed
-    independently — each gets its own access token and refresh token.
+    independently â€” each gets its own access token and refresh token.
     """
     tasks = [
         client.post("/auth/login", json=admin_creds)
@@ -220,9 +220,9 @@ async def test_concurrent_logins_do_not_conflict(
     assert len(tokens) == 5, "Each concurrent login must produce a distinct token"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 11. Account locks after MAX_FAILED_ATTEMPTS consecutive bad passwords
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_account_locks_after_max_failed_attempts(client: AsyncClient):
     """5 wrong passwords must lock the account; 6th attempt returns 403."""
@@ -232,20 +232,20 @@ async def test_account_locks_after_max_failed_attempts(client: AsyncClient):
         resp = await client.post("/auth/login", json=bad)
         assert resp.status_code == 401, f"Attempt {i+1} should be 401, got {resp.status_code}"
 
-    # 5th attempt triggers the lock — must return 403
+    # 5th attempt triggers the lock â€” must return 403
     resp = await client.post("/auth/login", json=bad)
     assert resp.status_code == 403
     assert "locked" in resp.json()["detail"].lower()
 
-    # 6th attempt on a now-locked account — still 403
+    # 6th attempt on a now-locked account â€” still 403
     resp = await client.post("/auth/login", json=bad)
     assert resp.status_code == 403
     assert "locked" in resp.json()["detail"].lower()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # 12. Successful login resets the failure counter
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_successful_login_resets_failure_counter(
     client: AsyncClient, admin_creds: dict
@@ -263,3 +263,5 @@ async def test_successful_login_resets_failure_counter(
     # Another bad attempt should NOT immediately lock (counter was reset to 0)
     resp = await client.post("/auth/login", json=bad)
     assert resp.status_code == 401
+
+

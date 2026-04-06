@@ -7,11 +7,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from httpx import AsyncClient
-
+from database import Agent, Organization
 from helpers import admin_jwt as _admin_token
-from database import Organization, Agent
-
+from httpx import AsyncClient
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests

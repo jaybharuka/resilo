@@ -8,8 +8,8 @@ Usage:
     secret = get_secret("secret/data/aiops/ai_apis")
 """
 
-import os
 import logging
+import os
 
 logger = logging.getLogger("aiops.vault")
 

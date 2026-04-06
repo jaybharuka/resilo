@@ -26,16 +26,15 @@ import hashlib
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Optional, Callable
+from typing import Callable, Optional
 
+from database import Agent, User, get_db
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from database import get_db, User, Agent
 
 log = logging.getLogger("rbac")
 

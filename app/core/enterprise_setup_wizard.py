@@ -4,14 +4,16 @@ AIOps Bot - Enterprise Setup Wizard
 Interactive setup script for configuring API keys and credentials for enterprise deployment.
 """
 
+import getpass
+import json
 import os
 import sys
-import json
-import yaml
-import getpass
 from typing import Dict, List, Optional, Tuple
+
 import requests
+import yaml
 from enterprise_config_manager import EnterpriseConfigurationManager
+
 
 class SetupWizard:
     def __init__(self):

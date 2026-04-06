@@ -1,5 +1,5 @@
-"""
-database.py — PostgreSQL / TimescaleDB models for AIOps Bot (SQLAlchemy 2.0 async)
+﻿"""
+database.py â€” PostgreSQL / TimescaleDB models for AIOps Bot (SQLAlchemy 2.0 async)
 
 Shared by: auth_api.py, core_api.py, anomaly_engine.py, notification_service.py
 
@@ -15,14 +15,13 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import (
-    String, Boolean, DateTime, Text, ForeignKey,
-    JSON, Float, Integer, Index, func, BigInteger,
-)
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey,
+                        Index, Integer, String, Text, func, text)
+from sqlalchemy.ext.asyncio import (AsyncSession, async_sessionmaker,
+                                    create_async_engine)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.ext.asyncio import (
-    create_async_engine, AsyncSession, async_sessionmaker
-)
+
+from app.core.org_context import get_current_org_id
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -37,7 +36,7 @@ DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
 # asyncpg does not accept sslmode/channel_binding as URL parameters.
 # Strip them out and pass ssl via connect_args instead.
 def _build_engine_args(raw_url: str):
-    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
     parsed = urlparse(raw_url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     ssl_mode = (params.pop("sslmode", [None])[0] or
@@ -70,7 +69,7 @@ class Base(DeclarativeBase):
     pass
 
 
-# ── Organizations ─────────────────────────────────────────────────────────────
+# â”€â”€ Organizations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -84,7 +83,7 @@ class Organization(Base):
     created_at: Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-# ── Users ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class User(Base):
     __tablename__ = "users"
@@ -125,7 +124,7 @@ class UserSession(Base):
     user: Mapped["User"] = relationship("User", back_populates="sessions")
 
 
-# ── Invites & Password Reset ─────────────────────────────────────────────────
+# â”€â”€ Invites & Password Reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class InviteToken(Base):
     __tablename__ = "invite_tokens"
@@ -154,12 +153,12 @@ class PasswordResetToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-# ── Agents (PostgreSQL-backed, replaces in-memory _remote_agents) ─────────────
+# â”€â”€ Agents (PostgreSQL-backed, replaces in-memory _remote_agents) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Agent(Base):
     """
     Enterprise agent model. Every agent belongs to an org and authenticates
-    using X-Agent-Key header (raw key → SHA-256 → key_hash stored here).
+    using X-Agent-Key header (raw key â†’ SHA-256 â†’ key_hash stored here).
     """
     __tablename__ = "agents"
 
@@ -181,7 +180,7 @@ class Agent(Base):
     remediations:  Mapped[list["RemediationRecord"]]= relationship("RemediationRecord", back_populates="agent")
 
 
-# ── Legacy: keep RemoteAgent for backward compatibility ───────────────────────
+# â”€â”€ Legacy: keep RemoteAgent for backward compatibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class RemoteAgent(Base):
     """
@@ -201,7 +200,7 @@ class RemoteAgent(Base):
     created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-# ── Metrics (TimescaleDB hypertable on timestamp) ────────────────────────────
+# â”€â”€ Metrics (TimescaleDB hypertable on timestamp) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class MetricSnapshot(Base):
     """
@@ -233,7 +232,7 @@ class MetricSnapshot(Base):
     agent: Mapped["Agent"] = relationship("Agent", back_populates="metrics")
 
 
-# ── Alerts (persistent, replaces in-memory recent_alerts) ────────────────────
+# â”€â”€ Alerts (persistent, replaces in-memory recent_alerts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class AlertRecord(Base):
     __tablename__ = "alert_records"
@@ -259,7 +258,7 @@ class AlertRecord(Base):
     remediations: Mapped[list["RemediationRecord"]] = relationship("RemediationRecord", back_populates="alert")
 
 
-# ── Remediation History (persistent, replaces in-memory attempts) ─────────────
+# â”€â”€ Remediation History (persistent, replaces in-memory attempts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class RemediationRecord(Base):
     __tablename__ = "remediation_records"
@@ -268,7 +267,7 @@ class RemediationRecord(Base):
     org_id:       Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
     alert_id:     Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("alert_records.id", ondelete="SET NULL"), nullable=True)
     agent_id:     Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
-    action:       Mapped[str]           = mapped_column(String(100), nullable=False)   # clear_cache|kill_process|restart_service…
+    action:       Mapped[str]           = mapped_column(String(100), nullable=False)   # clear_cache|kill_process|restart_serviceâ€¦
     params:       Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)
     source:       Mapped[str]           = mapped_column(String(20), default="auto", nullable=False)  # auto|manual
     triggered_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
@@ -286,7 +285,7 @@ class RemediationRecord(Base):
     alert: Mapped[Optional["AlertRecord"]]  = relationship("AlertRecord", back_populates="remediations")
 
 
-# ── Audit Log (every significant action is logged here) ─────────────────────
+# â”€â”€ Audit Log (every significant action is logged here) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class RemediationJob(Base):
     __tablename__ = "remediation_jobs"
@@ -318,7 +317,7 @@ class AuditLog(Base):
     org_id:        Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=True, index=True)
     user_id:       Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     agent_id:      Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    action:        Mapped[str]           = mapped_column(String(100), nullable=False)   # user.login|agent.heartbeat|alert.created…
+    action:        Mapped[str]           = mapped_column(String(100), nullable=False)   # user.login|agent.heartbeat|alert.createdâ€¦
     resource_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     resource_id:   Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     detail:        Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)
@@ -327,7 +326,7 @@ class AuditLog(Base):
     created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-# ── Notification Channels ─────────────────────────────────────────────────────
+# â”€â”€ Notification Channels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class NotificationChannel(Base):
     """
@@ -352,13 +351,13 @@ class NotificationChannel(Base):
     label:        Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # friendly name
     config:       Mapped[dict]          = mapped_column(JSON, nullable=False, default=dict)
     enabled:      Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
-    # Severity filter — only notify for these severities; None means all
+    # Severity filter â€” only notify for these severities; None means all
     severities:   Mapped[Optional[list]]= mapped_column(JSON, nullable=True)
     created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
-# ── Alert Rules ───────────────────────────────────────────────────────────────
+# â”€â”€ Alert Rules â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class AlertRule(Base):
     """
@@ -391,7 +390,7 @@ class AlertRule(Base):
     updated_at:       Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
-# ── Notification Log ──────────────────────────────────────────────────────────
+# â”€â”€ Notification Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class NotificationLog(Base):
     """
@@ -417,7 +416,7 @@ class NotificationLog(Base):
     sent_at:           Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-# ── WMI Targets (agentless Windows polling) ───────────────────────────────────
+# â”€â”€ WMI Targets (agentless Windows polling) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class WMITarget(Base):
     """
@@ -446,13 +445,13 @@ class WMITarget(Base):
     created_at:     Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-# ── WMI Bootstrap Invites (zero-input onboarding) ────────────────────────────
+# â”€â”€ WMI Bootstrap Invites (zero-input onboarding) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class WmiInvite(Base):
     """
     One-time invite token for zero-input Windows machine self-registration.
-    Admin generates a token → PowerShell command is sent to the user →
-    user runs it on their machine → machine auto-registers as a WMI target.
+    Admin generates a token â†’ PowerShell command is sent to the user â†’
+    user runs it on their machine â†’ machine auto-registers as a WMI target.
     Token is SHA-256 hashed at rest; raw token is never stored.
     """
     __tablename__ = "wmi_invites"
@@ -477,15 +476,16 @@ async def wait_for_db() -> None:
     Retry the database connection until it succeeds or retries are exhausted.
 
     Reads:
-      DB_CONNECT_RETRIES     — max attempts  (default 5)
-      DB_CONNECT_RETRY_DELAY — seconds between attempts (default 3)
+      DB_CONNECT_RETRIES     â€” max attempts  (default 5)
+      DB_CONNECT_RETRY_DELAY â€” seconds between attempts (default 3)
 
     Logs a clear message per attempt and exits the process with code 1 if
-    all retries are exhausted — never starts the app with no DB.
+    all retries are exhausted â€” never starts the app with no DB.
     """
     import asyncio
     import logging
     import sys
+
     from sqlalchemy import text as _text
 
     _log = logging.getLogger("database")
@@ -516,7 +516,7 @@ async def wait_for_db() -> None:
 async def init_db() -> None:
     """
     Configure runtime DB policies after Alembic has created schema.
-    Safe to call on every startup — call wait_for_db() first.
+    Safe to call on every startup â€” call wait_for_db() first.
     """
     import logging
     log = logging.getLogger("database")
@@ -534,13 +534,20 @@ async def init_db() -> None:
                 )
                 log.info("TimescaleDB retention policy set: %d days", TIMESCALE_RETENTION_DAYS)
             except Exception:
-                pass  # TimescaleDB not available — plain PostgreSQL mode
+                pass  # TimescaleDB not available â€” plain PostgreSQL mode
 
 
 async def get_db():
     """FastAPI dependency — yields an async session."""
     async with SessionLocal() as session:
         try:
+            org_id = get_current_org_id()
+            if org_id:
+                # Transaction-local scope avoids leakage across pooled connections.
+                await session.execute(
+                    text("SELECT set_config('app.current_org', :org_id, true)"),
+                    {"org_id": org_id},
+                )
             yield session
         finally:
             await session.close()

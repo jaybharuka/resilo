@@ -26,23 +26,17 @@ import os
 import smtplib
 import ssl
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
 import aiohttp
-from sqlalchemy import select
+from database import (Agent, AlertRecord, MetricSnapshot, NotificationChannel,
+                      NotificationLog, Organization, SessionLocal, User)
 from sqlalchemy import func as sqlfunc
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from sqlalchemy import or_
-
-from database import (
-    SessionLocal, Organization, Agent, User,
-    MetricSnapshot, AlertRecord,
-    NotificationChannel, NotificationLog,
-)
 
 log = logging.getLogger("notification_service")
 

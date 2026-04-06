@@ -3,13 +3,16 @@
 System Metrics Exporter for AIOps Bot
 Exports real system metrics in Prometheus format
 """
-import time
-import psutil
-import threading
-from prometheus_client import Gauge, Counter, start_http_server, CollectorRegistry, REGISTRY
-from datetime import datetime
-import random
 import math
+import random
+import threading
+import time
+from datetime import datetime
+
+import psutil
+from prometheus_client import (REGISTRY, CollectorRegistry, Counter, Gauge,
+                               start_http_server)
+
 
 class SystemMetricsExporter:
     """Export real system metrics"""

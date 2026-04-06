@@ -3,17 +3,18 @@ Microsoft Teams Integration for AIOps Bot
 Provides Teams notifications, alerts, and interactive messaging capabilities
 """
 
-import os
-import json
 import asyncio
-import aiohttp
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass, field
-from enum import Enum
-import uuid
 import base64
+import json
+import logging
+import os
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union
+
+import aiohttp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

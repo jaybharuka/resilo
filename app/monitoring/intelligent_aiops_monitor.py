@@ -9,24 +9,26 @@ AI-powered monitoring system that provides:
 - Integration with Google Cloud AI (Gemini Pro)
 """
 
-import os
 import json
-import time
-import psutil
 import logging
-import requests
+import os
 import threading
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Tuple
+
 import google.generativeai as genai
-from cryptography.fernet import Fernet
+import psutil
+import requests
 import yaml
+from cryptography.fernet import Fernet
 
 # Import existing components
 try:
-    from intelligent_remediation import IntelligentRemediationEngine, RemediationSeverity
     from adaptive_ml import AdaptiveMLManager
+    from intelligent_remediation import (IntelligentRemediationEngine,
+                                         RemediationSeverity)
 except ImportError as e:
     print(f"⚠️  Missing component: {e}")
     print("Creating simplified versions...")

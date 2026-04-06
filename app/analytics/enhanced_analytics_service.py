@@ -4,20 +4,21 @@ Enhanced Analytics Service with Alert Correlation
 Provides intelligent threshold analysis and alert correlation capabilities
 """
 
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import requests
+import json
 import logging
 import statistics
 import threading
 import time
-import json
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import requests
 
 # Import alert correlation system
 try:
-    from alert_correlation import AlertCorrelationEngine, Alert
+    from alert_correlation import Alert, AlertCorrelationEngine
     CORRELATION_AVAILABLE = True
 except ImportError:
     CORRELATION_AVAILABLE = False

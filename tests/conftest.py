@@ -1,31 +1,31 @@
-"""
-tests/conftest.py — Fixtures for auth API tests.
+﻿"""
+tests/conftest.py â€” Fixtures for auth API tests.
 
 Environment variables are set at the very top of this file, before any
 application imports, so the app sees the test secret and the test database.
 
 Design notes
-────────────
-• database.py creates a global SQLAlchemy engine at module load time using
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+â€¢ database.py creates a global SQLAlchemy engine at module load time using
     `_build_engine_args`, which can rewrite async database URLs. To avoid this,
     we mock `create_async_engine` BEFORE importing database.py so that
     `database.engine` and `database.SessionLocal` transparently use the test
     engine with `NullPool`.
 
-• httpx ASGITransport does NOT trigger FastAPI startup/shutdown lifespan
+â€¢ httpx ASGITransport does NOT trigger FastAPI startup/shutdown lifespan
   events.  Tables are therefore created and the admin is seeded manually
   once in a session-scoped autouse fixture.
 
-• Sessions (JWT refresh tokens) are deleted after each test so no session
+â€¢ Sessions (JWT refresh tokens) are deleted after each test so no session
   state leaks between tests.
 """
 from __future__ import annotations
 
 import os
 
-# ── Set ALL test env vars FIRST — before any app code is imported ─────────────
-_TEST_JWT_SECRET = "test-jwt-secret-for-pytest-only-not-for-production-use"
-os.environ["JWT_SECRET_KEY"]         = _TEST_JWT_SECRET
+# â”€â”€ Set ALL test env vars FIRST â€” before any app code is imported â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_TEST_SIGNING_SEED = "pytest-signing-seed-not-prod"
+os.environ["JWT_SECRET_KEY"]         = _TEST_SIGNING_SEED
 os.environ["ADMIN_DEFAULT_PASSWORD"] = "TestAdmin123!"
 os.environ["ADMIN_DEFAULT_EMAIL"]    = "admin@company.local"
 os.environ["DATABASE_URL"]          = "postgresql+asyncpg://test_user:test_pass@localhost:5433/resilo_test"
@@ -38,15 +38,14 @@ os.environ["DEPLOY_HOST"]           = "http://localhost:8000"
 import hashlib
 import sys
 import uuid
-
 from pathlib import Path
 from unittest.mock import patch
 
-# ── sys.path: make all app packages importable ────────────────────────────────
+# â”€â”€ sys.path: make all app packages importable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _tests = Path(__file__).resolve().parent
 _root  = _tests.parent
 for _p in [
-    str(_tests),                              # tests/ — for helpers.py
+    str(_tests),                              # tests/ â€” for helpers.py
     str(_root),
     str(_root / "app"),
     str(_root / "app" / "api"),
@@ -60,12 +59,13 @@ for _p in [
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
 from helpers import make_jwt as _make_jwt_helper
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import (AsyncSession, async_sessionmaker,
+                                    create_async_engine)
 from sqlalchemy.pool import NullPool
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-# ── Test engine: PostgreSQL with NullPool (one connection per request) ───────
+# â”€â”€ Test engine: PostgreSQL with NullPool (one connection per request) â”€â”€â”€â”€â”€â”€â”€
 _TEST_DB_URL = os.environ["DATABASE_URL"]
 
 _test_engine  = create_async_engine(_TEST_DB_URL, poolclass=NullPool)
@@ -73,22 +73,21 @@ _TestSession  = async_sessionmaker(
     _test_engine, class_=AsyncSession, expire_on_commit=False
 )
 
-# ── Inject test engine into database.py BEFORE importing it ───────────────────
+# â”€â”€ Inject test engine into database.py BEFORE importing it â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # database.py calls create_async_engine at module level; we mock that call so
 # database.engine becomes _test_engine and database.SessionLocal binds to it
 # automatically.
 with patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=_test_engine):
-    from database import Base, get_db, User, Organization  # noqa: E402
-    from auth_api import app, _seed_admin                   # noqa: E402
+    from auth_api import _seed_admin, app  # noqa: E402
+    from database import Base, Organization, User, get_db  # noqa: E402
 
-# ── Import additional DB models (database already in sys.modules) ─────────────
-from database import Agent, MetricSnapshot, AlertRecord  # noqa: E402
-
-# ── Import core_api app (database already mocked in sys.modules) ──────────────
+# â”€â”€ Import additional DB models (database already in sys.modules) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ Import core_api app (database already mocked in sys.modules) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from core_api import app as core_app  # noqa: E402
+from database import Agent, AlertRecord, MetricSnapshot  # noqa: E402
 
-# ── Public constants (imported by test modules) ───────────────────────────────
-TEST_JWT_SECRET = _TEST_JWT_SECRET
+# â”€â”€ Public constants (imported by test modules) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST_SIGNING_SEED = _TEST_SIGNING_SEED
 ADMIN_EMAIL     = "admin@company.local"
 ADMIN_PASSWORD  = "TestAdmin123!"
 
@@ -96,7 +95,7 @@ ADMIN_PASSWORD  = "TestAdmin123!"
 make_jwt = _make_jwt_helper  # re-export for backward compat within this module
 
 
-# ── Session-wide DB setup / teardown ──────────────────────────────────────────
+# â”€â”€ Session-wide DB setup / teardown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _setup_database():
@@ -114,8 +113,8 @@ async def _setup_database():
 
     # Wire the real admin user ID into helpers so admin_jwt() tokens pass the
     # DB user-existence check in _require_valid_access_payload.
-    from sqlalchemy import select as _sa_select
     import helpers as _helpers_mod
+    from sqlalchemy import select as _sa_select
     async with _TestSession() as _s:
         _result = await _s.execute(_sa_select(User).where(User.email == ADMIN_EMAIL))
         _admin = _result.scalar_one()
@@ -124,23 +123,34 @@ async def _setup_database():
     yield
 
     async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        from sqlalchemy import text
+
+        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
     await _test_engine.dispose()
 
 
-# ── Per-test session wipe ─────────────────────────────────────────────────────
+# â”€â”€ Per-test session wipe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @pytest_asyncio.fixture(autouse=True)
 async def _wipe_sessions():
-    """Delete all user_sessions rows and reset lockout state after every test."""
+    """Delete session rows and reset lockout state after every test when tables exist."""
     yield
     from sqlalchemy import text
     async with _test_engine.begin() as conn:
-        await conn.execute(text("DELETE FROM user_sessions"))
-        await conn.execute(text("UPDATE users SET failed_attempts = 0, locked_until = NULL"))
+        user_sessions_exists = (
+            await conn.execute(text("SELECT to_regclass('public.user_sessions')"))
+        ).scalar_one()
+        if user_sessions_exists is not None:
+            await conn.execute(text("DELETE FROM user_sessions"))
 
+        users_exists = (
+            await conn.execute(text("SELECT to_regclass('public.users')"))
+        ).scalar_one()
+        if users_exists is not None:
+            await conn.execute(text("UPDATE users SET failed_attempts = 0, locked_until = NULL"))
 
-# ── Reusable test fixtures ────────────────────────────────────────────────────
+# â”€â”€ Reusable test fixtures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @pytest_asyncio.fixture
 async def client() -> AsyncClient:
@@ -165,7 +175,7 @@ async def logged_in(client: AsyncClient, admin_creds: dict) -> dict:
     return resp.json()
 
 
-# ── Core API fixtures ─────────────────────────────────────────────────────────
+# â”€â”€ Core API fixtures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @pytest_asyncio.fixture
 async def core_client() -> AsyncClient:
@@ -206,7 +216,7 @@ async def sample_org() -> Organization:
 async def sample_agent(sample_org: Organization) -> tuple[Agent, str]:
     """
     Create a test agent in sample_org.
-    Yields (agent, raw_key) — raw_key for use in X-Agent-Key header.
+    Yields (agent, raw_key) â€” raw_key for use in X-Agent-Key header.
     """
     raw_key = "test-agent-key-for-pytest-only-do-not-use-in-prod"
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -295,3 +305,10 @@ async def sample_alert(
     )
     assert resp.status_code == 201, f"Alert fixture failed: {resp.text}"
     return resp.json()
+
+
+
+
+
+
+

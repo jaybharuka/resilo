@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+
 def print_menu():
     """Print the main menu"""
     print("""
@@ -156,11 +157,15 @@ def main():
                 # Quick test without full demo
                 try:
                     import asyncio
+
                     from teams_integration import send_quick_test
                     
                     async def quick_test():
-                        from teams_integration import send_aiops_alert, TeamsCredentials, MessageType
                         import os
+
+                        from teams_integration import (MessageType,
+                                                       TeamsCredentials,
+                                                       send_aiops_alert)
                         
                         webhook_url = os.getenv('TEAMS_WEBHOOK_URL')
                         if not webhook_url:
@@ -191,8 +196,9 @@ def main():
                 print("💡 Monitor your system with AI-powered insights")
                 # This would be a simple monitoring script
                 try:
-                    import psutil
                     import time
+
+                    import psutil
                     
                     print("🔄 Monitoring system (Press Ctrl+C to stop)...")
                     while True:

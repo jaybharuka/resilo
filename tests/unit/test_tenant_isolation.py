@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-
-from app.core.database import Base, Organization, RemediationRecord, SessionLocal, User, engine
 from helpers import make_jwt
+
+from app.core.database import (Base, Organization, RemediationRecord,
+                               SessionLocal, User, engine)
 
 
 async def _create_org() -> Organization:

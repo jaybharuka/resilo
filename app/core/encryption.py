@@ -5,10 +5,11 @@ Uses Fernet (symmetric encryption) from cryptography library.
 Encryption key must be provided via ENCRYPTION_KEY environment variable.
 """
 
+import logging
 import os
 from typing import Optional
+
 from cryptography.fernet import Fernet, InvalidToken
-import logging
 from sqlalchemy import String, TypeDecorator
 
 log = logging.getLogger("encryption")

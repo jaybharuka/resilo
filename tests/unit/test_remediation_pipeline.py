@@ -2,8 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.api.remediation_jobs_runtime import _build_job_logs, _mark_job_cancelled, _mark_job_pending, _serialize_job
-from app.core.database import AlertRecord, AuditLog, RemediationJob, RemediationRecord
+from app.api.remediation_jobs_runtime import (_build_job_logs,
+                                              _mark_job_cancelled,
+                                              _mark_job_pending,
+                                              _serialize_job)
+from app.core.database import (AlertRecord, AuditLog, RemediationJob,
+                               RemediationRecord)
 
 
 @pytest.mark.asyncio

@@ -27,5 +27,41 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .hpa.memoryThreshold }}
+    {{- if .hpa.queueDepthThreshold }}
+    # Custom metric: remediation job queue depth (requires prometheus-adapter)
+    - type: External
+      external:
+        metric:
+          name: resilo_remediation_queue_depth
+          selector:
+            matchLabels:
+              service: {{ .name }}
+        target:
+          type: AverageValue
+          averageValue: {{ .hpa.queueDepthThreshold }}
+    {{- end }}
+    {{- if .hpa.websocketConnectionsThreshold }}
+    # Custom metric: active WebSocket connections per pod
+    - type: Pods
+      pods:
+        metric:
+          name: resilo_websocket_connections_active
+        target:
+          type: AverageValue
+          averageValue: {{ .hpa.websocketConnectionsThreshold }}
+    {{- end }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
 {{- end }}
 {{- end }}

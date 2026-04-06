@@ -4,15 +4,16 @@ Email Notification Integration
 Universal email alerts using Gmail SMTP for 100% notification coverage
 """
 
+import logging
 import smtplib
 import ssl
-import yaml
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Dict, List, Optional
+
+import yaml
 from cryptography.fernet import Fernet
-import logging
 
 logger = logging.getLogger(__name__)
 

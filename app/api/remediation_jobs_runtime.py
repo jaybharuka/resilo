@@ -9,7 +9,8 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.runtime import _as_utc, _now, _require_valid_access_payload
-from app.core.database import AlertRecord, AuditLog, Organization, RemediationJob, RemediationRecord, get_db
+from app.core.database import (AlertRecord, AuditLog, Organization,
+                               RemediationJob, RemediationRecord, get_db)
 
 # Roles permitted to perform mutating job operations (retry, cancel).
 _MUTATING_ROLES: frozenset[str] = frozenset({"admin", "devops"})

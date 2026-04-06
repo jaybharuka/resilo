@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
+
 from app.integrations.gemini_integration import get_gemini_assistant
 
 router = APIRouter(prefix="/api/v1")
@@ -61,7 +62,7 @@ class ChatState:
             "timestamp": datetime.now(timezone.utc).timestamp(),
             "cpu": psutil.cpu_percent(interval=0.0),
             "memory": psutil.virtual_memory().percent,
-            "disk": psutil.disk_usage("/").percent if hasattr(psutil, "disk_usage") else 0,
+            "disk": (psutil.disk_usage("/").percent if hasattr(psutil, "disk_usage") else 0),
         }
         with self._lock:
             self._perf_history.append(snapshot)
@@ -186,6 +187,7 @@ async def _chat_impl(message: str, state: ChatState) -> dict[str, Any]:
             "cache": "miss",
         }
         return fallback
+
 
 def _enforce_chat_guards(state: ChatState, request: Request, message: str) -> None:
     forwarded_for = request.headers.get("X-Forwarded-For", "")

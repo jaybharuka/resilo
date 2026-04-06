@@ -7,6 +7,7 @@ This file shows how to configure Discord and Slack integrations with real API ke
 import os
 from typing import Dict, Optional
 
+
 class NotificationConfig:
     """Configuration management for notification services"""
     

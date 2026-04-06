@@ -13,10 +13,10 @@ Environment variables:
     BACKUP_RETENTION_DAYS  Delete backups older than this many days (default: 30)
 """
 
-import os
-import sys
-import subprocess
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse

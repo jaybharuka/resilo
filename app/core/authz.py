@@ -4,8 +4,8 @@ Authorization helpers for org-scoped access control.
 Ensures users can only access/modify data within their organization.
 """
 
-from fastapi import HTTPException, status
 from database import User
+from fastapi import HTTPException, status
 
 
 async def require_org_access(user: User, org_id: str) -> None:

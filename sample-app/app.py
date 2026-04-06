@@ -1,11 +1,13 @@
-from flask import Flask, Response, jsonify
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-import random
-import time
-import psutil
-import threading
 import math
+import random
+import threading
+import time
 from datetime import datetime
+
+import psutil
+from flask import Flask, Response, jsonify
+from prometheus_client import (CONTENT_TYPE_LATEST, Counter, Gauge, Histogram,
+                               generate_latest)
 
 app = Flask(__name__)
 

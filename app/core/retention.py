@@ -9,10 +9,11 @@ Policies:
 - Audit logs: 90 days
 """
 
-from datetime import datetime, timedelta, timezone
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 import logging
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger("retention")
 

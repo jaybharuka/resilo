@@ -3,24 +3,23 @@ Enhanced AIOps Chatbot with Microsoft Teams Integration
 Combines Google Gemini Pro, Hugging Face AI, and Teams notifications
 """
 
-import os
-import json
 import asyncio
+import json
 import logging
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+import os
+import platform
 import traceback
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 # System monitoring
 import psutil
-import platform
-
 # AI integrations
-from huggingface_ai_integration import enhance_response_with_ai, initialize_huggingface_ai
-from teams_integration import (
-    MicrosoftTeamsIntegrator, TeamsAlert, MessageType, TeamsCredentials,
-    send_aiops_alert, send_system_status
-)
+from huggingface_ai_integration import (enhance_response_with_ai,
+                                        initialize_huggingface_ai)
+from teams_integration import (MessageType, MicrosoftTeamsIntegrator,
+                               TeamsAlert, TeamsCredentials, send_aiops_alert,
+                               send_system_status)
 
 # Google Gemini (keep existing functionality)
 try:

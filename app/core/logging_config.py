@@ -3,11 +3,12 @@ Structured JSON logging configuration for ELK Stack integration.
 All logs are output as JSON with correlation IDs for request tracing.
 """
 
-import logging
 import json
+import logging
 import sys
-from pythonjsonlogger import jsonlogger
 from contextvars import ContextVar
+
+from pythonjsonlogger import jsonlogger
 
 # Context variable to store correlation ID per request
 correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")

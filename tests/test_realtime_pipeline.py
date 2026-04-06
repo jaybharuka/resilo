@@ -7,8 +7,8 @@ import threading
 import time
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 os.environ.setdefault("BACKUP_DIR", "./backups")
 os.environ.setdefault("DEPLOY_HOST", "http://localhost:8000")
@@ -16,7 +16,8 @@ os.environ.setdefault("ADMIN_DEFAULT_EMAIL", "admin@company.local")
 
 import api.websocket as websocket_module
 import app.api.runtime as runtime_module
-from app.api.runtime import RealtimeHub, build_stream_router, get_realtime_hub_from_app
+from app.api.runtime import (RealtimeHub, build_stream_router,
+                             get_realtime_hub_from_app)
 
 
 class _DummySession:

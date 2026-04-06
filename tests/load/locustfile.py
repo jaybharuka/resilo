@@ -32,7 +32,7 @@ import os
 import random
 from typing import Optional
 
-from locust import HttpUser, between, task, events
+from locust import HttpUser, between, events, task
 
 # ── Configuration from environment ───────────────────────────────────────────
 

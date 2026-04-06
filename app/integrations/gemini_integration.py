@@ -1,8 +1,10 @@
-from openai import OpenAI
-import os
-from typing import Dict, List, Optional
 import json
+import os
 from functools import lru_cache
+from typing import Dict, List, Optional
+
+from openai import OpenAI
+
 
 class GeminiAIAssistant:
     def __init__(self, api_key: Optional[str] = None):

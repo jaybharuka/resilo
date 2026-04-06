@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-
-from app.core.database import (
-    AlertRecord,
-    Base,
-    Organization,
-    RemediationJob,
-    SessionLocal,
-    User,
-    engine,
-)
 from helpers import make_jwt
+
+from app.core.database import (AlertRecord, Base, Organization, RemediationJob,
+                               SessionLocal, User, engine)
 
 
 async def _create_org() -> Organization:

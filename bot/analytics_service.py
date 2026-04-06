@@ -2,18 +2,20 @@
 Advanced Analytics & Anomaly Detection Service for AIOps Bot
 Provides ML-powered anomaly detection, time-series analysis, and predictive alerting
 """
-import os
 import json
+import os
+import warnings
+from datetime import datetime, timedelta
 from functools import lru_cache
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 import requests
+from sklearn.cluster import DBSCAN
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import DBSCAN
-import warnings
+
 warnings.filterwarnings('ignore')
 
 def ensure_json_serializable(obj):
@@ -252,9 +254,10 @@ class AnomalyDetectionService:
         This creates real-time metrics based on actual system state
         """
         try:
-            import psutil
             from datetime import datetime, timedelta
-            
+
+            import psutil
+
             # Generate timestamps for the requested period
             end_time = datetime.now()
             start_time = end_time - timedelta(hours=hours_back)

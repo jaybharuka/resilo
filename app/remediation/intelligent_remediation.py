@@ -13,15 +13,16 @@ This system provides:
 
 import json
 import logging
-import time
-import psutil
+import os
 import subprocess
 import threading
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Callable, Any
 from enum import Enum
-import os
+from typing import Any, Callable, Dict, List, Optional
+
+import psutil
 
 # Configure logging
 logging.basicConfig(
@@ -203,6 +204,7 @@ class IntelligentRemediationEngine:
         Does NOT use eval() — fully safe against code injection.
         """
         import re
+
         # Substitute metric names with their values
         for metric_name, value in metrics.items():
             expression = expression.replace(metric_name, str(value))

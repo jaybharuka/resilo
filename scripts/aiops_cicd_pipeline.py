@@ -3,12 +3,13 @@ Enhanced CI/CD Pipeline for AIOps Chatbot
 Real-time deployment with monitoring and rollback capabilities
 """
 
+import json
 import os
 import subprocess
 import time
-import json
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 
 class AIOpsDeploymentManager:
     def __init__(self):

@@ -4,8 +4,9 @@ HTTP client helper for propagating trace context to downstream services.
 Ensures all outbound HTTP calls include trace context headers for distributed tracing.
 """
 
+from typing import Any, Dict, Optional
+
 import aiohttp
-from typing import Dict, Optional, Any
 from trace_context import get_propagation_headers
 
 

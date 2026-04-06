@@ -10,8 +10,9 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.runtime import _as_utc, _now, _require_access_token
-from app.core.database import Agent, AlertRecord, AuditLog, MetricSnapshot, Organization, RemediationJob, RemediationRecord, get_db
-
+from app.core.database import (Agent, AlertRecord, AuditLog, MetricSnapshot,
+                               Organization, RemediationJob, RemediationRecord,
+                               get_db)
 
 # Roles permitted to perform mutating remediation operations.
 MUTATING_ROLES: frozenset[str] = frozenset({"admin", "devops"})

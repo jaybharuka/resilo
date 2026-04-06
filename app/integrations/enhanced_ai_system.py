@@ -6,7 +6,9 @@ Advanced natural language understanding and intelligent analysis
 import json
 import re
 from datetime import datetime
+
 import google.generativeai as genai
+
 
 class EnhancedAIAnalyzer:
     def __init__(self, api_key):

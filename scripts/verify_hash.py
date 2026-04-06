@@ -1,7 +1,7 @@
 import os
 
-import psycopg2
 import bcrypt
+import psycopg2
 
 try:
     from dotenv import load_dotenv

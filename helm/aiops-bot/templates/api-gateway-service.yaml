@@ -1,4 +1,4 @@
-{{- with .Values.services.apiGateway }}
+﻿{{- with .Values.services.apiGateway }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,6 +9,9 @@ metadata:
 spec:
   selector:
     {{- include "aiops-bot.selectorLabels" (dict "name" .name "root" $) | nindent 4 }}
+    {{- if .blueGreen.enabled }}
+    app.kubernetes.io/version: {{ .blueGreen.activeVersion | quote }}
+    {{- end }}
   ports:
     - port: 80
       targetPort: {{ .port }}

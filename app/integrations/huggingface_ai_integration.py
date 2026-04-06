@@ -3,24 +3,22 @@ Hugging Face AI Integration for AIOps Chatbot
 Free AI models for enhanced system diagnostics and user interaction
 """
 
-import os
 import json
 import logging
-from datetime import datetime
-from typing import List, Dict, Any, Optional
-from functools import lru_cache
+import os
 import warnings
+from datetime import datetime
+from functools import lru_cache
+from typing import Any, Dict, List, Optional
+
 warnings.filterwarnings("ignore")
 
-# Hugging Face imports
-from transformers import (
-    pipeline, 
-    AutoTokenizer, 
-    AutoModelForSequenceClassification,
-    AutoModelForQuestionAnswering,
-    AutoModelForCausalLM
-)
 import torch
+# Hugging Face imports
+from transformers import (AutoModelForCausalLM, AutoModelForQuestionAnswering,
+                          AutoModelForSequenceClassification, AutoTokenizer,
+                          pipeline)
+
 
 class HuggingFaceAIEngine:
     """

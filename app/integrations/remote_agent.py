@@ -40,8 +40,8 @@ for _pkg in ['psutil', 'requests']:
         print(f'[agent] Installing {_pkg}...')
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', _pkg, '-q'])
 
-import psutil      # noqa: E402
-import requests    # noqa: E402
+import psutil  # noqa: E402
+import requests  # noqa: E402
 
 # ── Safety gate ───────────────────────────────────────────────────────────────
 ALLOW_SYSTEM_ACTIONS = os.environ.get('ALLOW_SYSTEM_ACTIONS', 'false').lower() in ('1', 'true', 'yes')
