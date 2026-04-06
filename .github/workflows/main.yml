@@ -64,7 +64,9 @@ jobs:
         run: pip install -r requirements.txt pytest==8.2.2 pytest-cov==5.0.0 pytest-asyncio==0.23.7
 
       - name: Run tests
-        run: pytest -q
+        run: |
+          python -m alembic upgrade head
+          pytest -q
 
       - name: Enforce coverage threshold
         run: |

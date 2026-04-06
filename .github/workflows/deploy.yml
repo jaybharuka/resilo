@@ -88,6 +88,7 @@ jobs:
 
       - name: Run tests with coverage gate
         run: |
+          python -m alembic upgrade head
           pytest tests/ \
             --cov=app \
             --cov-report=term-missing \
