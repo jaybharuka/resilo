@@ -1,0 +1,52 @@
+﻿name: CI Migrations Roundtrip
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  migrations:
+    name: Alembic Roundtrip
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_auth
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test_auth
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Upgrade to head
+        run: python -m alembic upgrade head
+
+      - name: Downgrade one revision
+        run: python -m alembic downgrade 003
+
+      - name: Upgrade back to head
+        run: python -m alembic upgrade head
+
+      - name: Confirm final revision
+        run: python -m alembic current -v
+
