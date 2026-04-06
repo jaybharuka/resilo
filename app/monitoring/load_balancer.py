@@ -343,7 +343,7 @@ class IntelligentLoadBalancer:
     
     def _ip_hash_selection(self, servers: List[Server], client_ip: str) -> Server:
         """IP hash-based selection for consistent routing"""
-        hash_value = int(hashlib.md5(client_ip.encode()).hexdigest(), 16)
+        hash_value = int(hashlib.md5(client_ip.encode(), usedforsecurity=False).hexdigest(), 16)
         return servers[hash_value % len(servers)]
     
     def _geographic_selection(self, servers: List[Server], location: str) -> Server:

@@ -4,7 +4,7 @@ flask-cors==4.0.0
 Flask-Limiter==3.5.0
 flask-socketio==5.3.6           # WebSocket/Socket.IO server for real-time metric push
 psutil==5.9.8
-requests==2.31.0
+requests==2.32.3
 PyYAML==6.0.1
 
 # ── New: FastAPI Auth + Core Services ─────────────────────────────────────
