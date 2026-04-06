@@ -12,14 +12,14 @@ from typing import Any
 try:
     from jose import jwt
 except ImportError as exc:  # pragma: no cover - dependency guard
-    raise SystemExit('python-jose is required to run tenant_smoke.py') from exc
+    raise SystemExit("python-jose is required to run tenant_smoke.py") from exc
 
 
-DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
-DEFAULT_LOGIN_PATH = '/auth/login'
-DEFAULT_EMAIL = 'admin@company.local'
-DEFAULT_PASSWORD = 'Admin@1234'
-DEFAULT_ORG_IDS = ''
+DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_LOGIN_PATH = "/auth/login"
+DEFAULT_EMAIL = "admin@company.local"
+DEFAULT_PASSWORD = "Admin@1234"
+DEFAULT_ORG_IDS = ""
 DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT = 20
 
@@ -46,30 +46,40 @@ class SmokeResult:
 
 
 def parse_args() -> SmokeConfig:
-    parser = argparse.ArgumentParser(description='Tenant isolation smoke test for a live Resilo API.')
-    parser.add_argument('--base-url', default=os.getenv('TENANT_SMOKE_BASE_URL', DEFAULT_BASE_URL))
-    parser.add_argument('--login-path', default=os.getenv('TENANT_SMOKE_LOGIN_PATH', DEFAULT_LOGIN_PATH))
-    parser.add_argument('--email', default=os.getenv('TENANT_SMOKE_EMAIL', DEFAULT_EMAIL))
-    parser.add_argument('--password', default=os.getenv('TENANT_SMOKE_PASSWORD', DEFAULT_PASSWORD))
-    parser.add_argument(
-        '--org-ids',
-        default=os.getenv('TENANT_SMOKE_ORG_IDS', DEFAULT_ORG_IDS),
-        help='Comma-separated org IDs to exercise. Required.',
+    parser = argparse.ArgumentParser(
+        description="Tenant isolation smoke test for a live Resilo API."
     )
-    parser.add_argument('--concurrency', type=int, default=int(os.getenv('TENANT_SMOKE_CONCURRENCY', str(DEFAULT_CONCURRENCY))))
-    parser.add_argument('--timeout', type=int, default=int(os.getenv('TENANT_SMOKE_TIMEOUT', str(DEFAULT_TIMEOUT))))
+    parser.add_argument("--base-url", default=os.getenv("TENANT_SMOKE_BASE_URL", DEFAULT_BASE_URL))
+    parser.add_argument(
+        "--login-path", default=os.getenv("TENANT_SMOKE_LOGIN_PATH", DEFAULT_LOGIN_PATH)
+    )
+    parser.add_argument("--email", default=os.getenv("TENANT_SMOKE_EMAIL", DEFAULT_EMAIL))
+    parser.add_argument("--password", default=os.getenv("TENANT_SMOKE_PASSWORD", DEFAULT_PASSWORD))
+    parser.add_argument(
+        "--org-ids",
+        default=os.getenv("TENANT_SMOKE_ORG_IDS", DEFAULT_ORG_IDS),
+        help="Comma-separated org IDs to exercise. Required.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.getenv("TENANT_SMOKE_CONCURRENCY", str(DEFAULT_CONCURRENCY))),
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=int(os.getenv("TENANT_SMOKE_TIMEOUT", str(DEFAULT_TIMEOUT)))
+    )
     args = parser.parse_args()
 
-    org_ids = [org_id.strip() for org_id in args.org_ids.split(',') if org_id.strip()]
+    org_ids = [org_id.strip() for org_id in args.org_ids.split(",") if org_id.strip()]
     if not org_ids:
-        raise SystemExit('TENANT_SMOKE_ORG_IDS or --org-ids is required')
+        raise SystemExit("TENANT_SMOKE_ORG_IDS or --org-ids is required")
 
-    jwt_secret = os.getenv('JWT_SECRET_KEY')
+    jwt_secret = os.getenv("JWT_SECRET_KEY")
     if not jwt_secret:
-        raise SystemExit('JWT_SECRET_KEY must be set')
+        raise SystemExit("JWT_SECRET_KEY must be set")
 
     return SmokeConfig(
-        base_url=args.base_url.rstrip('/'),
+        base_url=args.base_url.rstrip("/"),
         login_path=args.login_path,
         email=args.email,
         password=args.password,
@@ -80,81 +90,87 @@ def parse_args() -> SmokeConfig:
     )
 
 
-def http_json(method: str, url: str, body: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = DEFAULT_TIMEOUT) -> tuple[int, dict[str, Any]]:
-    request_headers = {'Accept': 'application/json'}
+def http_json(
+    method: str,
+    url: str,
+    body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> tuple[int, dict[str, Any]]:
+    request_headers = {"Accept": "application/json"}
     if headers:
         request_headers.update(headers)
 
     payload: bytes | None = None
     if body is not None:
-        request_headers['Content-Type'] = 'application/json'
-        payload = json.dumps(body).encode('utf-8')
+        request_headers["Content-Type"] = "application/json"
+        payload = json.dumps(body).encode("utf-8")
 
     request = urllib.request.Request(url, data=payload, headers=request_headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode('utf-8')
+            raw = response.read().decode("utf-8")
             return response.getcode(), json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode('utf-8')
+        raw = exc.read().decode("utf-8")
         try:
             payload_obj = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
-            payload_obj = {'detail': raw}
+            payload_obj = {"detail": raw}
         return exc.code, payload_obj
 
 
 def login(config: SmokeConfig) -> str:
     status, payload = http_json(
-        'POST',
-        f'{config.base_url}{config.login_path}',
-        body={'email': config.email, 'password': config.password},
+        "POST",
+        f"{config.base_url}{config.login_path}",
+        body={"email": config.email, "password": config.password},
         timeout=config.timeout,
     )
     if status != 200:
-        raise SystemExit(f'Login failed with status {status}: {payload}')
+        raise SystemExit(f"Login failed with status {status}: {payload}")
 
-    token = payload.get('token') or payload.get('access_token')
+    token = payload.get("token") or payload.get("access_token")
     if not token:
-        raise SystemExit(f'Login response missing token field: {payload}')
+        raise SystemExit(f"Login response missing token field: {payload}")
     return str(token)
 
 
 def decode_token(token: str, jwt_secret: str) -> dict[str, Any]:
-    return jwt.decode(token, jwt_secret, algorithms=['HS256'])
+    return jwt.decode(token, jwt_secret, algorithms=["HS256"])
 
 
 def smoke_org(config: SmokeConfig, token: str, org_id: str) -> SmokeResult:
-    auth_header = {'Authorization': f'Bearer {token}'}
+    auth_header = {"Authorization": f"Bearer {token}"}
 
     alert_status, alert_payload = http_json(
-        'POST',
-        f'{config.base_url}/api/orgs/{org_id}/alerts',
+        "POST",
+        f"{config.base_url}/api/orgs/{org_id}/alerts",
         body={
-            'severity': 'high',
-            'category': 'cpu',
-            'title': f'Tenant smoke alert for {org_id}',
-            'detail': 'Generated by tenant_smoke.py',
-            'metric_value': 95.0,
-            'threshold': 80.0,
+            "severity": "high",
+            "category": "cpu",
+            "title": f"Tenant smoke alert for {org_id}",
+            "detail": "Generated by tenant_smoke.py",
+            "metric_value": 95.0,
+            "threshold": 80.0,
         },
         headers=auth_header,
         timeout=config.timeout,
     )
 
     job_status, job_payload = http_json(
-        'GET',
-        f'{config.base_url}/api/remediation/jobs',
+        "GET",
+        f"{config.base_url}/api/remediation/jobs",
         headers=auth_header,
         timeout=config.timeout,
     )
 
-    alert_org_id = alert_payload.get('org_id') if isinstance(alert_payload, dict) else None
+    alert_org_id = alert_payload.get("org_id") if isinstance(alert_payload, dict) else None
     job_org_ids = []
     if isinstance(job_payload, list):
         for item in job_payload:
-            if isinstance(item, dict) and item.get('org_id') is not None:
-                job_org_ids.append(str(item['org_id']))
+            if isinstance(item, dict) and item.get("org_id") is not None:
+                job_org_ids.append(str(item["org_id"]))
 
     return SmokeResult(
         org_id=org_id,
@@ -168,16 +184,16 @@ def smoke_org(config: SmokeConfig, token: str, org_id: str) -> SmokeResult:
 def validate_result(result: SmokeResult) -> list[str]:
     errors: list[str] = []
     if result.alert_status != 201:
-        errors.append(f'alert create returned {result.alert_status}')
+        errors.append(f"alert create returned {result.alert_status}")
     if result.job_status != 200:
-        errors.append(f'job list returned {result.job_status}')
+        errors.append(f"job list returned {result.job_status}")
     if result.alert_org_id != result.org_id:
-        errors.append(f'alert org_id mismatch: expected {result.org_id}, got {result.alert_org_id}')
+        errors.append(f"alert org_id mismatch: expected {result.org_id}, got {result.alert_org_id}")
     mismatches = [org_id for org_id in result.job_org_ids if org_id != result.org_id]
     if mismatches:
-        errors.append(f'cross-tenant job leakage detected: {mismatches}')
+        errors.append(f"cross-tenant job leakage detected: {mismatches}")
     if result.job_status == 200 and not result.job_org_ids:
-        errors.append('job list was empty after alert creation')
+        errors.append("job list was empty after alert creation")
     return errors
 
 
@@ -185,27 +201,29 @@ def main() -> int:
     config = parse_args()
     token = login(config)
     claims = decode_token(token, config.jwt_secret)
-    if claims.get('role') != 'admin':
-        print(f"Warning: login token role is {claims.get('role')}; smoke expects admin for cross-org access.")
+    if claims.get("role") != "admin":
+        print(f"Warning: token role={claims.get('role')}; expected admin for cross-org access.")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(config.concurrency, len(config.org_ids))) as executor:
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(config.concurrency, len(config.org_ids))
+    ) as executor:
         futures = [executor.submit(smoke_org, config, token, org_id) for org_id in config.org_ids]
         results = [future.result() for future in futures]
 
     errors: list[str] = []
     for result in results:
-        errors.extend(f'{result.org_id}: {message}' for message in validate_result(result))
+        errors.extend(f"{result.org_id}: {message}" for message in validate_result(result))
 
     print(json.dumps([result.__dict__ for result in results], indent=2, sort_keys=True))
     if errors:
-        print('Tenant smoke failed:')
+        print("Tenant smoke failed:")
         for error in errors:
-            print(f'- {error}')
+            print(f"- {error}")
         return 1
 
-    print(f'Tenant smoke passed for {len(results)} org(s).')
+    print(f"Tenant smoke passed for {len(results)} org(s).")
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

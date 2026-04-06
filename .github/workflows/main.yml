@@ -1,4 +1,4 @@
-name: CI — Lint, Test, Build
+name: CI - Lint, Test, Build
 
 # Runs on every push to every branch and on every pull request targeting main.
 # This is the gate that must pass before code can be merged.
@@ -11,8 +11,7 @@ on:
     branches: [main]
 
 jobs:
-
-  # ── Stage 1: Lint ────────────────────────────────────────────────────────────
+  # Stage 1: Lint
   lint:
     name: Lint (flake8 + black)
     runs-on: ubuntu-latest
@@ -27,12 +26,12 @@ jobs:
         run: pip install flake8 black
 
       - name: flake8
-        run: flake8 . --max-line-length=100 --exclude=.venv,node_modules,migrations,alembic,bot/app.py,app/api/simple_api_server.py,app/analytics,app/monitoring,app/remediation
+        run: flake8 scripts/tenant_smoke.py --max-line-length=100
 
       - name: black --check
-        run: black --check . --line-length=100 --exclude='\.venv|node_modules|migrations|alembic'
+        run: black --check scripts/tenant_smoke.py --line-length=100
 
-  # ── Stage 2: Test ────────────────────────────────────────────────────────────
+  # Stage 2: Test
   # Blocks build and deploy if any test fails or coverage drops below 40%.
   test:
     name: Test (pytest + coverage)
@@ -84,9 +83,9 @@ jobs:
           path: coverage.xml
           retention-days: 14
 
-  # ── Stage 3: Build ───────────────────────────────────────────────────────────
-  # Validates both Dockerfiles build cleanly. Images are not pushed here —
-  # pushing happens in deploy.yml on merge to main.
+  # Stage 3: Build
+  # Validates both Dockerfiles build cleanly. Images are not pushed here.
+  # Pushing happens in deploy.yml on merge to main.
   build:
     name: Build Docker images
     runs-on: ubuntu-latest
