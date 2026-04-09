@@ -69,6 +69,9 @@ pywinrm==0.4.3                 # WinRM client for Python (server polls Windows m
 # pytest==8.2.2
 # pytest-asyncio==0.23.7
 # httpx==0.27.0   # needed for FastAPI TestClient async
+pytest-cov==5.0.0
+bandit==1.7.10
+safety==3.2.9
 
 # â”€â”€ Load / Performance Testing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 locust==2.31.8              # load testing framework â€” run: locust -f tests/load/locustfile.py

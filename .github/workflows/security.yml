@@ -1,0 +1,43 @@
+name: Security scan
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  security:
+    name: SAST + dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install security tools
+        run: pip install bandit safety
+
+      - name: Bandit SAST (HIGH severity, HIGH confidence)
+        run: |
+          bandit -r . \
+            --exclude .venv,venv,tests,everything-claude-code \
+            -ll -ii \
+            -f json -o bandit-report.json || true
+          bandit -r . \
+            --exclude .venv,venv,tests,everything-claude-code \
+            -ll -ii
+
+      - name: Safety dependency vulnerability check
+        run: safety check --full-report
+
+      - name: Upload bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          retention-days: 30
