@@ -54,6 +54,10 @@ exports/
 .mcp.json
 dashboard/build/
 
+# Secret directories — never commit
+secrets/
+vault/local/
+
 # Extra Sensitive patterns
 *.pem
 *.key

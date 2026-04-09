@@ -577,12 +577,11 @@ async def demo_teams_integration():
     print("🤖 Microsoft Teams Integration Demo")
     print("=" * 50)
     
-    # Note: These are demo credentials - replace with real ones
     demo_credentials = TeamsCredentials(
-        tenant_id="your-tenant-id",
-        client_id="your-client-id", 
-        client_secret="your-client-secret",
-        webhook_url="your-webhook-url"
+        tenant_id=os.environ.get("TEAMS_TENANT_ID", ""),
+        client_id=os.environ.get("TEAMS_CLIENT_ID", ""),
+        client_secret=os.environ.get("TEAMS_CLIENT_SECRET", ""),
+        webhook_url=os.environ.get("TEAMS_WEBHOOK_URL", ""),
     )
     
     # Demo system data

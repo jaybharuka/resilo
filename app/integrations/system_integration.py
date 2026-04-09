@@ -220,7 +220,7 @@ class HealthChecker:
                         try:
                             health_data = await response.json()
                             details.update(health_data)
-                        except:
+                        except Exception:
                             pass
                     else:
                         status = ServiceStatus.UNHEALTHY

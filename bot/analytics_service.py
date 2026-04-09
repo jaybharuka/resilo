@@ -244,7 +244,7 @@ class AnomalyDetectionService:
                 system_data = self._get_direct_system_metrics(metric_name, hours_back)
                 if system_data is not None and not system_data.empty:
                     return system_data
-            except:
+            except Exception:
                 pass
             return pd.DataFrame(columns=['timestamp', 'value'])
 
@@ -327,7 +327,7 @@ class AnomalyDetectionService:
                     noise = np.random.normal(0, value * 0.02)  # 2% noise
                     value = max(0, value + noise)
                     
-                except:
+                except Exception:
                     # Fallback to system load if specific metric fails
                     value = psutil.cpu_percent(interval=0.1)
                 
@@ -412,7 +412,7 @@ class AnomalyDetectionService:
                 if data is not None and not data.empty:
                     # Transform the data to match expected format
                     return self._transform_alternative_data(data, metric_name, alt_metric)
-            except:
+            except Exception:
                 continue
                 
         return None

@@ -576,7 +576,7 @@ async def demonstrate_discord_bot():
     
     # Configuration
     config = DiscordConfig(
-        token="demo_token_12345",
+        token=os.environ.get("DISCORD_BOT_TOKEN", ""),
         guild_id=123456789,
         channels={
             "alerts": 123456789,

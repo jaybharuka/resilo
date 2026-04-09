@@ -60,8 +60,8 @@ class AIOpsDeploymentManager:
         
         # Check if services are ready
         services_status = {
-            "chatbot": self.check_service_health("http://localhost:5000/api/status"),
-            "dashboard": self.check_service_health("http://localhost:8080"),
+            "chatbot": self.check_service_health(os.getenv("CHATBOT_URL", "http://localhost:5000") + "/api/status"),
+            "dashboard": self.check_service_health(os.getenv("DASHBOARD_URL", "http://localhost:8080")),
             "ai_engine": True  # Always available
         }
         
@@ -82,7 +82,7 @@ class AIOpsDeploymentManager:
             import requests
             response = requests.get(url, timeout=5)
             return response.status_code == 200
-        except:
+        except Exception:
             return False
     
     def deploy_to_environment(self, environment="development"):

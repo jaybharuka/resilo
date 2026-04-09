@@ -435,7 +435,7 @@ class EnhancedAnalyticsService:
                 response = requests.get(f"{self.prometheus_url}/api/v1/query", 
                                       params={'query': 'up'}, timeout=5)
                 prometheus_ok = response.status_code == 200
-            except:
+            except Exception:
                 pass
             
             # Check correlation engine

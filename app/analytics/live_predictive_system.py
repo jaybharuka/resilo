@@ -113,7 +113,7 @@ class LivePredictiveSystem:
                 net_io = psutil.net_io_counters()
                 self.predictive_engine.add_historical_data("network_bytes_sent", timestamp, net_io.bytes_sent)
                 self.predictive_engine.add_historical_data("network_bytes_recv", timestamp, net_io.bytes_recv)
-            except:
+            except Exception:
                 pass
             
             # Add process count

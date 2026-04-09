@@ -90,16 +90,16 @@ class IntelligentAIOpsMonitor:
             self.remediation_engine = IntelligentRemediationEngine()
             self.remediation_engine.load_default_rules()
             logger.info("✅ Intelligent Remediation Engine loaded")
-        except:
-            logger.warning("⚠️  Remediation engine not available")
+        except Exception as e:
+            logger.warning("⚠️  Remediation engine not available: %s", e, exc_info=True)
             self.remediation_engine = None
         
         # Initialize ML manager
         try:
             self.ml_manager = AdaptiveMLManager()
             logger.info("✅ Adaptive ML Manager loaded")
-        except:
-            logger.warning("⚠️  ML manager not available")
+        except Exception as e:
+            logger.warning("⚠️  ML manager not available: %s", e, exc_info=True)
             self.ml_manager = None
         
         # Discord webhook for notifications

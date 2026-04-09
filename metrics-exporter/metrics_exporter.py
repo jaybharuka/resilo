@@ -106,7 +106,7 @@ class SystemMetricsExporter:
                 current_process = psutil.Process()
                 fd_count = current_process.num_fds() if hasattr(current_process, 'num_fds') else current_process.num_handles()
                 self.file_descriptors.set(fd_count)
-            except:
+            except Exception:
                 self.file_descriptors.set(50)  # Default fallback
                 
         except Exception as e:
