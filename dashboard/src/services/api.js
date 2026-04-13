@@ -77,7 +77,6 @@ authAxios.interceptors.request.use(async (config) => {
 });
 
 let authToken = null;
-let refreshToken = null;
 let refreshing = false;
 let refreshQueue = [];
 
@@ -86,6 +85,10 @@ let _auth0GetToken = null;
 export function setTokenGetter(fn) { _auth0GetToken = fn; }
 /** @deprecated use setTokenGetter */
 export const setAuth0TokenGetter = setTokenGetter;
+export async function getAccessToken() {
+  if (_auth0GetToken) { try { return await _auth0GetToken(); } catch {} }
+  return authToken || null;
+}
 
 // Helper to determine if a URL is an auth endpoint
 function isAuthEndpoint(urlLike) {
@@ -105,19 +108,21 @@ function getLocal(key) {
   try { return localStorage.getItem(key); } catch { return null; }
 }
 
-// Initialize from localStorage at module load
-try { authToken = getLocal('aiops:token'); } catch {}
-try { refreshToken = getLocal('aiops:refresh'); } catch {}
+// Access token lives in JS module memory ONLY.
+// sessionStorage/localStorage are intentionally NOT used — both are XSS-readable.
+// On page reload, initAuth() in AuthContext silently calls /auth/refresh (httpOnly cookie)
+// to rehydrate authToken without any client-side storage.
 
 export function setAuthTokenOnClient(token) {
   authToken = token || null;
-  if (token) setLocal('aiops:token', token); else setLocal('aiops:token', null);
+  // No storage write — token lives in module memory only.
+  // Purge any legacy values left from before this change.
+  try { localStorage.removeItem('aiops:token'); localStorage.removeItem('aiops:refresh'); } catch {}
+  try { sessionStorage.removeItem('aiops:token'); } catch {}
 }
 
-export function setRefreshTokenOnClient(token) {
-  refreshToken = token || null;
-  if (token) setLocal('aiops:refresh', token); else setLocal('aiops:refresh', null);
-}
+/** @deprecated — refresh token is now httpOnly cookie, no client-side storage */
+export function setRefreshTokenOnClient(_token) {}
 
 // Request interceptor Ã¢â‚¬â€ prefers Auth0 token when available, falls back to legacy
 api.interceptors.request.use(
@@ -153,13 +158,11 @@ api.interceptors.response.use(
     // - The response is 401
     // - It's not already a retry
     // - We are NOT calling an auth endpoint (e.g., /auth/login)
-    // - We have a refresh token available on the client
+    // Refresh token lives in httpOnly cookie — no client-side check needed
     if (
       status === 401 &&
       !original.__isRetry &&
-      !isAuthEndpoint(original.url || '') &&
-      !!refreshToken &&
-      !!authToken
+      !isAuthEndpoint(original.url || '')
     ) {
       // Try refresh flow once
       original.__isRetry = true;
@@ -177,20 +180,11 @@ async function attemptRefreshAndReplay(originalConfig) {
   }
   refreshing = true;
   try {
-    if (!refreshToken) {
-      throw new Error('missing_refresh_token');
-    }
-    // Prefer backend refresh using body refresh_token; fallback header-only refresh.
-    const body = refreshToken ? { refresh_token: refreshToken } : {};
-    const resp = await api.post('/auth/refresh', body);
-    const { token: newAccess, refresh_token: newRefresh } = resp.data || resp;
+    // Cookie-based refresh — browser sends httpOnly `rt` cookie automatically
+    const resp = await authAxios.post('/auth/refresh');
+    const { token: newAccess } = resp.data || resp;
     if (newAccess) {
-      authToken = newAccess;
-      setLocal('aiops:token', newAccess);
-    }
-    if (newRefresh) {
-      refreshToken = newRefresh;
-      setLocal('aiops:refresh', newRefresh);
+      setAuthTokenOnClient(newAccess);
     }
     // Replay queued requests
     const queued = refreshQueue.slice();
@@ -440,6 +434,78 @@ export const apiService = {
   async revokeSession(session_id) {
     return (await api.post('/security/revoke-session', { session_id })).data;
   },
+
+  // Feature 1: Remediation actions feed
+  async getRemediationActions(limit = 20) {
+    try {
+      const data = (await api.get(`/api/v1/remediation/actions?limit=${limit}`)).data;
+      if (!data || !Array.isArray(data.items)) throw new Error('Invalid remediation data');
+      return data;
+    } catch (e) {
+      try { return (await api.get('/api/remediation/history')).data; }
+      catch { return { items: [], total: 0 }; }
+    }
+  },
+
+  // Feature 2: Tenant health heatmap
+  async getTenantHealthSummary() {
+    const data = (await api.get('/api/v1/tenants/health-summary')).data;
+    if (!data || !Array.isArray(data.tenants)) throw new Error('Invalid tenant health data');
+    return data;
+  },
+
+  // Feature 3: Predictive alert timeline
+  async getPredictedAlerts() {
+    const data = (await api.get('/api/v1/predictions/upcoming')).data;
+    if (!data || !Array.isArray(data.predictions)) throw new Error('Invalid predictions data');
+    return data;
+  },
+
+  // Feature 4: Circuit breaker status
+  async getCircuitBreakerStatus() {
+    const data = (await api.get('/api/v1/remediation/circuit-breaker/status')).data;
+    if (!data || !Array.isArray(data.breakers)) throw new Error('Invalid circuit breaker data');
+    return data;
+  },
+  async resetCircuitBreaker(component) {
+    return (await api.post(`/api/v1/remediation/circuit-breaker/${encodeURIComponent(component)}/reset`)).data;
+  },
+
+  // Feature 5: API key usage heatmap
+  async getApiKeyUsageHeatmap(hours = 24) {
+    const data = (await api.get(`/api/v1/api-keys/usage-heatmap?hours=${hours}`)).data;
+    if (!data || !Array.isArray(data.keys)) throw new Error('Invalid heatmap data');
+    return data;
+  },
+
+  // Feature 6: Incidents
+  async createIncident(payload) {
+    const data = (await api.post('/api/v1/incidents', payload)).data;
+    if (!data?.id) throw new Error('Invalid incident response: missing id');
+    return data;
+  },
+  async resolveIncident(id) {
+    return (await api.post(`/api/v1/incidents/${encodeURIComponent(id)}/resolve`)).data;
+  },
+  async getActiveIncident() {
+    try { return (await api.get('/api/v1/incidents/active')).data; }
+    catch { return null; }
+  },
+
+  // Intelligence endpoints
+  async detectAnomalies(limit = 60) {
+    const data = (await api.get(`/api/v1/anomalies/detect?limit=${limit}`)).data;
+    if (!data || !Array.isArray(data.anomalies)) throw new Error('Invalid anomaly data');
+    return data;
+  },
+  async getRemediationEffectiveness(id) {
+    return (await api.get(`/api/v1/remediation/${encodeURIComponent(id)}/effectiveness`)).data;
+  },
+  async getInsightExplanations() {
+    const data = (await api.get('/api/v1/insights/explain')).data;
+    if (!data || !Array.isArray(data.insights)) throw new Error('Invalid insights data');
+    return data;
+  },
 };
 
 // Additional helpers aligned with legacy endpoints
@@ -486,22 +552,24 @@ export const authApi = {
   login: async ({ email, password }) => {
     const res = (await authAxios.post('/auth/login', { email, password })).data;
     if (res?.token) setAuthTokenOnClient(res.token);
-    if (res?.refresh_token) setRefreshTokenOnClient(res.refresh_token);
     return res;
   },
   me: async () => (await authAxios.get('/auth/me')).data,
   logout: async () => {
-    try { await authAxios.post('/auth/logout', { refresh_token: refreshToken || '' }); } finally {
+    try { await authAxios.post('/auth/logout'); } finally {
       setAuthTokenOnClient(null);
-      setRefreshTokenOnClient(null);
+    }
+    return { ok: true };
+  },
+  logoutAll: async () => {
+    try { await authAxios.post('/auth/logout-all'); } finally {
+      setAuthTokenOnClient(null);
     }
     return { ok: true };
   },
   refresh: async () => {
-    const body = refreshToken ? { refresh_token: refreshToken } : {};
-    const res = (await authAxios.post('/auth/refresh', body)).data;
+    const res = (await authAxios.post('/auth/refresh')).data;
     if (res?.token) setAuthTokenOnClient(res.token);
-    if (res?.refresh_token) setRefreshTokenOnClient(res.refresh_token);
     return res;
   },
   // Password
@@ -600,7 +668,21 @@ export const actionsApi = {
 };
 
 // Integrations endpoints
+const _coreBase = process.env.REACT_APP_BACKEND_URL || '';
+const _coreApi  = (() => {
+  if (!_coreBase) return api;
+  const inst = axios.create({ baseURL: _coreBase, timeout: 30000, headers: { 'Content-Type': 'application/json' } });
+  inst.interceptors.request.use(async (config) => {
+    let token = authToken;
+    if (_auth0GetToken) { try { token = await _auth0GetToken(); } catch {} }
+    if (token) { config.headers = config.headers || {}; config.headers['Authorization'] = `Bearer ${token}`; }
+    return config;
+  });
+  return inst;
+})();
+
 export const agentApi = {
+  onboard:      async (label)                => (await _coreApi.post('/agents/onboard', {}, { headers: { 'X-Agent-Label': label } })).data,
   createToken:  async (label)                => (await api.post('/agents/token', { label })).data,
   list:         async ()                     => { try { return (await api.get('/agents')).data; } catch { return []; } },
   get:          async (id)                   => (await api.get(`/agents/${id}`)).data,

@@ -1387,7 +1387,10 @@ def build_agents_router() -> APIRouter:
     @router.post("/agents/onboard")
     async def create_onboard_token(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         """Generate a short-lived one-time onboarding token for a desktop agent."""
-        payload = await _require_access_token(request)
+        header = request.headers.get("authorization", "")
+        if not header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        payload = _decode_token(header.removeprefix("Bearer ").strip(), "access")
         org_id = payload.get("org_id")
         if not org_id:
             raise HTTPException(status_code=403, detail="No org in token")
