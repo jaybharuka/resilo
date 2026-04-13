@@ -51,6 +51,21 @@ def _build_agent(metrics: dict[str, Any]) -> AgentExecutor:
         return json.dumps({"action": "restart_service", "target": service_name})
 
     @tool
+    def scale_memory(target: str = "") -> str:
+        """Signal to free up memory (clear caches, reduce buffers). Use for high-memory alerts."""
+        return json.dumps({"action": "scale_memory", "target": target or "system"})
+
+    @tool
+    def disk_cleanup(target: str = "") -> str:
+        """Signal to clean up disk space (logs, tmp files). Use for high-disk alerts."""
+        return json.dumps({"action": "disk_cleanup", "target": target or "system"})
+
+    @tool
+    def notify_only(reason: str = "") -> str:
+        """Send a notification only — no remediation action. Use when unsure or impact is unclear."""
+        return json.dumps({"action": "notify_only", "target": reason or "operator"})
+
+    @tool
     def get_system_metrics() -> str:
         """Return the current system metrics from the alert context."""
         return json.dumps(metrics)
@@ -60,7 +75,7 @@ def _build_agent(metrics: dict[str, Any]) -> AgentExecutor:
         """Do nothing. Safe fallback when no action is needed or situation is unclear."""
         return json.dumps({"action": "noop", "target": ""})
 
-    tools = [restart_service, get_system_metrics, noop]
+    tools = [restart_service, scale_memory, disk_cleanup, notify_only, get_system_metrics, noop]
     prompt = ChatPromptTemplate.from_messages([
         ("system", _SYSTEM_PROMPT),
         ("human", "{input}"),
@@ -82,16 +97,33 @@ async def analyze_alert(
     metrics: dict[str, Any],
     success_rate: float | None = None,
     context: str = "",
+    failure_streak: int = 0,
+    action_rankings: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Run the LangChain agent against an alert. Never raises — returns noop on failure."""
     if not os.getenv("NVIDIA_API_KEY"):
         log.warning("[AGENT] NVIDIA_API_KEY not set — skipping LangChain analysis")
         return {"action": "noop", "target": "", "reason": "no api key", "confidence": 0.0, "safe": True}
 
-    history_note = ""
+    # Build history context lines
+    history_lines: list[str] = []
     if success_rate is not None:
-        ctx_label = f" in {context} scenarios" if context else " on this agent"
-        history_note = f"\nHistorical success rate for restart_service{ctx_label}: {success_rate * 100:.0f}%"
+        ctx_label = f" in [{context}] scenarios" if context else ""
+        history_lines.append(
+            f"Historical success rate for restart_service{ctx_label}: {success_rate * 100:.0f}%"
+        )
+    if failure_streak >= 2:
+        history_lines.append(
+            f"WARNING: restart_service has failed {failure_streak} times in a row — consider a different action."
+        )
+    if action_rankings:
+        ranked_str = " | ".join(
+            f"{r['action']}:{int(r['rate'] * 100)}%" if r["rate"] is not None else f"{r['action']}:no data"
+            for r in action_rankings
+        )
+        history_lines.append(f"Action success rankings [{context}]: {ranked_str}")
+
+    history_note = ("\n" + "\n".join(history_lines)) if history_lines else ""
 
     input_text = (
         f"Alert: {alert_data['category']} | Severity: {alert_data['severity']}\n"

@@ -711,10 +711,18 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
     metrics = {"cpu": cpu, "memory": memory, "disk": 0.0}
 
     alert_context = f"{alert.category}:{alert.severity}"
-    success_rate = _get_success_rate(alert.agent_id, "restart_service", alert_context)
-    decision = await _lc_agent(alert_data, metrics, success_rate, alert_context)
+    success_rate   = _get_success_rate(alert.agent_id, "restart_service", alert_context)
+    failure_streak = _get_failure_streak(alert.agent_id, "restart_service", alert_context)
+    action_rankings = _get_action_rankings(alert.agent_id, alert_context)
+    decision = await _lc_agent(alert_data, metrics, success_rate, alert_context,
+                                failure_streak, action_rankings)
     action  = decision["action"]
     target  = decision["target"]
+    # Confidence calibration: blend LLM score with historical success rate
+    if success_rate is not None:
+        decision["confidence"] = round(decision["confidence"] * 0.6 + success_rate * 0.4, 2)
+        logging.info("[AGENT] Calibrated confidence=%.2f (blended with success_rate=%.0f%%)",
+                     decision["confidence"], success_rate * 100)
 
     if exec_mode == "dry_run":
         disp_status = "dry_run"
@@ -767,6 +775,31 @@ def _get_success_rate(agent_id: str, action: str, context: str | None = None) ->
     if not records:
         return None
     return sum(1 for r in records if r["success"]) / len(records)
+
+
+def _get_failure_streak(agent_id: str, action: str, context: str = "") -> int:
+    """Count consecutive failures for (action, context) — newest first."""
+    records = [r for r in _ACTION_FEEDBACK.get(agent_id, [])
+               if r["action"] == action and r.get("context", "") == context]
+    streak = 0
+    for r in records:
+        if not r["success"]:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _get_action_rankings(agent_id: str, context: str = "") -> list[dict]:
+    """Return all actions ranked by context-aware success rate (highest first)."""
+    ranked = []
+    for act in _ALL_ACTIONS:
+        rate = _get_success_rate(agent_id, act, context)
+        if rate is None:
+            rate = _get_success_rate(agent_id, act)  # fallback to global
+        ranked.append({"action": act, "rate": rate})
+    ranked.sort(key=lambda x: (x["rate"] is None, -(x["rate"] or 0)))
+    return ranked
 
 
 async def _schedule_feedback_check(
@@ -1081,7 +1114,8 @@ _PENDING_APPROVALS: dict[str, list[dict]] = {}
 # Feedback loop: agent_id → last 20 action outcome records
 _ACTION_FEEDBACK: dict[str, list[dict]] = {}
 
-_SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "notify_only"})
+_SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "scale_memory", "disk_cleanup", "notify_only"})
+_ALL_ACTIONS: list[str] = ["restart_service", "scale_memory", "disk_cleanup", "notify_only", "noop"]
 
 
 def build_metrics_router() -> APIRouter:
