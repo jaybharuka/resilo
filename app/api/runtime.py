@@ -1394,12 +1394,35 @@ def build_agents_router() -> APIRouter:
         org_id = payload.get("org_id")
         if not org_id:
             raise HTTPException(status_code=403, detail="No org in token")
+
+        # Auto-provision org + user on first request to a fresh DB (e.g. Render)
+        org = await db.get(Organization, org_id)
+        if org is None:
+            org = Organization(id=org_id, name=payload.get("username", "default-org"))
+            db.add(org)
+            await db.flush()
+
+        user_id = payload.get("sub", str(uuid.uuid4()))
+        user = await db.get(User, user_id)
+        if user is None:
+            user = User(
+                id=user_id,
+                org_id=org_id,
+                email=payload.get("email", f"{user_id}@resilo.local"),
+                username=payload.get("username", user_id[:16]),
+                hashed_password="!",
+                role=payload.get("role", "admin"),
+                is_active=True,
+            )
+            db.add(user)
+            await db.flush()
+
         raw_token = f"resilo_{secrets.token_urlsafe(32)}"
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         record = OnboardingToken(
             token=raw_token,
             org_id=org_id,
-            created_by=payload["sub"],
+            created_by=user_id,
             label=request.headers.get("X-Agent-Label", "desktop-agent"),
             expires_at=expires_at,
         )
