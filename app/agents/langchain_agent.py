@@ -81,6 +81,7 @@ async def analyze_alert(
     alert_data: dict[str, Any],
     metrics: dict[str, Any],
     success_rate: float | None = None,
+    context: str = "",
 ) -> dict[str, Any]:
     """Run the LangChain agent against an alert. Never raises — returns noop on failure."""
     if not os.getenv("NVIDIA_API_KEY"):
@@ -89,7 +90,8 @@ async def analyze_alert(
 
     history_note = ""
     if success_rate is not None:
-        history_note = f"\nHistorical success rate for restart_service on this agent: {success_rate * 100:.0f}%"
+        ctx_label = f" in {context} scenarios" if context else " on this agent"
+        history_note = f"\nHistorical success rate for restart_service{ctx_label}: {success_rate * 100:.0f}%"
 
     input_text = (
         f"Alert: {alert_data['category']} | Severity: {alert_data['severity']}\n"

@@ -965,11 +965,14 @@ export function AgentDetail({ agentId, onBack }) {
             <RotateCcw size={14} color={C.teal} />
             <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>LEARNING FEEDBACK</span>
             <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: `${C.teal}18`, color: C.teal, border: `1px solid ${C.teal}40`, borderRadius: 10, padding: '1px 8px' }}>{agent.feedback.length} outcomes</span>
-            {agent.success_rates && Object.entries(agent.success_rates).map(([act, rate]) => (
-              <span key={act} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, ...MONO, fontSize: 10, color: rate >= 70 ? C.teal : rate >= 40 ? C.amber : C.red }}>
-                <Flame size={10} /> {act.replace('_', ' ')} success {rate}%
-              </span>
-            ))}
+            {agent.success_rates && Object.entries(agent.success_rates).map(([key, rate]) => {
+              const [act, ctx] = key.split('|');
+              return (
+                <span key={key} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, ...MONO, fontSize: 10, color: rate >= 70 ? C.teal : rate >= 40 ? C.amber : C.red }}>
+                  <Flame size={10} /> {act.replace(/_/g, ' ')}{ctx ? ` [${ctx}]` : ''} {rate}%
+                </span>
+              );
+            })}
           </div>
           <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {agent.feedback.map((fb, i) => {
@@ -980,10 +983,11 @@ export function AgentDetail({ agentId, onBack }) {
               return (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', borderRadius: 8, background: `${col}08`, border: `1px solid ${col}25` }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: col, flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ ...MONO, fontSize: 11, color: col }}>{ok ? '✓' : '✗'}</span>
-                    <span style={{ ...MONO, fontSize: 11, color: C.text2, marginLeft: 8 }}>{fb.action}</span>
-                    {fb.target && <span style={{ ...MONO, fontSize: 11, color: C.text3 }}> → {fb.target}</span>}
+                    <span style={{ ...MONO, fontSize: 11, color: C.text2 }}>{fb.action}</span>
+                    {fb.target && <span style={{ ...MONO, fontSize: 11, color: C.text3 }}>→ {fb.target}</span>}
+                    {fb.context && <span style={{ ...MONO, fontSize: 9, color: C.text4, background: `${C.border}`, border: `1px solid ${C.border}`, borderRadius: 4, padding: '1px 6px' }}>{fb.context}</span>}
                   </div>
                   <div style={{ display: 'flex', gap: 16, ...MONO, fontSize: 10, color: C.text4 }}>
                     <span>CPU {fb.cpu_before}% → {fb.cpu_after}% <span style={{ color: parseFloat(cpuDelta) < 0 ? C.teal : C.red }}>{cpuDelta > 0 ? '+' : ''}{cpuDelta}%</span></span>

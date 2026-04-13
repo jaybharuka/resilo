@@ -710,8 +710,9 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
     }
     metrics = {"cpu": cpu, "memory": memory, "disk": 0.0}
 
-    success_rate = _get_success_rate(alert.agent_id, "restart_service")
-    decision = await _lc_agent(alert_data, metrics, success_rate)
+    alert_context = f"{alert.category}:{alert.severity}"
+    success_rate = _get_success_rate(alert.agent_id, "restart_service", alert_context)
+    decision = await _lc_agent(alert_data, metrics, success_rate, alert_context)
     action  = decision["action"]
     target  = decision["target"]
 
@@ -734,7 +735,7 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
             logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
-            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory))
+            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context))
         else:
             disp_status = "needs_review"
             logging.info("[AGENT EXECUTION] mode=autonomous — unsafe action blocked: %s", action)
@@ -759,16 +760,18 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
         hist.pop()
 
 
-def _get_success_rate(agent_id: str, action: str) -> float | None:
-    """Return historical success rate for (agent, action) or None if no history."""
-    records = [r for r in _ACTION_FEEDBACK.get(agent_id, []) if r["action"] == action]
+def _get_success_rate(agent_id: str, action: str, context: str | None = None) -> float | None:
+    """Return historical success rate for (agent, action[, context]) or None if no history."""
+    all_records = [r for r in _ACTION_FEEDBACK.get(agent_id, []) if r["action"] == action]
+    records = [r for r in all_records if r.get("context") == context] if context else all_records
     if not records:
         return None
     return sum(1 for r in records if r["success"]) / len(records)
 
 
 async def _schedule_feedback_check(
-    agent_id: str, action: str, target: str, cpu_before: float, memory_before: float
+    agent_id: str, action: str, target: str, cpu_before: float, memory_before: float,
+    context: str = "",
 ) -> None:
     """Wait 30 s then measure whether the action actually improved metrics."""
     await asyncio.sleep(30)
@@ -790,6 +793,7 @@ async def _schedule_feedback_check(
                 "timestamp":     _now().isoformat(),
                 "action":        action,
                 "target":        target,
+                "context":       context,
                 "cpu_before":    round(cpu_before,    1),
                 "cpu_after":     round(cpu_after,     1),
                 "memory_before": round(memory_before, 1),
@@ -1440,7 +1444,11 @@ def build_agents_router() -> APIRouter:
             "pending_approvals": _PENDING_APPROVALS.get(agent_id, []),
             "feedback": _ACTION_FEEDBACK.get(agent_id, [])[:10],
             "success_rates": {
-                action: round(_get_success_rate(agent_id, action) * 100)
+                f"{r['action']}|{r['context']}": round((_get_success_rate(agent_id, r["action"], r["context"]) or 0) * 100)
+                for r in _ACTION_FEEDBACK.get(agent_id, [])
+            },
+            "success_rates_global": {
+                action: round((_get_success_rate(agent_id, action) or 0) * 100)
                 for action in {r["action"] for r in _ACTION_FEEDBACK.get(agent_id, [])}
             },
         }
