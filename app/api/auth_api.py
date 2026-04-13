@@ -6,14 +6,16 @@ from config.env_validator import validate_environment
 
 validate_environment()
 
-from app.api.runtime import build_auth_router, seed_admin_user
+from app.api.runtime import build_auth_router, build_oauth_router, seed_admin_user
 from app.core.database import init_db, wait_for_db
 
-router = build_auth_router()
+router       = build_auth_router()
+oauth_router = build_oauth_router()
 legacy_router = APIRouter()
 
 app = FastAPI(title="auth_api")
 app.include_router(router)
+app.include_router(oauth_router)
 app.include_router(legacy_router)
 
 

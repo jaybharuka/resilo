@@ -2,27 +2,33 @@
 
 import asyncio
 import base64
+import collections
 import hashlib
 import hmac
 import json
+import logging
 import os
+import re
 import secrets
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+import httpx
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import (Agent, AlertRecord, MetricSnapshot,
-                               Organization, RemediationJob, SessionLocal,
-                               User, UserSession, get_db)
+                               OnboardingToken, Organization, RemediationJob,
+                               SessionLocal, User, UserSession, get_db)
 from app.core.pricing import PricingService
 
 JWT_ALGORITHM = "HS256"
@@ -31,6 +37,113 @@ REFRESH_TTL_SECONDS = int(os.getenv("JWT_REFRESH_TTL", "2592000"))
 STREAM_TTL_SECONDS = int(os.getenv("JWT_STREAM_TTL", "60"))
 FAILED_ATTEMPT_LIMIT = 5
 LOCKOUT_MINUTES = 15
+_IS_PROD       = os.getenv("ENV", "dev").lower() == "production"
+_FRONTEND_URL  = os.getenv("FRONTEND_URL", "http://localhost:3000")
+_REFRESH_COOKIE = "rt"  # short name to reduce header size
+_LOGIN_RATE_WINDOW = int(os.getenv("LOGIN_RATE_WINDOW", "60"))   # seconds
+_LOGIN_RATE_LIMIT  = int(os.getenv("LOGIN_RATE_LIMIT",  "10"))   # max attempts per window per IP
+_ALLOWED_ORIGINS   = {o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",") if o.strip()}
+
+# IP-based sliding-window counter — Redis when available, in-memory fallback
+_ip_attempts: dict[str, collections.deque] = {}
+_ip_lock = threading.Lock()
+
+# Optional Redis client — initialised once at import time if REDIS_URL is set
+_redis: Any = None
+try:
+    _redis_url = os.getenv("REDIS_URL", "")
+    if _redis_url:
+        import redis as _redis_lib  # type: ignore
+        _redis = _redis_lib.Redis.from_url(_redis_url, decode_responses=True, socket_connect_timeout=2)
+        _redis.ping()  # fail fast if unreachable
+        logging.getLogger(__name__).info("Redis rate limiter active: %s", _redis_url)
+except Exception as _e:
+    _redis = None
+    logging.getLogger(__name__).warning("Redis unavailable (%s) — falling back to in-memory rate limiter", _e)
+
+_auth_logger = logging.getLogger("auth.events")
+
+
+def _check_ip_rate(ip: str) -> None:
+    """Raise 429 if this IP has exceeded the login rate limit.
+    Uses Redis sliding-window (ZADD/ZREMRANGEBYSCORE) when REDIS_URL is configured;
+    falls back to an in-process deque when Redis is unavailable.
+    """
+    if not ip:
+        return
+    if _redis is not None:
+        try:
+            key  = f"rl:login:{ip}"
+            now  = time.time()
+            pipe = _redis.pipeline()
+            pipe.zremrangebyscore(key, 0, now - _LOGIN_RATE_WINDOW)
+            pipe.zadd(key, {str(now): now})
+            pipe.zcard(key)
+            pipe.expire(key, _LOGIN_RATE_WINDOW)
+            results = pipe.execute()
+            count = results[2]
+            if count > _LOGIN_RATE_LIMIT:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many login attempts. Please wait before trying again.",
+                    headers={"Retry-After": str(_LOGIN_RATE_WINDOW)},
+                )
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Redis error → fall through to in-memory
+    # In-memory fallback
+    now = time.monotonic()
+    with _ip_lock:
+        q = _ip_attempts.setdefault(ip, collections.deque())
+        cutoff = now - _LOGIN_RATE_WINDOW
+        while q and q[0] < cutoff:
+            q.popleft()
+        if len(q) >= _LOGIN_RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Please wait before trying again.",
+                headers={"Retry-After": str(_LOGIN_RATE_WINDOW)},
+            )
+        q.append(now)
+
+
+def _check_csrf(request: Request) -> None:
+    """Reject requests from unexpected origins (protects cookie endpoints from CSRF).
+    Only enforced in production; in dev, all localhost origins are allowed.
+    """
+    if not _IS_PROD:
+        return
+    origin = request.headers.get("origin") or request.headers.get("referer", "")
+    if not any(origin.startswith(allowed) for allowed in _ALLOWED_ORIGINS):
+        raise HTTPException(status_code=403, detail="CSRF check failed")
+
+
+def _log_auth_event(event: str, *, email: str = "", user_id: str = "", ip: str = "", detail: str = "") -> None:
+    _auth_logger.info(json.dumps({
+        "event": event, "email": email, "user_id": user_id,
+        "ip": ip, "detail": detail, "ts": _now().isoformat(),
+    }))
+
+
+def require_role(*roles: str):
+    """FastAPI dependency that enforces role from the access token.
+
+    Usage:  @router.post("/admin/thing", dependencies=[require_role("admin")])
+    Or as a param:  payload = Depends(require_role("admin", "devops"))
+    """
+    async def _check(request: Request) -> dict[str, Any]:
+        payload = await _require_access_token(request)
+        if payload.get("role") not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires role: {', '.join(roles)}",
+            )
+        return payload
+    return Depends(_check)
+
+
 PASSWORD_ITERATIONS = 260000
 DEFAULT_ADMIN_EMAIL = "admin@company.local"
 DEFAULT_ADMIN_USERNAME = "admin"
@@ -79,6 +192,14 @@ class RealtimeHub:
                 queue.put_nowait(event)
             except Exception:
                 continue
+
+
+class RegisterRequest(BaseModel):
+    org_name:  str
+    full_name: str
+    email:     str
+    username:  str
+    password:  str
 
 
 class LoginRequest(BaseModel):
@@ -132,6 +253,23 @@ class AgentUpdateRequest(BaseModel):
     label: str | None = None
     status: str | None = None
     is_active: bool | None = None
+
+
+class AgentRegisterRequest(BaseModel):
+    token: str
+    label: str | None = None
+
+
+class GoMetricPayload(BaseModel):
+    token: str
+    cpu: float
+    memory: float
+    disk: float = 0.0
+    net_sent: int = 0
+    net_recv: int = 0
+    uptime: int = 0
+    processes: int | None = None
+    timestamp: datetime | None = None
 
 
 class OrgSettingsUpdate(BaseModel):
@@ -400,6 +538,163 @@ async def _require_org_access(request: Request, org_id: str) -> dict[str, Any]:
     return payload
 
 
+_ALERT_RULES = [
+    {"category": "cpu",    "severity": "critical", "threshold": 85.0, "recover": 70.0, "field": "cpu",
+     "title": "High CPU usage",    "detail": "CPU usage exceeded {value:.1f}% (threshold {threshold:.0f}%)"},
+    {"category": "memory", "severity": "high",     "threshold": 90.0, "recover": 75.0, "field": "memory",
+     "title": "High memory usage", "detail": "Memory usage exceeded {value:.1f}% (threshold {threshold:.0f}%)"},
+]
+
+
+async def _check_anomalies(db: AsyncSession, org_id: str, agent_id: str, cpu: float, memory: float) -> list[AlertRecord]:
+    values = {"cpu": cpu, "memory": memory}
+    created: list[AlertRecord] = []
+    for rule in _ALERT_RULES:
+        value = values.get(rule["field"], 0.0)
+
+        if value >= rule["threshold"]:
+            existing = await db.execute(
+                select(AlertRecord).where(
+                    AlertRecord.agent_id == agent_id,
+                    AlertRecord.category == rule["category"],
+                    AlertRecord.status == "open",
+                )
+            )
+            if existing.scalar_one_or_none() is None:
+                alert = AlertRecord(
+                    org_id=org_id,
+                    agent_id=agent_id,
+                    severity=rule["severity"],
+                    category=rule["category"],
+                    title=rule["title"],
+                    detail=rule["detail"].format(value=value, threshold=rule["threshold"]),
+                    metric_value=value,
+                    threshold=rule["threshold"],
+                    status="open",
+                )
+                db.add(alert)
+                created.append(alert)
+                asyncio.create_task(_ai_analyze(alert, cpu, memory))
+
+        elif value <= rule["recover"]:
+            open_alerts = await db.execute(
+                select(AlertRecord).where(
+                    AlertRecord.agent_id == agent_id,
+                    AlertRecord.category == rule["category"],
+                    AlertRecord.status == "open",
+                )
+            )
+            for alert in open_alerts.scalars().all():
+                alert.status = "resolved"
+                alert.resolved_at = _now()
+                logging.info("[auto-resolve] %s alert resolved for agent %s", rule["category"], agent_id)
+
+    return created
+
+
+_AI_SYSTEM_PROMPT = """You are an expert SRE analyzing a system alert.
+Respond ONLY with a valid JSON object — no markdown, no prose.
+Schema:
+{
+  "root_cause": "<concise technical root cause>",
+  "confidence": <0.0-1.0>,
+  "impact": "low|medium|high|critical",
+  "summary": "<1-2 sentence human-readable summary>",
+  "recommended_action": "<single best action to take>",
+  "safe_to_auto_fix": <true|false>
+}"""
+
+
+async def _ai_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
+    """Call NVIDIA NIM to analyze a new alert. Runs as a background task — never raises."""
+    api_key = os.getenv("NVIDIA_API_KEY", "")
+    exec_mode = _AGENT_EXEC_MODE.get(alert.agent_id, "dry_run")
+
+    payload = {
+        "alert_name": alert.category,
+        "severity": alert.severity,
+        "title": alert.title,
+        "detail": alert.detail,
+        "metrics": {"cpu": cpu, "memory": memory},
+    }
+    logging.info("[EXEC MODE] agent=%s mode=%s", alert.agent_id, exec_mode)
+
+    if not api_key:
+        logging.warning("[AI] NVIDIA_API_KEY not set — skipping LLM analysis")
+        return
+
+    try:
+        nim_payload = {
+            "model": os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct"),
+            "messages": [
+                {"role": "system", "content": _AI_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Alert data:\n{json.dumps(payload, indent=2)}"},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=45) as client:
+            r = await client.post(
+                f"{os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=nim_payload,
+            )
+            r.raise_for_status()
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+        start = raw.find("{"); end = raw.rfind("}") + 1
+        plan = json.loads(raw[start:end]) if start != -1 else {}
+        logging.info("[AI PLAN] %s", json.dumps(plan))
+
+        action = plan.get("recommended_action", "")
+        target = plan.get("target", alert.category)
+
+        if exec_mode == "dry_run":
+            disp_status = "dry_run"
+            logging.info("[AI RESULT] DRY RUN — no action executed. Recommended: %s", action)
+        elif exec_mode == "manual_approval":
+            approval = {
+                "id": str(uuid.uuid4()),
+                "action": action,
+                "target": target,
+                "alert_category": alert.category,
+                "created_at": _now().isoformat(),
+            }
+            _PENDING_APPROVALS.setdefault(alert.agent_id, []).append(approval)
+            disp_status = "needs_approval"
+            logging.info("[APPROVAL] Waiting for approval: %s → %s", action, target)
+        elif exec_mode == "auto_safe":
+            if action in _SAFE_ACTIONS:
+                _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
+                disp_status = "queued"
+                logging.info("[EXECUTED] Auto-queued safe action: %s → %s", action, target)
+            else:
+                disp_status = "needs_review"
+                logging.info("[BLOCKED] Unsafe action blocked in auto_safe mode: %s", action)
+        else:
+            disp_status = "dry_run"
+
+        decision = {
+            "timestamp": _now().isoformat(),
+            "alert_category": alert.category,
+            "severity": alert.severity,
+            "root_cause": plan.get("root_cause", ""),
+            "confidence": plan.get("confidence", 0.0),
+            "impact": plan.get("impact", ""),
+            "summary": plan.get("summary", ""),
+            "recommended_action": action,
+            "safe_to_auto_fix": plan.get("safe_to_auto_fix", False),
+            "status": disp_status,
+        }
+        hist = _AI_HISTORY.setdefault(alert.agent_id, [])
+        hist.insert(0, decision)
+        if len(hist) > 10:
+            hist.pop()
+
+    except Exception as exc:
+        logging.warning("[AI] Analysis failed for alert %s: %s", alert.category, exc)
+
+
 async def _require_agent(request: Request, raw_key: str, db: AsyncSession, org_id: str) -> Agent:
     key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
     result = await db.execute(select(Agent).where(Agent.key_hash == key_hash))
@@ -455,15 +750,53 @@ async def seed_admin_user() -> None:
 def build_auth_router() -> APIRouter:
     router = APIRouter()
 
+    @router.post("/auth/register", status_code=201)
+    async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        email    = body.email.strip().lower()
+        username = body.username.strip().lower()
+        org_name = body.org_name.strip()
+
+        dup_email = await db.execute(select(User).where(User.email == email))
+        if dup_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+        # Build a unique slug from org name
+        base_slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") or "org"
+        slug = f"{base_slug}-{str(uuid.uuid4())[:6]}"
+
+        org = Organization(name=org_name, slug=slug, plan="free", is_active=True, settings={})
+        db.add(org)
+        await db.flush()   # get org.id before user insert
+
+        user = User(
+            org_id=org.id,
+            email=email,
+            username=username,
+            hashed_password=_hash_password(body.password),
+            role="admin",
+            is_active=True,
+            must_change_password=False,
+            full_name=body.full_name.strip() or None,
+        )
+        db.add(user)
+        await db.commit()
+        _log_auth_event("register", email=email, user_id=user.id, detail=f"org={org.id}")
+        return {"ok": True, "message": "Account created. You can now sign in."}
+
     @router.post("/auth/login")
-    async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    async def login(request: Request, response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        ip = (request.client.host if request.client else "") or ""
+        ua = request.headers.get("user-agent", "")[:512]
+        _check_ip_rate(ip)
         user = await _get_user_by_email(db, body.email)
         if user is None:
+            _log_auth_event("login_failed", email=body.email, ip=ip, detail="user_not_found")
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         now = _now()
         locked_until = _as_utc(user.locked_until)
         if locked_until and locked_until > now:
+            _log_auth_event("login_failed", email=body.email, ip=ip, detail="account_locked")
             raise HTTPException(status_code=403, detail="Account is locked")
 
         if not _verify_password(body.password, user.hashed_password):
@@ -472,8 +805,10 @@ def build_auth_router() -> APIRouter:
                 user.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
                 user.failed_attempts = FAILED_ATTEMPT_LIMIT
                 await db.commit()
+                _log_auth_event("account_locked", email=body.email, ip=ip, detail="too_many_failures")
                 raise HTTPException(status_code=403, detail="Account is locked")
             await db.commit()
+            _log_auth_event("login_failed", email=body.email, ip=ip, detail=f"bad_password attempt={user.failed_attempts}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         user.failed_attempts = 0
@@ -481,18 +816,31 @@ def build_auth_router() -> APIRouter:
         user.last_login = now
         access_token = _create_access_token(user)
         refresh_token = _create_refresh_token(user)
+        family_id = str(uuid.uuid4())
         session = UserSession(
             user_id=user.id,
             refresh_token_hash=_hash_refresh_token(refresh_token),
+            family_id=family_id,
             expires_at=now + timedelta(seconds=REFRESH_TTL_SECONDS),
             is_revoked=False,
+            ip_address=ip,
+            user_agent=ua,
         )
         db.add(session)
         await db.commit()
+        await db.refresh(user)
+        _log_auth_event("login_success", email=user.email, user_id=user.id, ip=ip)
+        response.set_cookie(
+            _REFRESH_COOKIE, refresh_token,
+            httponly=True, samesite="lax",
+            max_age=REFRESH_TTL_SECONDS,
+            secure=_IS_PROD,
+            path="/auth",
+        )
         return {
             "token": access_token,
-            "refresh_token": refresh_token,
             "token_type": "bearer",
+            "user": _serialize_user(user),
         }
 
     @router.get("/auth/me")
@@ -504,11 +852,28 @@ def build_auth_router() -> APIRouter:
         return _serialize_user(user)
 
     @router.post("/auth/refresh")
-    async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        payload = _decode_token(body.refresh_token, "refresh")
-        session = await _get_session_by_refresh_token(db, body.refresh_token)
+    async def refresh(request: Request, response: Response, body: RefreshRequest | None = None, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        _check_csrf(request)
+        raw_token = request.cookies.get(_REFRESH_COOKIE) or (body.refresh_token if body else None)
+        if not raw_token:
+            raise HTTPException(status_code=401, detail="Refresh token missing")
+        ip = (request.client.host if request.client else "") or ""
+        payload = _decode_token(raw_token, "refresh")
+        session = await _get_session_by_refresh_token(db, raw_token)
         expires_at = _as_utc(session.expires_at) if session is not None else None
-        if session is None or session.is_revoked or (expires_at is not None and expires_at < _now()):
+        if session is not None and session.is_revoked:
+            # Token reuse detected — invalidate the entire token family
+            await db.execute(
+                update(UserSession)
+                .where(UserSession.family_id == session.family_id)
+                .values(is_revoked=True)
+            )
+            await db.commit()
+            _log_auth_event("token_theft_detected", user_id=payload.get("sub", ""), ip=ip,
+                            detail=f"family={session.family_id}")
+            raise HTTPException(status_code=401, detail="Session invalidated due to token reuse")
+        if session is None or (expires_at is not None and expires_at < _now()):
+            _log_auth_event("refresh_rejected", user_id=payload.get("sub", ""), ip=ip, detail="revoked_or_expired")
             raise HTTPException(status_code=401, detail="Refresh token is invalid")
 
         user = await _get_user_by_id(db, payload["sub"])
@@ -520,30 +885,82 @@ def build_auth_router() -> APIRouter:
         new_session = UserSession(
             user_id=user.id,
             refresh_token_hash=_hash_refresh_token(new_refresh),
+            family_id=session.family_id,  # inherit family — chain stays trackable
             expires_at=_now() + timedelta(seconds=REFRESH_TTL_SECONDS),
             is_revoked=False,
+            ip_address=ip,
+            user_agent=request.headers.get("user-agent", "")[:512],
         )
         db.add(new_session)
         await db.commit()
+        _log_auth_event("token_refreshed", user_id=user.id, ip=ip)
+        response.set_cookie(
+            _REFRESH_COOKIE, new_refresh,
+            httponly=True, samesite="lax",
+            max_age=REFRESH_TTL_SECONDS,
+            secure=_IS_PROD,
+            path="/auth",
+        )
         return {
             "token": _create_access_token(user),
-            "refresh_token": new_refresh,
             "token_type": "bearer",
         }
 
     @router.post("/auth/logout")
-    async def logout(body: LogoutRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-        session = await _get_session_by_refresh_token(db, body.refresh_token)
-        if session is not None:
-            session.is_revoked = True
-            await db.commit()
+    async def logout(request: Request, response: Response, body: LogoutRequest | None = None, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        _check_csrf(request)
+        ip = (request.client.host if request.client else "") or ""
+        raw_token = request.cookies.get(_REFRESH_COOKIE) or (body.refresh_token if body else None)
+        user_id = ""
+        if raw_token:
+            try:
+                p = _decode_token(raw_token, "refresh")
+                user_id = p.get("sub", "")
+            except HTTPException:
+                pass
+            session = await _get_session_by_refresh_token(db, raw_token)
+            if session is not None:
+                session.is_revoked = True
+                await db.commit()
+        response.delete_cookie(_REFRESH_COOKIE, path="/auth")
+        _log_auth_event("logout", user_id=user_id, ip=ip)
         return {"ok": True}
+
+    @router.post("/auth/logout-all")
+    async def logout_all(request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        _check_csrf(request)
+        payload = await _require_access_token(request)
+        ip = (request.client.host if request.client else "") or ""
+        result = await db.execute(
+            update(UserSession)
+            .where(UserSession.user_id == payload["sub"], UserSession.is_revoked.is_(False))
+            .values(is_revoked=True)
+        )
+        await db.commit()
+        response.delete_cookie(_REFRESH_COOKIE, path="/auth")
+        _log_auth_event("logout_all", user_id=payload["sub"], ip=ip, detail=f"sessions={result.rowcount}")
+        return {"ok": True, "sessions_revoked": result.rowcount}
 
     @router.get("/auth/health")
     async def auth_health() -> dict[str, str]:
         return {"status": "ok", "service": "auth"}
 
     return router
+
+
+# In-memory command queue: agent_id → [{"action": ..., "target": ...}, ...]
+_PENDING_COMMANDS: dict[str, list[dict]] = {}
+
+# In-memory AI decision history: agent_id → last 10 decisions
+_AI_HISTORY: dict[str, list[dict]] = {}
+
+# Per-agent execution mode: "dry_run" | "manual_approval" | "auto_safe"
+_AGENT_EXEC_MODE: dict[str, str] = {}
+
+# Pending approvals: agent_id → [{id, action, target, ai_decision, created_at}]
+_PENDING_APPROVALS: dict[str, list[dict]] = {}
+
+_SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "notify_only"})
 
 
 def build_metrics_router() -> APIRouter:
@@ -561,7 +978,7 @@ def build_metrics_router() -> APIRouter:
             raise HTTPException(status_code=401, detail="Missing agent key")
         agent = await _require_agent(request, agent_key, db, body.org_id)
         agent.last_seen = _now()
-        agent.status = "online"
+        agent.status = "live"
 
         snapshot = MetricSnapshot(
             org_id=body.org_id,
@@ -581,8 +998,40 @@ def build_metrics_router() -> APIRouter:
         db.add(snapshot)
         await db.commit()
         await db.refresh(snapshot)
+        await _check_anomalies(db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory)
+        await db.commit()
         _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), body.org_id)
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(), "snapshot": _serialize_metric(snapshot)}
+
+    @router.post("/agent/metrics")
+    async def go_agent_metrics(body: GoMetricPayload, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        key_hash = hashlib.sha256(body.token.encode("utf-8")).hexdigest()
+        result = await db.execute(select(Agent).where(Agent.key_hash == key_hash, Agent.is_active.is_(True)))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+        agent.last_seen = _now()
+        agent.status = "live"
+        ts = body.timestamp or _now()
+        snapshot = MetricSnapshot(
+            org_id=agent.org_id,
+            agent_id=agent.id,
+            timestamp=ts,
+            cpu=body.cpu,
+            memory=body.memory,
+            disk=body.disk,
+            network_in=body.net_recv,
+            network_out=body.net_sent,
+            uptime_secs=body.uptime or None,
+            processes=body.processes,
+        )
+        db.add(snapshot)
+        await db.commit()
+        await db.refresh(snapshot)
+        await _check_anomalies(db, agent.org_id, agent.id, body.cpu, body.memory)
+        await db.commit()
+        _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), agent.org_id)
+        return {"ok": True, "agent_id": agent.id, "received_at": snapshot.timestamp.isoformat()}
 
     @router.get("/api/orgs/{org_id}/metrics/summary")
     async def metrics_summary(org_id: str, request: Request, bucket: str = "1 hour", window: str = "24 hours", limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
@@ -711,6 +1160,67 @@ def build_alerts_router() -> APIRouter:
         _get_realtime_hub(request).publish("alert_update", _serialize_alert(alert), org_id)
         return _serialize_alert(alert)
 
+    @router.post("/agent/command")
+    async def queue_agent_command(body: dict[str, Any], db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Backend or AI queues a command for a specific agent (identified by token)."""
+        token = body.get("token", "")
+        action = body.get("action", "")
+        target = body.get("target", "")
+        _ALLOWED_ACTIONS = {"restart_service", "run_script", "notify_only"}
+        if not token:
+            raise HTTPException(status_code=400, detail="token required")
+        if action not in _ALLOWED_ACTIONS:
+            raise HTTPException(status_code=400, detail=f"action '{action}' not in allowlist")
+        key_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        result = await db.execute(select(Agent).where(Agent.key_hash == key_hash, Agent.is_active.is_(True)))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+        _PENDING_COMMANDS.setdefault(agent.id, []).append({"action": action, "target": target})
+        logging.info("[CMD] Queued %s → %s for agent %s", action, target, agent.id)
+        return {"ok": True, "agent_id": agent.id, "queued": {"action": action, "target": target}}
+
+    @router.get("/agent/command")
+    async def poll_agent_commands(token: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Agent polls for pending commands. Commands are cleared after this call."""
+        if not token:
+            raise HTTPException(status_code=400, detail="token required")
+        key_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        result = await db.execute(select(Agent).where(Agent.key_hash == key_hash, Agent.is_active.is_(True)))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+        commands = _PENDING_COMMANDS.pop(agent.id, [])
+        return {"commands": commands}
+
+    @router.post("/agent/approve")
+    async def approve_action(body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Human approves a pending AI action — dispatches it to the agent's command queue."""
+        await _require_access_token(request)
+        agent_id = body.get("agent_id", "")
+        approval_id = body.get("approval_id", "")
+        pending = _PENDING_APPROVALS.get(agent_id, [])
+        approval = next((a for a in pending if a["id"] == approval_id), None)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="Approval not found")
+        _PENDING_APPROVALS[agent_id] = [a for a in pending if a["id"] != approval_id]
+        if approval["action"] not in {"restart_service", "run_script", "notify_only"}:
+            raise HTTPException(status_code=400, detail="Action not in allowlist")
+        _PENDING_COMMANDS.setdefault(agent_id, []).append({"action": approval["action"], "target": approval["target"]})
+        logging.info("[APPROVAL] Approved and queued: %s → %s for agent %s", approval["action"], approval["target"], agent_id)
+        return {"ok": True, "queued": approval}
+
+    @router.patch("/api/orgs/{org_id}/agents/{agent_id}/execution-mode")
+    async def set_execution_mode(org_id: str, agent_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Set per-agent execution mode: dry_run | manual_approval | auto_safe."""
+        await _require_org_access(request, org_id)
+        mode = body.get("mode", "dry_run")
+        if mode not in ("dry_run", "manual_approval", "auto_safe"):
+            raise HTTPException(status_code=400, detail="mode must be dry_run | manual_approval | auto_safe")
+        _AGENT_EXEC_MODE[agent_id] = mode
+        logging.info("[EXEC MODE] agent=%s → mode=%s", agent_id, mode)
+        return {"ok": True, "agent_id": agent_id, "mode": mode}
+
     return router
 
 
@@ -769,6 +1279,62 @@ def build_agents_router() -> APIRouter:
         await db.refresh(agent)
         return {**_serialize_agent(agent), "raw_key": raw_key}
 
+    @router.get("/api/orgs/{org_id}/agents/{agent_id}")
+    async def get_agent(org_id: str, agent_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        await _require_org_access(request, org_id)
+        result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.org_id == org_id))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        history_result = await db.execute(
+            select(MetricSnapshot)
+            .where(MetricSnapshot.agent_id == agent_id)
+            .order_by(desc(MetricSnapshot.timestamp))
+            .limit(30)
+        )
+        snapshots = list(reversed(history_result.scalars().all()))
+        latest = snapshots[-1] if snapshots else None
+        alerts_result = await db.execute(
+            select(AlertRecord)
+            .where(AlertRecord.agent_id == agent_id, AlertRecord.status == "open")
+            .order_by(desc(AlertRecord.created_at))
+            .limit(20)
+        )
+        alerts = alerts_result.scalars().all()
+        return {
+            **_serialize_agent(agent),
+            "metrics": _serialize_metric(latest) if latest else {},
+            "info": (latest.extra or {}) if latest else {},
+            "history": [
+                {"timestamp": s.timestamp.isoformat(), "cpu": s.cpu, "memory": s.memory}
+                for s in snapshots
+            ],
+            "alerts": [
+                {
+                    "id": a.id, "severity": a.severity, "category": a.category,
+                    "title": a.title, "detail": a.detail,
+                    "metric_value": a.metric_value, "threshold": a.threshold,
+                    "status": a.status, "created_at": a.created_at.isoformat(),
+                }
+                for a in alerts
+            ],
+            "ai_history": _AI_HISTORY.get(agent_id, []),
+            "execution_mode": _AGENT_EXEC_MODE.get(agent_id, "dry_run"),
+            "pending_approvals": _PENDING_APPROVALS.get(agent_id, []),
+        }
+
+    @router.patch("/api/orgs/{org_id}/agents/{agent_id}/alerts/{alert_id}/resolve")
+    async def resolve_agent_alert(org_id: str, agent_id: str, alert_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        await _require_org_access(request, org_id)
+        result = await db.execute(select(AlertRecord).where(AlertRecord.id == alert_id, AlertRecord.agent_id == agent_id))
+        alert = result.scalar_one_or_none()
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        alert.status = "resolved"
+        alert.resolved_at = _now()
+        await db.commit()
+        return {"ok": True}
+
     @router.patch("/api/orgs/{org_id}/agents/{agent_id}")
     async def update_agent(org_id: str, agent_id: str, body: AgentUpdateRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         await _require_org_access(request, org_id)
@@ -816,6 +1382,63 @@ def build_agents_router() -> APIRouter:
         agent.pending_cmds = pending
         await db.commit()
         return command
+
+
+    @router.post("/agents/onboard")
+    async def create_onboard_token(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Generate a short-lived one-time onboarding token for a desktop agent."""
+        payload = await _require_access_token(request)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="No org in token")
+        raw_token = f"resilo_{secrets.token_urlsafe(32)}"
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        record = OnboardingToken(
+            token=raw_token,
+            org_id=org_id,
+            created_by=payload["sub"],
+            label=request.headers.get("X-Agent-Label", "desktop-agent"),
+            expires_at=expires_at,
+        )
+        db.add(record)
+        await db.commit()
+        return {"token": raw_token, "expires_in": 300, "org_id": org_id}
+
+    @router.post("/agents/register")
+    async def register_via_onboard_token(body: AgentRegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Exchange a one-time onboarding token for a persistent agent_key. No auth required."""
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(OnboardingToken).where(
+                OnboardingToken.token == body.token,
+                OnboardingToken.used.is_(False),
+                OnboardingToken.expires_at > now,
+            )
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired onboarding token")
+
+        record.used = True
+        device_id = str(uuid.uuid4())
+        label = (body.label or record.label or f"desktop-{device_id[:8]}")
+        raw_key = secrets.token_urlsafe(32)
+        agent = Agent(
+            org_id=record.org_id,
+            label=label,
+            key_hash=hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
+            status="pending",
+            is_active=True,
+        )
+        db.add(agent)
+        await db.commit()
+        await db.refresh(agent)
+        return {
+            "device_id": device_id,
+            "org_id": record.org_id,
+            "agent_id": agent.id,
+            "agent_key": raw_key,
+        }
 
     return router
 
@@ -916,8 +1539,137 @@ def build_stream_router() -> APIRouter:
     return router
 
 
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+
+def _oauth_state() -> str:
+    ts  = str(int(time.time()))
+    sig = hmac.new(_jwt_secret().encode(), ts.encode(), hashlib.sha256).hexdigest()[:16]
+    return f"{ts}.{sig}"
 
 
+def _verify_oauth_state(state: str) -> bool:
+    try:
+        ts, sig = state.split(".", 1)
+        expected = hmac.new(_jwt_secret().encode(), ts.encode(), hashlib.sha256).hexdigest()[:16]
+        return hmac.compare_digest(sig, expected) and abs(time.time() - int(ts)) < 600
+    except Exception:
+        return False
+
+
+def build_oauth_router() -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/auth/google")
+    async def google_start() -> RedirectResponse:
+        client_id    = os.getenv("GOOGLE_CLIENT_ID", "")
+        redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5001/auth/google/callback")
+        if not client_id:
+            return RedirectResponse(url=f"{_FRONTEND_URL}/login?error=oauth_not_configured")
+        params = {
+            "client_id":     client_id,
+            "redirect_uri":  redirect_uri,
+            "response_type": "code",
+            "scope":         "openid email profile",
+            "state":         _oauth_state(),
+            "access_type":   "offline",
+            "prompt":        "select_account",
+        }
+        return RedirectResponse(url="https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+    @router.get("/auth/google/callback")
+    async def google_callback(
+        code:  str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+        db:    AsyncSession = Depends(get_db),
+    ) -> RedirectResponse:
+        fail = RedirectResponse(url=f"{_FRONTEND_URL}/login?error=oauth_failed")
+
+        if error or not code or not state or not _verify_oauth_state(state):
+            return fail
+
+        client_id     = os.getenv("GOOGLE_CLIENT_ID", "")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+        redirect_uri  = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5001/auth/google/callback")
+
+        if not client_id or not client_secret:
+            return fail
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as hc:
+                tok = await hc.post("https://oauth2.googleapis.com/token", data={
+                    "code":          code,
+                    "client_id":     client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri":  redirect_uri,
+                    "grant_type":    "authorization_code",
+                })
+                if tok.status_code != 200:
+                    return fail
+                access = tok.json().get("access_token", "")
+                if not access:
+                    return fail
+
+                info_r = await hc.get(
+                    "https://openidconnect.googleapis.com/v1/userinfo",
+                    headers={"Authorization": f"Bearer {access}"},
+                )
+                if info_r.status_code != 200:
+                    return fail
+                ginfo = info_r.json()
+        except Exception:
+            return fail
+
+        email = (ginfo.get("email") or "").strip().lower()
+        if not email:
+            return fail
+
+        result = await db.execute(select(User).where(User.email == email))
+        user   = result.scalar_one_or_none()
+
+        if user is None:
+            name      = ginfo.get("name") or email.split("@")[0]
+            org_name  = f"{name}'s Workspace"
+            base_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "org"
+            slug      = f"{base_slug}-{str(uuid.uuid4())[:6]}"
+            org = Organization(name=org_name, slug=slug, plan="free", is_active=True, settings={})
+            db.add(org)
+            await db.flush()
+            username = re.sub(r"[^a-z0-9_]", "_", email.split("@")[0].lower())
+            user = User(
+                org_id=org.id, email=email, username=username,
+                hashed_password="__oauth__",
+                role="admin", is_active=True, must_change_password=False,
+                full_name=name,
+            )
+            db.add(user)
+            await db.flush()
+
+        now           = _now()
+        user.last_login = now
+        access_token  = _create_access_token(user)
+        refresh_token = _create_refresh_token(user)
+        session = UserSession(
+            user_id=user.id,
+            refresh_token_hash=_hash_refresh_token(refresh_token),
+            family_id=str(uuid.uuid4()),
+            expires_at=now + timedelta(seconds=REFRESH_TTL_SECONDS),
+            is_revoked=False,
+        )
+        db.add(session)
+        await db.commit()
+        _log_auth_event("oauth_login_google", email=email, user_id=user.id)
+
+        resp = RedirectResponse(url=f"{_FRONTEND_URL}/auth/callback?token={access_token}", status_code=302)
+        resp.set_cookie(
+            _REFRESH_COOKIE, refresh_token,
+            httponly=True, samesite="lax",
+            max_age=REFRESH_TTL_SECONDS,
+            secure=_IS_PROD, path="/auth",
+        )
+        return resp
+
+    return router
 
 
 
