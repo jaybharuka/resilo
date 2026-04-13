@@ -3,7 +3,7 @@ flask==3.0.3
 flask-cors==4.0.0
 Flask-Limiter==3.5.0
 flask-socketio==5.3.6           # WebSocket/Socket.IO server for real-time metric push
-psutil==5.9.8
+psutil==6.0.0
 requests==2.32.3
 PyYAML==6.0.1
 
@@ -59,7 +59,7 @@ protobuf==4.25.8
 # huggingface-hub==0.23.4
 
 # â”€â”€ Optional Redis (response caching) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# redis==5.0.8
+redis==5.0.8
 
 # â”€â”€ WMI Agentless Polling (Windows remote metrics via WinRM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 pywinrm==0.4.3                 # WinRM client for Python (server polls Windows machines)
