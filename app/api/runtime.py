@@ -1398,7 +1398,8 @@ def build_agents_router() -> APIRouter:
         # Auto-provision org + user on first request to a fresh DB (e.g. Render)
         org = await db.get(Organization, org_id)
         if org is None:
-            org = Organization(id=org_id, name=payload.get("username", "default-org"))
+            _slug = re.sub(r"[^a-z0-9]+", "-", payload.get("username", "default").lower())[:50] or "default"
+            org = Organization(id=org_id, name=_slug, slug=_slug)
             db.add(org)
             await db.flush()
 
