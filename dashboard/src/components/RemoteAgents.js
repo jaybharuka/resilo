@@ -11,7 +11,7 @@ import {
   Cpu, HardDrive, MemoryStick, Wifi, Terminal,
   ChevronLeft, Circle, Zap, Server, Play,
   CheckCircle, XCircle, AlertTriangle, Clock, Bot,
-  RotateCcw, Flame, Layers,
+  RotateCcw, Flame, Layers, Brain,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -41,6 +41,69 @@ const PANEL = {
   borderRadius: '12px',
   boxShadow:    '0 4px 24px rgba(0,0,0,0.3)',
 };
+
+// ─── AgentThinkingPanel ───────────────────────────────────────────────────────
+function AgentThinkingPanel({ history }) {
+  const latest   = history?.[0];
+  const [visible, setVisible] = useState(0);
+
+  const steps = latest ? [
+    { icon: '🔍', text: `Analyzing anomaly: ${latest.alert_category || '—'} (${latest.severity || '—'})` },
+    { icon: '⚖️', text: 'Comparing actions by context success rate...' },
+    { icon: '✅', text: `Selected: ${latest.recommended_action || 'noop'} — confidence ${latest.confidence != null ? Math.round(latest.confidence * 100) : '—'}%` },
+  ] : [];
+
+  useEffect(() => {
+    if (!latest) return;
+    setVisible(0);
+    const timers = steps.map((_, i) => setTimeout(() => setVisible(i + 1), (i + 1) * 700));
+    return () => timers.forEach(clearTimeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latest?.timestamp]);
+
+  if (!latest) return null;
+
+  const statusColor = { dry_run: C.text3, needs_approval: C.amber, queued: C.teal, needs_review: C.red, auto_retry: C.amber }[latest.status] || C.text4;
+
+  return (
+    <div style={PANEL}>
+      <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Brain size={14} color={C.amber} />
+        <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>AGENT THINKING</span>
+        <span style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: statusColor, background: `${statusColor}15`, border: `1px solid ${statusColor}35`, borderRadius: 10, padding: '1px 8px' }}>{latest.status}</span>
+      </div>
+      <div style={{ padding: '14px 22px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {steps.map((s, i) => {
+          const done    = i < visible;
+          const active  = i === visible - 1 && visible < steps.length;
+          const pending = i >= visible;
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12,
+              opacity: pending ? 0.25 : 1,
+              transition: 'opacity 0.4s ease' }}>
+              <span style={{ fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+              <span style={{ ...MONO, fontSize: 11, color: done ? C.text1 : C.text3, flex: 1 }}>{s.text}</span>
+              {active && (
+                <span style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+                  {[0,1,2].map(d => (
+                    <span key={d} style={{
+                      width: 4, height: 4, borderRadius: '50%', background: C.amber,
+                      animation: `thinking-dot 1.2s ${d * 0.2}s infinite ease-in-out`,
+                    }} />
+                  ))}
+                </span>
+              )}
+              {done && i < steps.length - 1 && <CheckCircle size={12} color={C.teal} style={{ flexShrink: 0 }} />}
+              {done && i === steps.length - 1 && <Zap size={12} color={C.amber} style={{ flexShrink: 0 }} />}
+            </div>
+          );
+        })}
+      </div>
+      <style>{`@keyframes thinking-dot{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}`}</style>
+    </div>
+  );
+}
+
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtUptime(secs) {
@@ -958,6 +1021,9 @@ export function AgentDetail({ agentId, onBack }) {
         </div>
       )}
 
+      {/* Agent Thinking Panel */}
+      <AgentThinkingPanel history={agent.ai_history} />
+
       {/* Learning Feedback Panel */}
       {agent.feedback && agent.feedback.length > 0 && (
         <div style={PANEL}>
@@ -1002,29 +1068,63 @@ export function AgentDetail({ agentId, onBack }) {
         </div>
       )}
 
-      {/* Activity Timeline */}
+      {/* Narrated Timeline */}
       {(() => {
+        const fb = agent.feedback || [];
         const events = [
-          ...(agent.alerts || []).map(a => ({ ts: a.created_at, type: 'alert', label: a.title, sub: a.detail, color: C.red })),
-          ...(agent.ai_history || []).map(d => ({ ts: d.timestamp, type: 'ai', label: `AI: ${d.recommended_action || 'analyzed'}`, sub: d.root_cause, color: C.teal })),
-        ].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 10);
+          ...(agent.alerts || []).map(a => ({
+            ts: a.created_at, color: C.red, icon: '🚨',
+            label: `Alert: ${a.category || a.title}`,
+            sub: `${a.severity?.toUpperCase()} — ${a.detail}`,
+          })),
+          ...(agent.ai_history || []).map(d => {
+            const isRetry = d.impact === 'auto-retry';
+            return {
+              ts: d.timestamp, color: isRetry ? C.amber : C.teal, icon: isRetry ? '↺' : '🤖',
+              label: isRetry ? d.summary : `AI Decision: ${d.recommended_action || 'analyzed'}`,
+              sub: d.root_cause,
+              badge: d.status,
+              conf: d.confidence,
+            };
+          }),
+          ...fb.map(f => {
+            const resolved = f.success;
+            const isRetry  = f.retry_count > 0;
+            return {
+              ts: f.timestamp,
+              color: resolved ? C.teal : isRetry ? C.amber : C.red,
+              icon: resolved ? '✅' : isRetry ? '↺' : '✗',
+              label: resolved
+                ? `Resolved: ${f.action}${f.target ? ` → ${f.target}` : ''}`
+                : isRetry
+                  ? `Retry ${f.retry_count}: ${f.action}${f.retry_of ? ` (was ${f.retry_of})` : ''}`
+                  : `Failed: ${f.action}`,
+              sub: `CPU ${f.cpu_before}%→${f.cpu_after}%  MEM ${f.memory_before}%→${f.memory_after}%`,
+              badge: f.context,
+            };
+          }),
+        ].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 14);
+
         if (!events.length) return null;
         return (
           <div style={PANEL}>
             <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
               <Clock size={14} color={C.amber} />
               <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>ACTIVITY TIMELINE</span>
+              <span style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: C.text4 }}>{events.length} events</span>
             </div>
             <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 0 }}>
               {events.map((ev, i) => (
                 <div key={i} style={{ display: 'flex', gap: 14, paddingBottom: i < events.length - 1 ? 14 : 0 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: ev.color, marginTop: 3, flexShrink: 0 }} />
-                    {i < events.length - 1 && <span style={{ width: 1, flex: 1, background: C.border, marginTop: 4 }} />}
+                    <span style={{ fontSize: 12, marginTop: 1, flexShrink: 0, lineHeight: 1 }}>{ev.icon}</span>
+                    {i < events.length - 1 && <span style={{ width: 1, flex: 1, background: C.border, marginTop: 5 }} />}
                   </div>
                   <div style={{ flex: 1, minWidth: 0, paddingBottom: 2 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ ...UI, fontSize: 12, fontWeight: 600, color: C.text1 }}>{ev.label}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ ...UI, fontSize: 12, fontWeight: 600, color: ev.color }}>{ev.label}</span>
+                      {ev.badge && <span style={{ ...MONO, fontSize: 9, color: C.text4, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 4, padding: '1px 5px' }}>{ev.badge}</span>}
+                      {ev.conf != null && <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>{Math.round(ev.conf * 100)}% conf</span>}
                       <span style={{ ...MONO, fontSize: 10, color: C.text4, marginLeft: 'auto', flexShrink: 0 }}>{new Date(ev.ts).toLocaleTimeString()}</span>
                     </div>
                     {ev.sub && <p style={{ ...UI, fontSize: 11, color: C.text3, margin: '2px 0 0' }}>{ev.sub}</p>}
