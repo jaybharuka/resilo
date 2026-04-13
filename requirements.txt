@@ -31,6 +31,8 @@ alembic==1.13.2               # database migration tool for PostgreSQL
 # â”€â”€ AI integrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 google-generativeai==0.7.2
 openai==1.51.2
+langchain==0.3.25
+langchain-openai==0.3.16
 
 # â”€â”€ Async HTTP (notification_service â€” Slack & Telegram dispatch) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 aiohttp==3.10.5

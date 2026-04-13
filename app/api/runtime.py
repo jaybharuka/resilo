@@ -574,7 +574,7 @@ async def _check_anomalies(db: AsyncSession, org_id: str, agent_id: str, cpu: fl
                 )
                 db.add(alert)
                 created.append(alert)
-                asyncio.create_task(_ai_analyze(alert, cpu, memory))
+                asyncio.create_task(_lc_analyze(alert, cpu, memory))
 
         elif value <= rule["recover"]:
             open_alerts = await db.execute(
@@ -693,6 +693,68 @@ async def _ai_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
 
     except Exception as exc:
         logging.warning("[AI] Analysis failed for alert %s: %s", alert.category, exc)
+
+
+async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
+    """LangChain agent analysis — background task, never raises."""
+    from app.agents.langchain_agent import analyze_alert as _lc_agent
+
+    exec_mode = _AGENT_EXEC_MODE.get(alert.agent_id, "dry_run")
+    logging.info("[AGENT] Alert received: agent=%s mode=%s", alert.agent_id, exec_mode)
+
+    alert_data = {
+        "category": alert.category,
+        "severity": alert.severity,
+        "title": alert.title,
+        "detail": alert.detail,
+    }
+    metrics = {"cpu": cpu, "memory": memory, "disk": 0.0}
+
+    decision = await _lc_agent(alert_data, metrics)
+    action  = decision["action"]
+    target  = decision["target"]
+
+    if exec_mode == "dry_run":
+        disp_status = "dry_run"
+        logging.info("[AGENT EXECUTION] mode=dry_run — no action. Recommended: %s → %s", action, target)
+    elif exec_mode == "manual_approval":
+        approval = {
+            "id": str(uuid.uuid4()),
+            "action": action,
+            "target": target,
+            "alert_category": alert.category,
+            "created_at": _now().isoformat(),
+        }
+        _PENDING_APPROVALS.setdefault(alert.agent_id, []).append(approval)
+        disp_status = "needs_approval"
+        logging.info("[AGENT EXECUTION] mode=supervised — queued for approval: %s → %s", action, target)
+    elif exec_mode == "auto_safe":
+        if action in _SAFE_ACTIONS and decision["safe"]:
+            _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
+            disp_status = "queued"
+            logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
+        else:
+            disp_status = "needs_review"
+            logging.info("[AGENT EXECUTION] mode=autonomous — unsafe action blocked: %s", action)
+    else:
+        disp_status = "dry_run"
+
+    record = {
+        "timestamp": _now().isoformat(),
+        "alert_category": alert.category,
+        "severity": alert.severity,
+        "root_cause": decision["reason"],
+        "confidence": decision["confidence"],
+        "impact": alert.severity,
+        "summary": f"LangChain agent: {action}" + (f" → {target}" if target else ""),
+        "recommended_action": action,
+        "safe_to_auto_fix": decision["safe"],
+        "status": disp_status,
+    }
+    hist = _AI_HISTORY.setdefault(alert.agent_id, [])
+    hist.insert(0, record)
+    if len(hist) > 10:
+        hist.pop()
 
 
 async def _require_agent(request: Request, raw_key: str, db: AsyncSession, org_id: str) -> Agent:
