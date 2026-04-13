@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: aiops-core
+    env: docker
+    dockerfilePath: ./Dockerfile.core
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: DRY_RUN
+        value: "true"
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
