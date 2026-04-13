@@ -710,7 +710,8 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
     }
     metrics = {"cpu": cpu, "memory": memory, "disk": 0.0}
 
-    decision = await _lc_agent(alert_data, metrics)
+    success_rate = _get_success_rate(alert.agent_id, "restart_service")
+    decision = await _lc_agent(alert_data, metrics, success_rate)
     action  = decision["action"]
     target  = decision["target"]
 
@@ -733,6 +734,7 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
             logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
+            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory))
         else:
             disp_status = "needs_review"
             logging.info("[AGENT EXECUTION] mode=autonomous — unsafe action blocked: %s", action)
@@ -755,6 +757,56 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
     hist.insert(0, record)
     if len(hist) > 10:
         hist.pop()
+
+
+def _get_success_rate(agent_id: str, action: str) -> float | None:
+    """Return historical success rate for (agent, action) or None if no history."""
+    records = [r for r in _ACTION_FEEDBACK.get(agent_id, []) if r["action"] == action]
+    if not records:
+        return None
+    return sum(1 for r in records if r["success"]) / len(records)
+
+
+async def _schedule_feedback_check(
+    agent_id: str, action: str, target: str, cpu_before: float, memory_before: float
+) -> None:
+    """Wait 30 s then measure whether the action actually improved metrics."""
+    await asyncio.sleep(30)
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(
+                select(MetricSnapshot)
+                .where(MetricSnapshot.agent_id == agent_id)
+                .order_by(desc(MetricSnapshot.timestamp))
+                .limit(1)
+            )
+            snap = result.scalar_one_or_none()
+            if snap is None:
+                return
+            cpu_after    = snap.cpu    or 0.0
+            memory_after = snap.memory or 0.0
+            success = (cpu_after < cpu_before - 5) or (memory_after < memory_before - 5)
+            feedback = {
+                "timestamp":     _now().isoformat(),
+                "action":        action,
+                "target":        target,
+                "cpu_before":    round(cpu_before,    1),
+                "cpu_after":     round(cpu_after,     1),
+                "memory_before": round(memory_before, 1),
+                "memory_after":  round(memory_after,  1),
+                "success":       success,
+            }
+            hist = _ACTION_FEEDBACK.setdefault(agent_id, [])
+            hist.insert(0, feedback)
+            if len(hist) > 20:
+                hist.pop()
+            logging.info(
+                "[FEEDBACK] agent=%s action=%s success=%s cpu=%.1f→%.1f mem=%.1f→%.1f",
+                agent_id, action, success,
+                cpu_before, cpu_after, memory_before, memory_after,
+            )
+    except Exception as exc:
+        logging.warning("[FEEDBACK] check failed for agent %s: %s", agent_id, exc)
 
 
 async def _require_agent(request: Request, raw_key: str, db: AsyncSession, org_id: str) -> Agent:
@@ -1021,6 +1073,9 @@ _AGENT_EXEC_MODE: dict[str, str] = {}
 
 # Pending approvals: agent_id → [{id, action, target, ai_decision, created_at}]
 _PENDING_APPROVALS: dict[str, list[dict]] = {}
+
+# Feedback loop: agent_id → last 20 action outcome records
+_ACTION_FEEDBACK: dict[str, list[dict]] = {}
 
 _SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "notify_only"})
 
@@ -1383,6 +1438,11 @@ def build_agents_router() -> APIRouter:
             "ai_history": _AI_HISTORY.get(agent_id, []),
             "execution_mode": _AGENT_EXEC_MODE.get(agent_id, "dry_run"),
             "pending_approvals": _PENDING_APPROVALS.get(agent_id, []),
+            "feedback": _ACTION_FEEDBACK.get(agent_id, [])[:10],
+            "success_rates": {
+                action: round(_get_success_rate(agent_id, action) * 100)
+                for action in {r["action"] for r in _ACTION_FEEDBACK.get(agent_id, [])}
+            },
         }
 
     @router.patch("/api/orgs/{org_id}/agents/{agent_id}/alerts/{alert_id}/resolve")

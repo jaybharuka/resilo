@@ -80,11 +80,16 @@ def _build_agent(metrics: dict[str, Any]) -> AgentExecutor:
 async def analyze_alert(
     alert_data: dict[str, Any],
     metrics: dict[str, Any],
+    success_rate: float | None = None,
 ) -> dict[str, Any]:
     """Run the LangChain agent against an alert. Never raises — returns noop on failure."""
     if not os.getenv("NVIDIA_API_KEY"):
         log.warning("[AGENT] NVIDIA_API_KEY not set — skipping LangChain analysis")
         return {"action": "noop", "target": "", "reason": "no api key", "confidence": 0.0, "safe": True}
+
+    history_note = ""
+    if success_rate is not None:
+        history_note = f"\nHistorical success rate for restart_service on this agent: {success_rate * 100:.0f}%"
 
     input_text = (
         f"Alert: {alert_data['category']} | Severity: {alert_data['severity']}\n"
@@ -93,6 +98,7 @@ async def analyze_alert(
         f"Metrics: CPU={metrics.get('cpu', 0):.1f}% | "
         f"Memory={metrics.get('memory', 0):.1f}% | "
         f"Disk={metrics.get('disk', 0):.1f}%"
+        f"{history_note}"
     )
 
     log.info("[AGENT] Alert received: %s (%s)", alert_data["category"], alert_data["severity"])
