@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { agentApi } from '../services/api';
+import { agentsApi } from '../services/resiloApi';
 import InfoTip from './InfoTip';
 import {
   Monitor, Plus, RefreshCw, Trash2, Copy, CheckCheck,
@@ -125,31 +126,51 @@ function CopyBtn({ text, label = 'Copy' }) {
 // ─── New Agent Modal ───────────────────────────────────────────────────────────
 export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
   const [label, setLabel]       = useState(initialLabel);
-  const [step, setStep]         = useState('form'); // form | created
-  const [result, setResult]     = useState(null);
+  const [step, setStep]         = useState('form'); // form | ready
+  const [token, setToken]       = useState('');
+  const [secsLeft, setSecsLeft] = useState(300);
   const [creating, setCreating] = useState(false);
   const [error, setError]       = useState('');
-  const [waiting, setWaiting]   = useState(false);
-  const pollRef = useRef(null);
+  const timerRef = useRef(null);
 
-  const handleCreate = async () => {
-    if (!label.trim()) { setError('Enter a label for this agent.'); return; }
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || (
+    window.location.hostname === 'localhost'
+      ? 'http://localhost:8000'
+      : `${window.location.protocol}//${window.location.hostname}`
+  );
+
+  const agentUrl = 'https://raw.githubusercontent.com/jaybharuka/resilo/main/desktop_agent/resilo_agent.py';
+  const winCmd  = token ? `pip install psutil -q; Invoke-WebRequest -Uri "${agentUrl}" -OutFile "$env:TEMP\\resilo_agent.py"; $env:RESILO_ONBOARD_TOKEN="${token}"; $env:RESILO_BACKEND_URL="${backendUrl}"; python "$env:TEMP\\resilo_agent.py"` : '';
+  const unixCmd = token ? `pip install psutil -q && curl -sO /tmp/resilo_agent.py ${agentUrl} && RESILO_ONBOARD_TOKEN=${token} RESILO_BACKEND_URL=${backendUrl} python /tmp/resilo_agent.py` : '';
+
+  const handleGenerate = async () => {
+    if (!label.trim()) { setError('Enter a label for this device.'); return; }
     setCreating(true);
     setError('');
     try {
-      const data = await agentApi.createToken(label.trim());
-      setResult(data);
-      setStep('created');
-      onCreated(data.agent_id);
-      setWaiting(false);
+      const data = await agentApi.onboard(label.trim());
+      setToken(data.token);
+      setSecsLeft(data.expires_in || 300);
+      setStep('ready');
+      onCreated();
+      timerRef.current = setInterval(() => {
+        setSecsLeft(s => {
+          if (s <= 1) { clearInterval(timerRef.current); return 0; }
+          return s - 1;
+        });
+      }, 1000);
     } catch (e) {
-      setError(e?.response?.data?.error || 'Failed to create token.');
+      setError(e?.response?.data?.detail || 'Failed to generate token.');
     } finally {
       setCreating(false);
     }
   };
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+
+  const expired = secsLeft === 0;
+  const mins = String(Math.floor(secsLeft / 60)).padStart(2, '0');
+  const secs = String(secsLeft % 60).padStart(2, '0');
 
   return (
     <div style={{
@@ -158,7 +179,7 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
       <div style={{
-        ...PANEL, width: '100%', maxWidth: 560, position: 'relative',
+        ...PANEL, width: '100%', maxWidth: 580, position: 'relative',
         animation: 'fadeUp 0.18s ease',
       }}>
         <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}`}</style>
@@ -167,7 +188,7 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
         <div style={{ padding: '20px 24px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <Plus size={15} color={C.amber} />
           <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>
-            {step === 'form' ? 'NEW REMOTE AGENT' : 'AGENT CREATED'}
+            {step === 'form' ? 'ADD DEVICE' : 'RUN ON TARGET MACHINE'}
           </span>
           <button
             onClick={onClose}
@@ -178,32 +199,30 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
         <div style={{ padding: '24px' }}>
           {step === 'form' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <p style={{ ...UI, fontSize: 13, color: C.text2, margin: 0, lineHeight: 1.55 }}>
-                Give this agent a label so you can identify which machine it belongs to.
-                A unique token will be generated — share the install command with the user.
+              <p style={{ ...UI, fontSize: 13, color: C.text2, margin: 0, lineHeight: 1.6 }}>
+                Name the device you want to monitor. A one-time token will be generated — paste the run command on that machine and it connects automatically.
               </p>
               <div>
                 <label style={{ ...MONO, fontSize: 10, letterSpacing: '0.12em', color: C.text4, display: 'block', marginBottom: 8 }}>
-                  AGENT LABEL
+                  DEVICE NAME
                 </label>
                 <input
                   autoFocus
                   value={label}
                   onChange={e => setLabel(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                  onKeyDown={e => e.key === 'Enter' && handleGenerate()}
                   placeholder="e.g. Jay's Laptop, Dev Server, Finance PC"
                   style={{
                     width: '100%', boxSizing: 'border-box',
                     background: C.surface2, border: `1px solid ${C.border}`,
                     borderRadius: 8, padding: '10px 14px',
-                    ...UI, fontSize: 13, color: C.text1,
-                    outline: 'none',
+                    ...UI, fontSize: 13, color: C.text1, outline: 'none',
                   }}
                 />
                 {error && <p style={{ ...MONO, fontSize: 11, color: C.red, margin: '8px 0 0' }}>{error}</p>}
               </div>
               <button
-                onClick={handleCreate}
+                onClick={handleGenerate}
                 disabled={creating}
                 style={{
                   padding: '10px 0', borderRadius: 8, cursor: creating ? 'not-allowed' : 'pointer',
@@ -216,58 +235,68 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
                 }}
               >
                 <Zap size={13} />
-                {creating ? 'GENERATING…' : 'GENERATE TOKEN'}
+                {creating ? 'GENERATING…' : 'GENERATE LINK'}
               </button>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              {/* Status */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderRadius: 8, background: waiting ? 'rgba(245,158,11,0.06)' : 'rgba(45,212,191,0.06)', border: `1px solid ${waiting ? 'rgba(245,158,11,0.2)' : 'rgba(45,212,191,0.2)'}` }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: waiting ? C.amber : C.teal, display: 'inline-block', boxShadow: `0 0 8px ${waiting ? C.amber : C.teal}`, animation: 'pulse 1.5s ease-in-out infinite' }} />
-                <span style={{ ...MONO, fontSize: 11, color: waiting ? C.amber : C.teal }}>
-                  {waiting ? 'Waiting for agent to connect…' : '✓ Agent is live!'}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {/* Timer */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderRadius: 8,
+                background: expired ? 'rgba(248,113,113,0.06)' : 'rgba(245,158,11,0.06)',
+                border: `1px solid ${expired ? 'rgba(248,113,113,0.25)' : 'rgba(245,158,11,0.2)'}`,
+              }}>
+                <Clock size={13} color={expired ? C.red : C.amber} />
+                <span style={{ ...MONO, fontSize: 11, color: expired ? C.red : C.amber }}>
+                  {expired ? 'TOKEN EXPIRED — generate a new one' : `Token valid for ${mins}:${secs}`}
                 </span>
+                {expired && (
+                  <button
+                    onClick={() => setStep('form')}
+                    style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: C.amber, background: 'transparent', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                  >Regenerate</button>
+                )}
               </div>
 
-              {/* Token */}
+              {/* Windows command */}
               <div>
-                <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.12em', color: C.text4, marginBottom: 8 }}>TOKEN</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <code style={{ flex: 1, ...MONO, fontSize: 11, color: C.amber, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 12px', wordBreak: 'break-all', lineHeight: 1.6 }}>
-                    {result?.token}
+                <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.text4, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Monitor size={11} /> WINDOWS — run in PowerShell or CMD
+                </div>
+                <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '12px 14px' }}>
+                  <code style={{ ...MONO, fontSize: 11, color: C.teal, lineHeight: 1.7, wordBreak: 'break-all', display: 'block' }}>
+                    {winCmd}
                   </code>
-                  <CopyBtn text={result?.token || ''} label="Copy" />
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <CopyBtn text={winCmd} label="Copy" />
                 </div>
               </div>
 
-              {/* Install command */}
+              {/* Mac / Linux command */}
               <div>
-                <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.12em', color: C.text4, marginBottom: 8 }}>
-                  RUN THIS ON THE USER'S MACHINE
+                <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.text4, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Terminal size={11} /> MAC / LINUX — run in terminal
                 </div>
-                <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '14px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <Terminal size={13} color={C.text4} style={{ marginTop: 2, flexShrink: 0 }} />
-                    <code style={{ ...MONO, fontSize: 11, color: C.teal, lineHeight: 1.7, flex: 1, wordBreak: 'break-all' }}>
-                      {result?.install_cmd}
-                    </code>
-                  </div>
+                <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '12px 14px' }}>
+                  <code style={{ ...MONO, fontSize: 11, color: C.teal, lineHeight: 1.7, wordBreak: 'break-all', display: 'block' }}>
+                    {unixCmd}
+                  </code>
                 </div>
-                <div style={{ marginTop: 10 }}>
-                  <CopyBtn text={result?.install_cmd || ''} label="Copy Command" />
+                <div style={{ marginTop: 8 }}>
+                  <CopyBtn text={unixCmd} label="Copy" />
                 </div>
               </div>
 
               <p style={{ ...UI, fontSize: 12, color: C.text4, margin: 0, lineHeight: 1.55 }}>
-                The user needs Python + internet access. Dependencies (psutil, requests) are auto-installed on first run.
-                The device will appear as LIVE within 3 seconds of running the command.
+                Requires Python 3.8+ and <code style={MONO}>psutil</code> on the target machine. The device appears live within seconds of running the command.
               </p>
 
               <button
                 onClick={onClose}
                 style={{ padding: '9px 0', borderRadius: 8, cursor: 'pointer', background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, ...MONO, fontSize: 11, letterSpacing: '0.08em' }}
               >
-                CLOSE
+                DONE
               </button>
             </div>
           )}
@@ -645,27 +674,27 @@ export function AgentDetail({ agentId, onBack }) {
   const [agent, setAgent]       = useState(null);
   const [history, setHistory]   = useState([]);
   const [cmdTick, setCmdTick]   = useState(0);
-  const MAX_HISTORY = 30;
 
-  const fetch = useCallback(async () => {
+  const fetchDetail = useCallback(async () => {
     try {
-      const data = await agentApi.get(agentId);
+      const data = await agentsApi.getById(null, agentId);
+      if (!data) return;
       setAgent(data);
-      if (data.status === 'live' && data.metrics && Object.keys(data.metrics).length) {
-        const now = new Date();
-        const label = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-        setHistory(prev => {
-          const next = [...prev, { time: label, cpu: data.metrics.cpu, memory: data.metrics.memory }];
-          return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
-        });
+      if (data.history && data.history.length) {
+        setHistory(data.history.map(h => ({
+          time: new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          cpu: h.cpu,
+          memory: h.memory,
+        })));
       }
     } catch {}
   }, [agentId]);
 
   useEffect(() => {
-    fetch();
-    return () => {};
-  }, [fetch]);
+    fetchDetail();
+    const t = setInterval(fetchDetail, 5000);
+    return () => clearInterval(t);
+  }, [fetchDetail]);
 
   if (!agent) {
     return (
@@ -690,7 +719,7 @@ export function AgentDetail({ agentId, onBack }) {
   };
 
   const sendFix = async (action) => {
-    try { await agentApi.sendCommand(agentId, action); setCmdTick(t => t + 1); } catch {}
+    try { await agentsApi.sendCommand(null, agentId, action); setCmdTick(t => t + 1); } catch {}
   };
 
   const tiles = [
@@ -795,6 +824,174 @@ export function AgentDetail({ agentId, onBack }) {
         </div>
       </div>
 
+      {/* Execution Mode Toggle */}
+      <div style={{ ...PANEL, padding: '14px 22px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Zap size={13} color={C.amber} />
+          <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.1em', color: C.text2 }}>EXECUTION MODE</span>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          {[
+            { key: 'dry_run',          label: 'DRY RUN',  color: C.text3 },
+            { key: 'manual_approval',  label: 'APPROVAL', color: C.amber },
+            { key: 'auto_safe',        label: 'AUTO SAFE', color: C.teal },
+          ].map(opt => {
+            const active = (agent.execution_mode || 'dry_run') === opt.key;
+            return (
+              <button
+                key={opt.key}
+                onClick={async () => { try { await agentsApi.setExecMode(null, agentId, opt.key); fetchDetail(); } catch {} }}
+                style={{
+                  padding: '4px 12px', borderRadius: 6, cursor: 'pointer', ...MONO, fontSize: 10,
+                  background: active ? `${opt.color}20` : 'transparent',
+                  border: `1px solid ${active ? opt.color : C.border}`,
+                  color: active ? opt.color : C.text4,
+                  transition: 'all 0.15s',
+                }}
+              >{opt.label}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Pending Approvals */}
+      {agent.pending_approvals && agent.pending_approvals.length > 0 && (
+        <div style={PANEL}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <CheckCircle size={14} color={C.amber} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>AWAITING APPROVAL</span>
+            <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: `${C.amber}18`, color: C.amber, border: `1px solid ${C.amber}40`, borderRadius: 10, padding: '1px 8px' }}>{agent.pending_approvals.length}</span>
+          </div>
+          <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {agent.pending_approvals.map(ap => (
+              <div key={ap.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', borderRadius: 8, background: `${C.amber}0a`, border: `1px solid ${C.amber}30` }}>
+                <div style={{ flex: 1 }}>
+                  <span style={{ ...MONO, fontSize: 11, color: C.amber }}>{ap.action}</span>
+                  <span style={{ ...MONO, fontSize: 11, color: C.text3 }}> → {ap.target}</span>
+                  <span style={{ ...MONO, fontSize: 10, color: C.text4, marginLeft: 10 }}>{new Date(ap.created_at).toLocaleTimeString()}</span>
+                </div>
+                <button
+                  onClick={async () => { try { await agentsApi.approveAction(agentId, ap.id); fetchDetail(); } catch {} }}
+                  style={{ padding: '4px 14px', borderRadius: 6, cursor: 'pointer', background: `${C.teal}20`, border: `1px solid ${C.teal}50`, color: C.teal, ...MONO, fontSize: 10 }}
+                >APPROVE</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Inline Alerts */}
+      {agent.alerts && agent.alerts.length > 0 && (
+        <div style={PANEL}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={14} color={C.red} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>ACTIVE ALERTS</span>
+            <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: 'rgba(248,113,113,0.12)', color: C.red, border: `1px solid rgba(248,113,113,0.3)`, borderRadius: 10, padding: '1px 8px' }}>{agent.alerts.length}</span>
+          </div>
+          <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {agent.alerts.map(al => {
+              const sev = al.severity === 'critical' ? C.red : al.severity === 'high' ? C.amber : C.teal;
+              return (
+                <div key={al.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: '12px 16px', borderRadius: 8, background: `${sev}0d`, border: `1px solid ${sev}30` }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: sev, flexShrink: 0, marginTop: 4 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <span style={{ ...MONO, fontSize: 11, color: sev, letterSpacing: '0.08em' }}>{al.severity.toUpperCase()}</span>
+                      <span style={{ ...UI, fontSize: 13, fontWeight: 600, color: C.text1 }}>{al.title}</span>
+                    </div>
+                    <p style={{ ...UI, fontSize: 12, color: C.text3, margin: 0 }}>{al.detail}</p>
+                    <p style={{ ...MONO, fontSize: 10, color: C.text4, margin: '4px 0 0' }}>{new Date(al.created_at).toLocaleString()}</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try { await agentsApi.resolveAlert(null, agentId, al.id); fetchDetail(); } catch {}
+                    }}
+                    style={{ flexShrink: 0, padding: '4px 12px', borderRadius: 6, background: 'transparent', border: `1px solid ${C.border}`, color: C.text3, cursor: 'pointer', ...MONO, fontSize: 10 }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = C.teal; e.currentTarget.style.color = C.teal; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.text3; }}
+                  >
+                    RESOLVE
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* AI Activity Panel */}
+      {agent.ai_history && agent.ai_history.length > 0 && (
+        <div style={PANEL}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Bot size={14} color={C.teal} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>AI DECISIONS</span>
+            <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: `${C.teal}18`, color: C.teal, border: `1px solid ${C.teal}40`, borderRadius: 10, padding: '1px 8px' }}>{agent.ai_history.length}</span>
+          </div>
+          <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {agent.ai_history.map((d, i) => {
+              const statusColor = d.status === 'dry_run' ? C.amber : d.status === 'queued' ? C.teal : C.text4;
+              const statusLabel = d.status === 'dry_run' ? 'DRY RUN' : d.status === 'queued' ? 'QUEUED' : 'NEEDS REVIEW';
+              const confPct = Math.round((d.confidence || 0) * 100);
+              return (
+                <div key={i} style={{ padding: '14px 16px', borderRadius: 8, background: `${C.teal}08`, border: `1px solid ${C.border}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                    <span style={{ ...MONO, fontSize: 10, color: C.amber, letterSpacing: '0.08em' }}>{d.alert_category?.toUpperCase()}</span>
+                    <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>·</span>
+                    <span style={{ ...MONO, fontSize: 10, background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}40`, borderRadius: 4, padding: '1px 7px' }}>{statusLabel}</span>
+                    <span style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: C.text4 }}>{new Date(d.timestamp).toLocaleTimeString()}</span>
+                  </div>
+                  {d.root_cause && <p style={{ ...UI, fontSize: 12, color: C.text2, margin: '0 0 6px', fontWeight: 600 }}>{d.root_cause}</p>}
+                  {d.summary && <p style={{ ...UI, fontSize: 12, color: C.text3, margin: '0 0 8px' }}>{d.summary}</p>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                    {d.recommended_action && (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 5, ...MONO, fontSize: 10, color: C.teal }}>
+                        <Zap size={10} /> {d.recommended_action}
+                      </span>
+                    )}
+                    <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>confidence {confPct}%</span>
+                    {d.impact && <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>impact {d.impact}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Activity Timeline */}
+      {(() => {
+        const events = [
+          ...(agent.alerts || []).map(a => ({ ts: a.created_at, type: 'alert', label: a.title, sub: a.detail, color: C.red })),
+          ...(agent.ai_history || []).map(d => ({ ts: d.timestamp, type: 'ai', label: `AI: ${d.recommended_action || 'analyzed'}`, sub: d.root_cause, color: C.teal })),
+        ].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 10);
+        if (!events.length) return null;
+        return (
+          <div style={PANEL}>
+            <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Clock size={14} color={C.amber} />
+              <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>ACTIVITY TIMELINE</span>
+            </div>
+            <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+              {events.map((ev, i) => (
+                <div key={i} style={{ display: 'flex', gap: 14, paddingBottom: i < events.length - 1 ? 14 : 0 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: ev.color, marginTop: 3, flexShrink: 0 }} />
+                    {i < events.length - 1 && <span style={{ width: 1, flex: 1, background: C.border, marginTop: 4 }} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0, paddingBottom: 2 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ ...UI, fontSize: 12, fontWeight: 600, color: C.text1 }}>{ev.label}</span>
+                      <span style={{ ...MONO, fontSize: 10, color: C.text4, marginLeft: 'auto', flexShrink: 0 }}>{new Date(ev.ts).toLocaleTimeString()}</span>
+                    </div>
+                    {ev.sub && <p style={{ ...UI, fontSize: 11, color: C.text3, margin: '2px 0 0' }}>{ev.sub}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Command Center */}
       <CommandCenter
         agentId={agentId}
@@ -887,22 +1084,23 @@ export default function RemoteAgents() {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const data = await agentApi.list();
+      const data = await agentsApi.list();
       setAgents(data);
     } catch {} finally {
       setLoading(false);
     }
   }, []);
 
-  // Poll every 3s to keep status fresh
+  // Poll every 5s to keep status fresh
   useEffect(() => {
     fetchAgents();
-    return () => {};
+    const t = setInterval(fetchAgents, 5000);
+    return () => clearInterval(t);
   }, [fetchAgents]);
 
   const handleRemove = async (id) => {
     if (!window.confirm('Revoke this agent token and remove the device? The agent script will stop working.')) return;
-    await agentApi.remove(id);
+    await agentsApi.remove(null, id);
     if (selected === id) setSelected(null);
     setAgents(prev => prev.filter(a => a.id !== id));
   };
