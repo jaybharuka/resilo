@@ -988,6 +988,7 @@ export function AgentDetail({ agentId, onBack }) {
                     <span style={{ ...MONO, fontSize: 11, color: C.text2 }}>{fb.action}</span>
                     {fb.target && <span style={{ ...MONO, fontSize: 11, color: C.text3 }}>→ {fb.target}</span>}
                     {fb.context && <span style={{ ...MONO, fontSize: 9, color: C.text4, background: `${C.border}`, border: `1px solid ${C.border}`, borderRadius: 4, padding: '1px 6px' }}>{fb.context}</span>}
+                    {fb.retry_count > 0 && <span style={{ ...MONO, fontSize: 9, color: C.amber, background: `${C.amber}12`, border: `1px solid ${C.amber}40`, borderRadius: 4, padding: '1px 6px' }}>↺ RETRY {fb.retry_count} ← {fb.retry_of}</span>}
                   </div>
                   <div style={{ display: 'flex', gap: 16, ...MONO, fontSize: 10, color: C.text4 }}>
                     <span>CPU {fb.cpu_before}% → {fb.cpu_after}% <span style={{ color: parseFloat(cpuDelta) < 0 ? C.teal : C.red }}>{cpuDelta > 0 ? '+' : ''}{cpuDelta}%</span></span>

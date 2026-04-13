@@ -743,7 +743,7 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
             logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
-            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context))
+            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context, exec_mode))
         else:
             disp_status = "needs_review"
             logging.info("[AGENT EXECUTION] mode=autonomous — unsafe action blocked: %s", action)
@@ -804,9 +804,11 @@ def _get_action_rankings(agent_id: str, context: str = "") -> list[dict]:
 
 async def _schedule_feedback_check(
     agent_id: str, action: str, target: str, cpu_before: float, memory_before: float,
-    context: str = "",
+    context: str = "", exec_mode: str = "dry_run",
+    retry_count: int = 0, retry_of: str = "",
 ) -> None:
-    """Wait 30 s then measure whether the action actually improved metrics."""
+    """Wait 30 s then measure whether the action improved metrics. Retries on failure (max 2)."""
+    _MAX_RETRIES = 2
     await asyncio.sleep(30)
     try:
         async with SessionLocal() as db:
@@ -827,6 +829,8 @@ async def _schedule_feedback_check(
                 "action":        action,
                 "target":        target,
                 "context":       context,
+                "retry_count":   retry_count,
+                "retry_of":      retry_of,
                 "cpu_before":    round(cpu_before,    1),
                 "cpu_after":     round(cpu_after,     1),
                 "memory_before": round(memory_before, 1),
@@ -838,10 +842,48 @@ async def _schedule_feedback_check(
             if len(hist) > 20:
                 hist.pop()
             logging.info(
-                "[FEEDBACK] agent=%s action=%s success=%s cpu=%.1f→%.1f mem=%.1f→%.1f",
-                agent_id, action, success,
+                "[FEEDBACK] agent=%s action=%s success=%s retry=%d cpu=%.1f→%.1f mem=%.1f→%.1f",
+                agent_id, action, success, retry_count,
                 cpu_before, cpu_after, memory_before, memory_after,
             )
+
+            # ── Retry logic ────────────────────────────────────────────────────
+            if not success and exec_mode == "auto_safe" and retry_count < _MAX_RETRIES:
+                rankings = _get_action_rankings(agent_id, context)
+                next_action = next(
+                    (r["action"] for r in rankings
+                     if r["action"] not in (action, "noop") and r["action"] in _SAFE_ACTIONS),
+                    None,
+                )
+                if next_action:
+                    logging.info(
+                        "[RETRY] agent=%s attempt=%d/%d: %s failed → trying %s",
+                        agent_id, retry_count + 1, _MAX_RETRIES, action, next_action,
+                    )
+                    _PENDING_COMMANDS.setdefault(agent_id, []).append(
+                        {"action": next_action, "target": target, "retry": True}
+                    )
+                    _AI_HISTORY.setdefault(agent_id, []).insert(0, {
+                        "timestamp":          _now().isoformat(),
+                        "alert_category":     context.split(":")[0] if ":" in context else context,
+                        "severity":           context.split(":")[1] if ":" in context else "",
+                        "root_cause":         f"Retry: {action} failed — switching to {next_action}",
+                        "confidence":         round((_get_success_rate(agent_id, next_action, context) or 0.5), 2),
+                        "impact":             "auto-retry",
+                        "summary":            f"Auto-retry {retry_count + 1}/{_MAX_RETRIES}: {action} → {next_action}",
+                        "recommended_action": next_action,
+                        "safe_to_auto_fix":   True,
+                        "status":             "queued",
+                    })
+                    asyncio.create_task(_schedule_feedback_check(
+                        agent_id, next_action, target,
+                        cpu_after, memory_after,
+                        context, exec_mode,
+                        retry_count + 1, action,
+                    ))
+                else:
+                    logging.warning("[RETRY] agent=%s no alternative action available after %s failed",
+                                    agent_id, action)
     except Exception as exc:
         logging.warning("[FEEDBACK] check failed for agent %s: %s", agent_id, exc)
 
