@@ -115,6 +115,7 @@ class UserSession(Base):
     id:                 Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id:            Mapped[str]           = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     refresh_token_hash: Mapped[str]           = mapped_column(String(64), unique=True, nullable=False)
+    family_id:          Mapped[str]           = mapped_column(String(36), nullable=False, index=True, default=lambda: str(uuid.uuid4()))
     expires_at:         Mapped[datetime]      = mapped_column(DateTime(timezone=True), nullable=False)
     created_at:         Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
     ip_address:         Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
@@ -154,6 +155,20 @@ class PasswordResetToken(Base):
 
 
 # â”€â”€ Agents (PostgreSQL-backed, replaces in-memory _remote_agents) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+class OnboardingToken(Base):
+    """Short-lived (5 min), one-time token used by the desktop agent to self-register."""
+    __tablename__ = "onboarding_tokens"
+
+    id:         Mapped[str]      = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    token:      Mapped[str]      = mapped_column(String(128), unique=True, nullable=False, index=True)
+    org_id:     Mapped[str]      = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    created_by: Mapped[str]      = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    label:      Mapped[str]      = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used:       Mapped[bool]     = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class Agent(Base):
     """
@@ -471,6 +486,32 @@ class WmiInvite(Base):
     created_at:          Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ── Incidents (declared via dashboard "Declare Incident" button) ─────────────
+
+class Incident(Base):
+    """
+    Persistent incident record. One active incident per org at a time.
+    status: active | resolved
+    """
+    __tablename__ = "incidents"
+    __table_args__ = (
+        Index("ix_incident_org_status", "org_id", "status"),
+    )
+
+    id:           Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:       Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    severity:     Mapped[str]           = mapped_column(String(10), nullable=False)   # SEV1|SEV2|SEV3|SEV4
+    service:      Mapped[str]           = mapped_column(String(100), nullable=False)
+    description:  Mapped[str]           = mapped_column(Text, nullable=False)
+    commander:    Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    declared_by:  Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status:       Mapped[str]           = mapped_column(String(20), default="active", nullable=False)   # active|resolved
+    declared_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    resolved_at:  Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by:  Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    timeline:     Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{ts, actor, note}]
+
+
 async def wait_for_db() -> None:
     """
     Retry the database connection until it succeeds or retries are exhausted.
@@ -520,6 +561,10 @@ async def init_db() -> None:
     """
     import logging
     log = logging.getLogger("database")
+
+    # Ensure all ORM models have tables (checkfirst=True → safe on every restart)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
 
     # Retention policy is kept in application code because it is driven by
     # TIMESCALE_RETENTION_DAYS, an operator-configurable env var.

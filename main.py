@@ -10,6 +10,8 @@ from app.api.auth_sso_api import router as auth_sso_router
 from app.api.health_api import router as health_phase4_router
 from app.api.middleware.org_context import OrgContextMiddleware
 from app.api.runtime import RealtimeHub, seed_admin_user
+from app.api.v1_api import build_v1_router
+from app.api.intelligence_api import build_intelligence_router
 from app.core.database import init_db, wait_for_db
 from config.logger import get_logger
 from config.otel import setup_otel
@@ -32,6 +34,8 @@ app.include_router(stream.router)
 app.include_router(chat.router)
 app.include_router(auth_sso_router)
 app.include_router(health_phase4_router)
+app.include_router(build_v1_router())
+app.include_router(build_intelligence_router())
 
 app.add_middleware(OrgContextMiddleware)
 
