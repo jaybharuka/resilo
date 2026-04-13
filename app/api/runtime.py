@@ -1160,6 +1160,26 @@ _SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "scale_memory", "d
 _ALL_ACTIONS: list[str] = ["restart_service", "scale_memory", "disk_cleanup", "notify_only", "noop"]
 
 
+def _get_agent_poll_interval(agent_id: str) -> float:
+    """Return the recommended poll interval (seconds) based on current agent state."""
+    _MIN, _MAX = 0.5, 10.0
+    # Retry loop active in last 3 feedback records
+    recent = _ACTION_FEEDBACK.get(agent_id, [])[:3]
+    if any(f.get("retry_count", 0) > 0 for f in recent):
+        interval, state = 1.0, "retry"
+    # Pending commands waiting to be picked up
+    elif _PENDING_COMMANDS.get(agent_id):
+        interval, state = 0.5, "commands_pending"
+    # Active AI decision in progress (queued/needs_review)
+    elif any(h.get("status") in ("queued", "needs_review")
+             for h in _AI_HISTORY.get(agent_id, [])[:3]):
+        interval, state = 2.0, "active_alert"
+    else:
+        interval, state = 5.0, "idle"
+    logging.debug("[POLL] agent=%s interval=%.1fs (%s)", agent_id, interval, state)
+    return max(_MIN, min(_MAX, interval))
+
+
 def build_metrics_router() -> APIRouter:
     router = APIRouter()
 
@@ -1198,7 +1218,9 @@ def build_metrics_router() -> APIRouter:
         await _check_anomalies(db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory)
         await db.commit()
         _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), body.org_id)
-        return {"ok": True, "received_at": snapshot.timestamp.isoformat(), "snapshot": _serialize_metric(snapshot)}
+        poll_interval = _get_agent_poll_interval(agent.id)
+        return {"ok": True, "received_at": snapshot.timestamp.isoformat(),
+                "snapshot": _serialize_metric(snapshot), "poll_interval": poll_interval}
 
     @router.post("/agent/metrics")
     async def go_agent_metrics(body: GoMetricPayload, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
@@ -1388,7 +1410,8 @@ def build_alerts_router() -> APIRouter:
         if agent is None:
             raise HTTPException(status_code=401, detail="Invalid agent token")
         commands = _PENDING_COMMANDS.pop(agent.id, [])
-        return {"commands": commands}
+        poll_interval = _get_agent_poll_interval(agent.id)
+        return {"commands": commands, "poll_interval": poll_interval}
 
     @router.post("/agent/approve")
     async def approve_action(body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:

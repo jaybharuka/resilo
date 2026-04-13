@@ -104,7 +104,8 @@ def _post(url: str, body: dict[str, Any], agent_key: str) -> tuple[int, dict[str
         return 0, {"error": str(exc)}
 
 
-def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> bool:
+def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> tuple[bool, float]:
+    """Send heartbeat. Returns (success, poll_interval)."""
     url = f"{backend_url.rstrip('/')}/ingest/heartbeat"
     body = {"org_id": org_id, "metrics": metrics}
     while _BUFFER:
@@ -118,14 +119,50 @@ def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any])
         else:
             break
     for delay in (*_RETRY_DELAYS, None):
-        status, _ = _post(url, body, agent_key)
+        status, resp = _post(url, body, agent_key)
         if status == 200:
-            return True
+            return True, float(resp.get("poll_interval", 5))
         if delay is None:
             break
         time.sleep(delay)
     _BUFFER.append(body)
-    return False
+    return False, 5.0
+
+
+def _poll_commands(backend_url: str, agent_key: str) -> list[dict[str, Any]]:
+    """Fetch and clear pending commands from backend. Returns list of commands."""
+    url = f"{backend_url.rstrip('/')}/agent/command?token={agent_key}"
+    req = urllib.request.Request(url, method="GET",
+                                  headers={"X-Agent-Key": agent_key})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("commands", [])
+    except Exception:
+        return []
+
+
+def _execute_command(cmd: dict[str, Any]) -> None:
+    """Execute a command received from backend."""
+    action = cmd.get("action", "")
+    target = cmd.get("target", "")
+    print(f"[cmd] Executing: {action} → {target}")
+    if action == "restart_service" and target:
+        import subprocess
+        try:
+            subprocess.run(["systemctl", "restart", target], timeout=15, check=False)
+        except Exception as exc:
+            print(f"[cmd] restart_service failed: {exc}")
+    elif action == "free_memory":
+        try:
+            import subprocess
+            subprocess.run(["sync"], timeout=5, check=False)
+        except Exception:
+            pass
+    elif action in ("scale_memory", "disk_cleanup", "notify_only", "noop"):
+        print(f"[cmd] {action} acknowledged — no direct execution")
+    else:
+        print(f"[cmd] Unknown action '{action}' — ignored")
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -196,17 +233,28 @@ def main() -> None:
         cfg["device_id"] = str(uuid.uuid4())
         _save_cfg(cfg)
 
-    interval = 5
+    interval = 5.0
     print(f"[info] Agent running — backend={cfg['backend_url']} interval={interval}s")
 
     while True:
         try:
             metrics = collect(cfg["device_id"], cfg.get("label", "agent"))
-            ok = send(cfg["backend_url"], cfg["org_id"], cfg["agent_key"], metrics)
+            ok, srv_interval = send(cfg["backend_url"], cfg["org_id"], cfg["agent_key"], metrics)
             if ok:
                 print(f"[heartbeat] cpu={metrics['cpu']}% mem={metrics['memory']}% disk={metrics['disk']}%")
+                if srv_interval != interval:
+                    print(f"[poll] interval={srv_interval}s")
+                interval = srv_interval
             else:
                 print("[warn] Heartbeat failed — buffered for retry")
+
+            commands = _poll_commands(cfg["backend_url"], cfg["agent_key"])
+            if commands:
+                for cmd in commands:
+                    _execute_command(cmd)
+                print(f"[poll] {len(commands)} command(s) executed — re-polling immediately")
+                time.sleep(0.5)
+                continue
         except Exception as exc:
             print(f"[error] {exc}")
         time.sleep(interval)
