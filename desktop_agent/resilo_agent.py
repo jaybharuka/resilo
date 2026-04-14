@@ -1,7 +1,9 @@
 """
 Resilo Agent — single-file edition.
-Install: pip install psutil requests
-Run:     RESILO_ONBOARD_TOKEN=<token> RESILO_BACKEND_URL=https://resilo.onrender.com python resilo_agent.py
+Install: pip install psutil
+Run:     RESILO_ONBOARD_TOKEN=<token> RESILO_BACKEND_URL=https://... python resilo_agent.py
+Persist: python resilo_agent.py --install      # install as startup service
+Remove:  python resilo_agent.py --uninstall    # remove startup service
 """
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ import json
 import os
 import platform
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -200,11 +203,105 @@ def _register(backend_url: str, onboard_token: str, label: str) -> dict[str, Any
         raise RuntimeError(f"Registration failed: {exc}") from exc
 
 
+# ── Service persistence ───────────────────────────────────────────────────────
+_TASK_NAME = "ResilioAgent"
+
+def _install_service() -> None:
+    """Register the agent to run on startup, surviving shell close."""
+    script = os.path.abspath(__file__)
+    system = platform.system()
+
+    if system == "Windows":
+        # Find pythonw.exe (runs without a console window)
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable  # fallback
+        cmd = (
+            f'schtasks /create /tn "{_TASK_NAME}" '
+            f'/tr "\\"{pythonw}\\" \\"{script}\\"" '
+            f'/sc onlogon /ru "{os.environ.get("USERNAME", "%USERNAME%")}" '
+            f'/rl highest /f'
+        )
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"[install] Registered Windows scheduled task '{_TASK_NAME}'")
+            print(f"[install] Agent will start automatically on next login.")
+            print(f"[install] To start now: schtasks /run /tn {_TASK_NAME}")
+        else:
+            print(f"[error] schtasks failed: {result.stderr.strip()}")
+            sys.exit(1)
+
+    elif system in ("Linux", "Darwin"):
+        service_name = "resilo-agent"
+        python_exe   = sys.executable
+        unit = f"""[Unit]
+Description=Resilo Agent — system metrics push agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={python_exe} {script}
+Restart=always
+RestartSec=10
+Environment=RESILO_BACKEND_URL={os.environ.get('RESILO_BACKEND_URL', 'https://resilo.onrender.com')}
+
+[Install]
+WantedBy=default.target
+"""
+        # Try user-level systemd first (no sudo needed)
+        unit_dir = os.path.expanduser("~/.config/systemd/user")
+        unit_path = os.path.join(unit_dir, f"{service_name}.service")
+        os.makedirs(unit_dir, exist_ok=True)
+        with open(unit_path, "w") as f:
+            f.write(unit)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "--user", "enable", "--now", service_name], check=False)
+        subprocess.run(["loginctl", "enable-linger", os.environ.get("USER", "")], check=False)
+        print(f"[install] systemd user service enabled: {service_name}")
+        print(f"[install] Agent runs on boot — survives terminal close.")
+        print(f"[install] Status: systemctl --user status {service_name}")
+    else:
+        print(f"[error] Unsupported platform: {system}")
+        sys.exit(1)
+
+
+def _uninstall_service() -> None:
+    """Remove the startup service registration."""
+    system = platform.system()
+    if system == "Windows":
+        result = subprocess.run(
+            f'schtasks /delete /tn "{_TASK_NAME}" /f',
+            shell=True, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"[uninstall] Removed Windows scheduled task '{_TASK_NAME}'")
+        else:
+            print(f"[warn] Could not remove task: {result.stderr.strip()}")
+    elif system in ("Linux", "Darwin"):
+        service_name = "resilo-agent"
+        subprocess.run(["systemctl", "--user", "disable", "--now", service_name], check=False)
+        unit_path = os.path.expanduser(f"~/.config/systemd/user/{service_name}.service")
+        if os.path.exists(unit_path):
+            os.remove(unit_path)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        print(f"[uninstall] Removed systemd service '{service_name}'")
+    else:
+        print(f"[error] Unsupported platform: {system}")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main() -> None:
+    args = sys.argv[1:]
+    if "--install" in args:
+        _install_service()
+        return
+    if "--uninstall" in args:
+        _uninstall_service()
+        return
+
     cfg = _load_cfg()
 
-    onboard_token = os.getenv("RESILO_ONBOARD_TOKEN") or (sys.argv[1] if len(sys.argv) > 1 else "")
+    onboard_token = os.getenv("RESILO_ONBOARD_TOKEN") or (args[0] if args and not args[0].startswith("--") else "")
     backend_url   = os.getenv("RESILO_BACKEND_URL") or cfg.get("backend_url", "https://resilo.onrender.com")
 
     if onboard_token and not cfg.get("agent_key"):

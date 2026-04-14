@@ -457,12 +457,23 @@ def _serialize_alert(alert: AlertRecord) -> dict[str, Any]:
     }
 
 
+_AGENT_LIVE_SECS = 45  # agent is "live" if heartbeat arrived within this window
+
+
+def _compute_agent_status(agent: "Agent") -> str:
+    """Compute real-time status from last_seen — never reads stale DB field."""
+    if not agent.last_seen:
+        return "pending"
+    delta = (_now() - agent.last_seen.replace(tzinfo=None) if agent.last_seen.tzinfo else _now() - agent.last_seen).total_seconds()
+    return "live" if delta < _AGENT_LIVE_SECS else "offline"
+
+
 def _serialize_agent(agent: Agent) -> dict[str, Any]:
     return {
         "id": agent.id,
         "org_id": agent.org_id,
         "label": agent.label,
-        "status": agent.status,
+        "status": _compute_agent_status(agent),
         "is_active": agent.is_active,
         "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
         "created_at": agent.created_at.isoformat() if agent.created_at else None,

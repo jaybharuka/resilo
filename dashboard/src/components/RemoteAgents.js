@@ -203,8 +203,12 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
   );
 
   const agentUrl = 'https://raw.githubusercontent.com/jaybharuka/resilo/main/desktop_agent/resilo_agent.py';
-  const winCmd  = token ? `pip install psutil -q; Invoke-WebRequest -Uri "${agentUrl}" -OutFile "$env:TEMP\\resilo_agent.py"; $env:RESILO_ONBOARD_TOKEN="${token}"; $env:RESILO_BACKEND_URL="${backendUrl}"; python "$env:TEMP\\resilo_agent.py"` : '';
-  const unixCmd = token ? `pip install psutil -q && curl -sO /tmp/resilo_agent.py ${agentUrl} && RESILO_ONBOARD_TOKEN=${token} RESILO_BACKEND_URL=${backendUrl} python /tmp/resilo_agent.py` : '';
+  const agentSaveWin  = '%USERPROFILE%\\resilo_agent.py';
+  const agentSaveUnix = '$HOME/resilo_agent.py';
+  const winCmd  = token ? `pip install psutil -q; Invoke-WebRequest -Uri "${agentUrl}" -OutFile "$env:USERPROFILE\\resilo_agent.py"; $env:RESILO_ONBOARD_TOKEN="${token}"; $env:RESILO_BACKEND_URL="${backendUrl}"; python "$env:USERPROFILE\\resilo_agent.py"` : '';
+  const unixCmd = token ? `pip install psutil -q && curl -sL "${agentUrl}" -o ~/resilo_agent.py && RESILO_ONBOARD_TOKEN=${token} RESILO_BACKEND_URL=${backendUrl} python ~/resilo_agent.py` : '';
+  const winInstall  = `python "$env:USERPROFILE\\resilo_agent.py" --install`;
+  const unixInstall = `python ~/resilo_agent.py --install`;
 
   const handleGenerate = async () => {
     if (!label.trim()) { setError('Enter a label for this device.'); return; }
@@ -351,6 +355,30 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
                 </div>
               </div>
 
+              {/* Make it permanent */}
+              <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
+                <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.amber, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Zap size={11} /> MAKE IT PERMANENT (optional)
+                </div>
+                <p style={{ ...UI, fontSize: 12, color: C.text3, margin: '0 0 10px', lineHeight: 1.55 }}>
+                  Run this <strong style={{ color: C.text2 }}>after</strong> the agent is live. It registers as a startup service — survives reboots and terminal close.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {[{ label: 'WINDOWS', cmd: winInstall }, { label: 'MAC / LINUX', cmd: unixInstall }].map(({ label, cmd }) => (
+                    <div key={label}>
+                      <div style={{ ...MONO, fontSize: 9, color: C.text4, marginBottom: 4 }}>{label}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 14px' }}>
+                        <code style={{ ...MONO, fontSize: 11, color: C.amber, flex: 1, wordBreak: 'break-all' }}>{cmd}</code>
+                        <CopyBtn text={cmd} label="" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ ...UI, fontSize: 11, color: C.text4, margin: '8px 0 0', lineHeight: 1.5 }}>
+                  To remove: run <code style={{ ...MONO, color: C.text3 }}>python resilo_agent.py --uninstall</code>
+                </p>
+              </div>
+
               <p style={{ ...UI, fontSize: 12, color: C.text4, margin: 0, lineHeight: 1.55 }}>
                 Requires Python 3.8+ and <code style={MONO}>psutil</code> on the target machine. The device appears live within seconds of running the command.
               </p>
@@ -454,8 +482,8 @@ function AgentCard({ agent, onSelect, onRemove }) {
   );
 }
 
-// React can't reference the backend constant so duplicate it
-const _AGENT_LIVE_SECS = 12;
+// Must match _AGENT_LIVE_SECS in runtime.py
+const _AGENT_LIVE_SECS = 45;
 
 // ─── Command status helpers ───────────────────────────────────────────────────
 const CMD_STATUS = {
