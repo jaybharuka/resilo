@@ -337,13 +337,19 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
                     Download <strong style={{ color: C.text1 }}>ResilioAgent.exe</strong>, run it, paste the token below, click Connect. That's it — no Python, no terminal.
                   </p>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <a
-                      href="https://github.com/jaybharuka/resilo/releases/latest/download/ResilioAgent.exe"
-                      target="_blank" rel="noreferrer"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, background: C.amber, color: C.bg, textDecoration: 'none', ...MONO, fontSize: 11, fontWeight: 700 }}
-                    >
-                      ↓ Download ResilioAgent.exe
-                    </a>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <a
+                        href="https://github.com/jaybharuka/resilo/releases/latest/download/ResilioAgent.exe"
+                        target="_blank" rel="noreferrer"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, background: C.amber, color: C.bg, textDecoration: 'none', ...MONO, fontSize: 11, fontWeight: 700 }}
+                      >
+                        ↓ Download ResilioAgent.exe
+                      </a>
+                      <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>
+                        If link gives 404 — wait ~3 min for GitHub to build it, then refresh.{' '}
+                        <a href="https://github.com/jaybharuka/resilo/actions" target="_blank" rel="noreferrer" style={{ color: C.amber, textDecoration: 'underline' }}>Check build status ↗</a>
+                      </span>
+                    </div>
                     <div style={{ flex: 1, minWidth: 160 }}>
                       <div style={{ ...MONO, fontSize: 9, color: C.text4, marginBottom: 4 }}>YOUR TOKEN (paste into the app)</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 10px' }}>
