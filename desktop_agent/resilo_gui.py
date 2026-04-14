@@ -16,9 +16,8 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext
 from typing import Any
 
-# ── Import core agent logic (same directory) ─────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _DIR)
+# ── Import core agent logic ───────────────────────────────────────────────────
+# Static top-level import — PyInstaller can analyse and bundle all deps.
 from resilo_agent import (
     collect, send, _poll_commands, _execute_command,
     _register, _load_cfg, _save_cfg,

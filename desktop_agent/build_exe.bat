@@ -11,7 +11,6 @@ pyinstaller ^
   --onefile ^
   --windowed ^
   --name ResilioAgent ^
-  --add-data "resilo_agent.py;." ^
   resilo_gui.py
 
 echo.
