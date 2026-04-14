@@ -194,6 +194,7 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
   const [secsLeft, setSecsLeft] = useState(300);
   const [creating, setCreating] = useState(false);
   const [error, setError]       = useState('');
+  const [showCli, setShowCli]   = useState(false);
   const timerRef = useRef(null);
 
   const backendUrl = process.env.REACT_APP_BACKEND_URL || (
@@ -325,8 +326,44 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
                 )}
               </div>
 
-              {/* Windows command */}
+              {/* EXE download — recommended */}
+              {token && (
+                <div style={{ background: `${C.amber}08`, border: `1px solid ${C.amber}30`, borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <Zap size={13} color={C.amber} />
+                    <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.amber }}>RECOMMENDED — DESKTOP APP (NO PYTHON NEEDED)</span>
+                  </div>
+                  <p style={{ ...UI, fontSize: 12, color: C.text2, margin: '0 0 12px', lineHeight: 1.55 }}>
+                    Download <strong style={{ color: C.text1 }}>ResilioAgent.exe</strong>, run it, paste the token below, click Connect. That's it — no Python, no terminal.
+                  </p>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <a
+                      href="https://github.com/jaybharuka/resilo/releases/latest/download/ResilioAgent.exe"
+                      target="_blank" rel="noreferrer"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, background: C.amber, color: C.bg, textDecoration: 'none', ...MONO, fontSize: 11, fontWeight: 700 }}
+                    >
+                      ↓ Download ResilioAgent.exe
+                    </a>
+                    <div style={{ flex: 1, minWidth: 160 }}>
+                      <div style={{ ...MONO, fontSize: 9, color: C.text4, marginBottom: 4 }}>YOUR TOKEN (paste into the app)</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 10px' }}>
+                        <code style={{ ...MONO, fontSize: 10, color: C.teal, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{token}</code>
+                        <CopyBtn text={token} label="" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Terminal fallback */}
               <div>
+                <button onClick={() => setShowCli(s => !s)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', ...MONO, fontSize: 10, color: C.text4, letterSpacing: '0.08em' }}>
+                  {showCli ? '▾' : '▸'} TERMINAL / COMMAND LINE (alternative)
+                </button>
+              {showCli && <div style={{ marginTop: 8 }}>
+
+              {/* Windows command */}
+              <div style={{ marginTop: 10 }}>
                 <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.text4, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Monitor size={11} /> WINDOWS — run in PowerShell or CMD
                 </div>
@@ -379,9 +416,11 @@ export function NewAgentModal({ onClose, onCreated, initialLabel = '' }) {
                 </p>
               </div>
 
-              <p style={{ ...UI, fontSize: 12, color: C.text4, margin: 0, lineHeight: 1.55 }}>
-                Requires Python 3.8+ and <code style={MONO}>psutil</code> on the target machine. The device appears live within seconds of running the command.
+              <p style={{ ...UI, fontSize: 12, color: C.text4, margin: '8px 0 0', lineHeight: 1.55 }}>
+                Requires Python 3.8+ and <code style={MONO}>psutil</code> on the target machine.
               </p>
+              </div>}
+              </div>
 
               <button
                 onClick={onClose}
