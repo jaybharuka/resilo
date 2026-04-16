@@ -156,10 +156,45 @@ def _execute_command(cmd: dict[str, Any]) -> None:
         except Exception:
             pass
     elif action == "free_memory":
-        try:
-            subprocess.run(["sync"], timeout=5, check=False)
-        except Exception:
-            pass
+        import gc
+        gc.collect()
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+                # Also trim other processes' working sets
+                for proc in psutil.process_iter(['pid', 'status']):
+                    try:
+                        handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, proc.info['pid'])
+                        if handle:
+                            ctypes.windll.psapi.EmptyWorkingSet(handle)
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(["sync"], timeout=5, check=False)
+                with open("/proc/sys/vm/drop_caches", "w") as f:
+                    f.write("3")
+            except Exception:
+                pass
+    elif action == "disk_cleanup":
+        if platform.system() == "Windows":
+            try:
+                import tempfile, shutil
+                tmp = tempfile.gettempdir()
+                for entry in os.scandir(tmp):
+                    try:
+                        if entry.is_file():
+                            os.remove(entry.path)
+                        elif entry.is_dir():
+                            shutil.rmtree(entry.path, ignore_errors=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
 
 def _load_cfg() -> dict[str, Any]:
