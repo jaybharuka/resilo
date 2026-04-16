@@ -2,9 +2,11 @@
 Resilo AI Pipeline Demo
 Runs the full loop: normal → critical → AI fires → command queued → shown.
 
-Usage: python demo_ai_pipeline.py
+Usage:
+  python demo_ai_pipeline.py                          # auto-creates agent via admin login
+  python demo_ai_pipeline.py --token resilo_xxxx...   # use YOUR token from dashboard New Agent
 """
-import json, time, urllib.request, urllib.error
+import json, sys, time, urllib.request, urllib.error
 
 BACKEND = "http://localhost:8000"
 AUTH    = "http://localhost:5001"
@@ -64,20 +66,36 @@ def poll_commands(agent_key):
     return r.get("commands", [])
 
 
+# ── Accept --token from CLI (dashboard New Agent) ────────────────
+EXTERNAL_TOKEN = None
+if "--token" in sys.argv:
+    idx = sys.argv.index("--token")
+    if idx + 1 < len(sys.argv):
+        EXTERNAL_TOKEN = sys.argv[idx + 1]
+
 print("=" * 60)
 print("  RESILO AI PIPELINE DEMO")
 print("=" * 60)
 
-# ── STEP 1: Login + create fresh agent ───────────────────────────
-print("\n[1/5] Logging in and creating a demo agent…")
-jwt, org_id = login()
-print(f"      ✓ Logged in  org_id={org_id}")
-onboard_token = create_onboard_token(jwt, org_id)
-print(f"      ✓ Onboard token created")
-agent_info = register_agent(onboard_token)
-agent_key  = agent_info.get("agent_key") or agent_info.get("key")
-agent_id   = agent_info.get("agent_id") or agent_info.get("id")
-print(f"      ✓ Agent registered  id={agent_id}")
+# ── STEP 1: Create agent ─────────────────────────────────────────
+if EXTERNAL_TOKEN:
+    print("\n[1/5] Using token from dashboard…")
+    agent_info = register_agent(EXTERNAL_TOKEN)
+    agent_key  = agent_info.get("agent_key") or agent_info.get("key")
+    agent_id   = agent_info.get("agent_id") or agent_info.get("id")
+    org_id     = agent_info.get("org_id")
+    print(f"      ✓ Agent registered  id={agent_id}  org={org_id}")
+    jwt, _     = login()  # still need jwt to set exec mode
+else:
+    print("\n[1/5] Logging in and creating a demo agent…")
+    jwt, org_id = login()
+    print(f"      ✓ Logged in  org_id={org_id}")
+    onboard_token = create_onboard_token(jwt, org_id)
+    print(f"      ✓ Onboard token created")
+    agent_info = register_agent(onboard_token)
+    agent_key  = agent_info.get("agent_key") or agent_info.get("key")
+    agent_id   = agent_info.get("agent_id") or agent_info.get("id")
+    print(f"      ✓ Agent registered  id={agent_id}")
 
 # ── STEP 2: Set execution mode → AUTO SAFE ───────────────────────
 print("\n[2/5] Setting execution mode → AUTO SAFE…")

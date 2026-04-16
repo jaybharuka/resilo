@@ -1298,6 +1298,7 @@ export default function RemoteAgents() {
   const [spinning, setSpinning]   = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [selected, setSelected]   = useState(null); // agent_id for detail view
+  const [filterStatus, setFilterStatus] = useState(null); // null = all
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -1377,20 +1378,30 @@ export default function RemoteAgents() {
         </div>
       </div>
 
-      {/* Summary pills */}
+      {/* Summary pills — clickable filters */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {[
-          { label: 'LIVE',    count: liveCount,    color: C.teal  },
-          { label: 'OFFLINE', count: offlineCount, color: C.red   },
-          { label: 'PENDING', count: pendingCount, color: C.amber },
-          { label: 'TOTAL',   count: agents.length, color: C.text3 },
-        ].map(({ label, count, color }) => (
-          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 20, background: C.surface2, border: `1px solid ${C.border}` }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block' }} />
-            <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.text3 }}>{label}</span>
-            <span style={{ ...MONO, fontSize: 13, fontWeight: 700, color }}>{count}</span>
-          </div>
-        ))}
+          { label: 'LIVE',    key: 'live',    count: liveCount,     color: C.teal  },
+          { label: 'OFFLINE', key: 'offline', count: offlineCount,  color: C.red   },
+          { label: 'PENDING', key: 'pending', count: pendingCount,  color: C.amber },
+          { label: 'TOTAL',   key: null,      count: agents.length, color: C.text3 },
+        ].map(({ label, key, count, color }) => {
+          const active = filterStatus === key;
+          return (
+            <button
+              key={label}
+              onClick={() => setFilterStatus(active ? null : key)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 20,
+                background: active ? color + '22' : C.surface2,
+                border: `1px solid ${active ? color : C.border}`,
+                cursor: 'pointer', outline: 'none' }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block' }} />
+              <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: active ? color : C.text3 }}>{label}</span>
+              <span style={{ ...MONO, fontSize: 13, fontWeight: 700, color }}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Agent grid / empty state */}
@@ -1415,7 +1426,7 @@ export default function RemoteAgents() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {agents.map(agent => (
+          {(filterStatus ? agents.filter(a => a.status === filterStatus) : agents).map(agent => (
             <AgentCard
               key={agent.id}
               agent={agent}
