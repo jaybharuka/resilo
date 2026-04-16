@@ -1,5 +1,5 @@
 """
-Resilo Agent — GUI Edition
+Resilo Agent — GUI Edition  (self-contained, no external modules needed)
 Download ResilioAgent.exe, enter your token, click Connect.
 Runs silently in system tray after connecting.
 """
@@ -9,20 +9,224 @@ import json
 import os
 import platform
 import socket
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
+import uuid
+from collections import deque
 from tkinter import messagebox, scrolledtext
 from typing import Any
 
-# ── Import core agent logic ───────────────────────────────────────────────────
-# Static top-level import — PyInstaller can analyse and bundle all deps.
-from resilo_agent import (
-    collect, send, _poll_commands, _execute_command,
-    _register, _load_cfg, _save_cfg,
-    _install_service, _uninstall_service,
-)
+# ── psutil (bundled by PyInstaller) ──────────────────────────────────────────
+try:
+    import psutil
+except ImportError:
+    messagebox.showerror("Missing dependency", "psutil is required.\nRun: pip install psutil")
+    sys.exit(1)
+
+# ── Agent logic (inlined — no cross-module import) ────────────────────────────
+
+_BUFFER: deque[dict[str, Any]] = deque(maxlen=50)
+_RETRY_DELAYS = (2, 4, 8)
+_TASK_NAME    = "ResilioAgent"
+_CFG_PATH     = os.path.join(os.path.expanduser("~"), ".resilo_agent.json")
+
+
+def _disk_root() -> str:
+    return "C:\\" if platform.system() == "Windows" else "/"
+
+
+def _load_avg() -> str | None:
+    try:
+        avg = psutil.getloadavg()
+        return f"{avg[0]:.2f} {avg[1]:.2f} {avg[2]:.2f}"
+    except AttributeError:
+        return None
+
+
+def _temperature() -> float | None:
+    try:
+        temps = psutil.sensors_temperatures()
+        if not temps:
+            return None
+        for key in ("coretemp", "cpu_thermal", "k10temp", "acpitz"):
+            if key in temps and temps[key]:
+                return round(temps[key][0].current, 1)
+        first_key = next(iter(temps))
+        if temps[first_key]:
+            return round(temps[first_key][0].current, 1)
+    except (AttributeError, NotImplementedError):
+        pass
+    return None
+
+
+def collect(device_id: str, label: str) -> dict[str, Any]:
+    vm   = psutil.virtual_memory()
+    disk = psutil.disk_usage(_disk_root())
+    net  = psutil.net_io_counters()
+    return {
+        "cpu": round(psutil.cpu_percent(interval=0.5), 2),
+        "memory": round(vm.percent, 2),
+        "disk": round(disk.percent, 2),
+        "network_in": int(net.bytes_recv),
+        "network_out": int(net.bytes_sent),
+        "temperature": _temperature(),
+        "load_avg": _load_avg(),
+        "processes": len(psutil.pids()),
+        "uptime_secs": int(time.time() - psutil.boot_time()),
+        "extra": {
+            "device_id": device_id,
+            "agent_label": label,
+            "hostname": socket.gethostname(),
+            "platform": platform.system(),
+            "os_version": platform.version(),
+            "error_rate": 0,
+        },
+    }
+
+
+def _post(url: str, body: dict[str, Any], agent_key: str) -> tuple[int, dict[str, Any]]:
+    data = json.dumps(body).encode()
+    req  = urllib.request.Request(
+        url, method="POST", data=data,
+        headers={"Content-Type": "application/json", "X-Agent-Key": agent_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = resp.read().decode()
+            return resp.status, json.loads(payload) if payload else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {"raw": raw}
+        return exc.code, parsed
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+
+
+def send(backend_url: str, org_id: str, agent_key: str,
+         metrics: dict[str, Any]) -> tuple[bool, float]:
+    url  = f"{backend_url.rstrip('/')}/ingest/heartbeat"
+    body = {"org_id": org_id, "metrics": metrics}
+    while _BUFFER:
+        buffered = _BUFFER[0]
+        for delay in _RETRY_DELAYS:
+            status, _ = _post(url, buffered, agent_key)
+            if status == 200:
+                _BUFFER.popleft()
+                break
+            time.sleep(delay)
+        else:
+            break
+    for delay in (*_RETRY_DELAYS, None):
+        status, resp = _post(url, body, agent_key)
+        if status == 200:
+            return True, float(resp.get("poll_interval", 5))
+        if delay is None:
+            break
+        time.sleep(delay)
+    _BUFFER.append(body)
+    return False, 5.0
+
+
+def _poll_commands(backend_url: str, agent_key: str) -> list[dict[str, Any]]:
+    url = f"{backend_url.rstrip('/')}/agent/command?token={agent_key}"
+    req = urllib.request.Request(url, method="GET",
+                                 headers={"X-Agent-Key": agent_key})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("commands", [])
+    except Exception:
+        return []
+
+
+def _execute_command(cmd: dict[str, Any]) -> None:
+    action = cmd.get("action", "")
+    target = cmd.get("target", "")
+    if action == "restart_service" and target:
+        try:
+            subprocess.run(["systemctl", "restart", target], timeout=15, check=False)
+        except Exception:
+            pass
+    elif action == "free_memory":
+        try:
+            subprocess.run(["sync"], timeout=5, check=False)
+        except Exception:
+            pass
+
+
+def _load_cfg() -> dict[str, Any]:
+    try:
+        with open(_CFG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_cfg(cfg: dict[str, Any]) -> None:
+    with open(_CFG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def _register(backend_url: str, onboard_token: str, label: str) -> dict[str, Any]:
+    body = json.dumps({"token": onboard_token, "label": label}).encode()
+    req  = urllib.request.Request(
+        f"{backend_url.rstrip('/')}/agents/register",
+        method="POST", data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        raise RuntimeError(f"Registration failed ({exc.code}): {raw}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Registration failed: {exc}") from exc
+
+
+def _install_service() -> None:
+    script = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+    system = platform.system()
+    if system == "Windows":
+        cmd = (
+            f'schtasks /create /tn "{_TASK_NAME}" '
+            f'/tr "\\"{script}\\"" '
+            f'/sc onlogon /ru "{os.environ.get("USERNAME", "%USERNAME%")}" '
+            f'/rl highest /f'
+        )
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(result.stderr.strip())
+    elif system in ("Linux", "Darwin"):
+        unit_dir  = os.path.expanduser("~/.config/systemd/user")
+        unit_path = os.path.join(unit_dir, "resilo-agent.service")
+        os.makedirs(unit_dir, exist_ok=True)
+        with open(unit_path, "w") as f:
+            f.write(f"[Unit]\nDescription=Resilo Agent\nAfter=network.target\n\n"
+                    f"[Service]\nType=simple\nExecStart={script}\nRestart=always\n\n"
+                    f"[Install]\nWantedBy=default.target\n")
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "--user", "enable", "--now", "resilo-agent"], check=False)
+
+
+def _uninstall_service() -> None:
+    system = platform.system()
+    if system == "Windows":
+        subprocess.run(f'schtasks /delete /tn "{_TASK_NAME}" /f',
+                       shell=True, capture_output=True)
+    elif system in ("Linux", "Darwin"):
+        subprocess.run(["systemctl", "--user", "disable", "--now", "resilo-agent"], check=False)
+        unit_path = os.path.expanduser("~/.config/systemd/user/resilo-agent.service")
+        if os.path.exists(unit_path):
+            os.remove(unit_path)
 
 # ── System tray (optional — bundled by PyInstaller) ───────────────────────────
 try:
