@@ -27,13 +27,16 @@ _SYSTEM_PROMPT = (
     "You are an AIOps agent responsible for maintaining system health.\n"
     "Rules:\n"
     "- Prefer safe actions. Never execute destructive commands.\n"
-    "- Use restart_service only when clearly necessary.\n"
-    "- If unsure, call noop.\n"
+    "- For high memory (>85%): call scale_memory.\n"
+    "- For high disk (>85%): call disk_cleanup.\n"
+    "- For high CPU with a known service: call restart_service.\n"
+    "- For high CPU with no clear service to restart: call notify_only.\n"
+    "- If truly unsure, call noop.\n"
     "- Call exactly ONE tool, then stop.\n"
     "- Briefly explain your reasoning."
 )
 
-_SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "noop"})
+_SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "scale_memory", "disk_cleanup", "notify_only", "noop"})
 
 
 def _build_agent(metrics: dict[str, Any]) -> AgentExecutor:
