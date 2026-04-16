@@ -11,6 +11,8 @@ pyinstaller ^
   --onefile ^
   --windowed ^
   --name ResilioAgent ^
+  --paths . ^
+  --hidden-import resilo_agent ^
   resilo_gui.py
 
 echo.

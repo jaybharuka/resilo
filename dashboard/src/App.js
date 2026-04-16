@@ -13,6 +13,7 @@ import Insights from './components/Insights';
 import Remediation from './components/Remediation';
 import Analytics from './components/Analytics';
 import InfraHub from './components/InfraHub';
+import RemoteAgents from './components/RemoteAgents';
 import NotificationSettings from './components/resilo/NotificationSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
@@ -20,10 +21,14 @@ import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './components/Login';
+import AuthCallback from './components/AuthCallback';
 import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
 import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
+import IncidentDeclare from './components/IncidentDeclare';
+import ConnectionStatus from './components/ConnectionStatus';
+import OnboardingWizard from './components/OnboardingWizard';
 import { RefreshCw } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -42,7 +47,9 @@ function Topbar() {
   if (!isAuthenticated) return null;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '20px', gap: '8px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '20px', gap: '12px' }}>
+      <ConnectionStatus />
+      <IncidentDeclare />
       {user?.email && (
         <span style={{ ...MONO, fontSize: '13px', letterSpacing: '0.06em', color: '#4A443D' }}>
           {user.email}
@@ -90,7 +97,15 @@ function Topbar() {
 function AppShell() {
   const { isAuthenticated } = useAuth();
   const location = useLocation();
-  const hideSidebar = location.pathname === '/login';
+  const AUTH_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/auth/callback', '/accept-invite', '/redeem'];
+  const isAuthPage   = AUTH_ROUTES.some(p => location.pathname.startsWith(p));
+  const hideSidebar  = isAuthPage;
+
+  // Redirect already-authenticated users away from the login/register pages
+  if (isAuthenticated && isAuthPage) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
   return (
     <div className="min-h-screen flex" style={{ backgroundColor: 'rgb(var(--bg))', color: 'rgb(var(--text))' }}>
       {!hideSidebar && <Sidebar />}
@@ -99,8 +114,8 @@ function AppShell() {
         style={{ background: 'rgb(var(--bg))', marginLeft: hideSidebar ? 0 : undefined }}
       >
         <Toaster position="top-right" toastOptions={{ duration: 2500 }} />
-        <Topbar />
-        {isAuthenticated && <HealthRibbon />}
+        {!isAuthPage && <Topbar />}
+        {!isAuthPage && isAuthenticated && <HealthRibbon />}
         <Routes>
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/onboarding"  element={<ProtectedRoute><ErrorBoundary fallbackTitle="Onboarding failed to load"><OnboardingWizard /></ErrorBoundary></ProtectedRoute>} />
@@ -114,12 +129,13 @@ function AppShell() {
           <Route path="/infra"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Infrastructure Hub failed to load"><InfraHub /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/devices"       element={<Navigate to="/infra" replace />} />
           <Route path="/users"         element={<Navigate to="/infra" replace />} />
-          <Route path="/remote-agents" element={<Navigate to="/infra" replace />} />
+          <Route path="/remote-agents" element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Remote Agents failed to load"><RemoteAgents /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/invites"       element={<Navigate to="/infra" replace />} />
           <Route path="/notifications" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Notifications failed to load"><NotificationSettings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/register"    element={<Register />} />
           <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />
           <Route path="/accept-invite"   element={<AcceptInvite />} />
+          <Route path="/auth/callback"   element={<AuthCallback />} />
           <Route path="/login"            element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password"  element={<ResetPassword />} />
