@@ -1,266 +1,228 @@
-# Resilo Auth API
+# Resilo — AI-Powered Remote Monitoring & Auto-Remediation
 
-Enterprise-grade authentication and authorization service for multi-tenant SaaS applications.
+> Monitor any machine in real time. Let AI detect, analyze, and fix issues automatically. No VPN. No port forwarding. Zero config.
 
-## Overview
+## What it does
 
-Resilo Auth API provides secure, scalable authentication with:
-- **JWT-based access tokens** with configurable expiration
-- **Two-factor authentication (TOTP)** for enhanced security
-- **Multi-tenancy support** with org-scoped authorization
-- **Audit logging** for compliance and security monitoring
-- **Field-level encryption** for sensitive data at rest
-- **API key authentication** for service-to-service calls
-- **Comprehensive monitoring** with Prometheus metrics and distributed tracing
+Resilo runs a lightweight agent on any machine (Windows, macOS, Linux). The agent pushes live system metrics (CPU, memory, disk, network, temperature) to the Resilo backend over plain HTTPS. When thresholds are breached, an AI agent analyzes the alert and — depending on the configured execution mode — automatically queues and executes safe remediation commands.
 
-## Quick Start
-
-### Prerequisites
-- Python 3.9+
-- PostgreSQL 12+
-- 2GB RAM minimum
-
-### 5-Minute Setup
-
-```bash
-# 1. Clone repository
-git clone https://github.com/resilo/resilo.git
-cd resilo
-
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Generate encryption key
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-# 5. Create .env file
-cp .env.example .env
-# Edit .env and add:
-# - JWT_SECRET_KEY (generate: python -c "import secrets; print(secrets.token_urlsafe(32))")
-# - ENCRYPTION_KEY (from step 4)
-# - DATABASE_URL (postgresql://user:password@localhost/aiops)
-
-# 6. Run migrations
-alembic upgrade head
-
-# 7. Start server
-python -m uvicorn app.api.auth_api:app --reload
+**Full loop in under 30 seconds:**
+```
+Agent pushes metrics ? Threshold breached ? Alert created
+? LangChain AI analyzes ? Command queued ? Agent executes ? Alert resolves
 ```
 
-Server runs at `http://localhost:5001`
+---
+
+## Services & Ports
+
+| Service | Port | Description |
+|---|---|---|
+| React Dashboard | 3000 | Frontend (CRA dev server) |
+| Node/Express | 3011 | API gateway, Socket.IO |
+| FastAPI Core | 8000 | Metrics, agents, AI pipeline |
+| FastAPI Auth | 5001 | JWT, OAuth, 2FA |
+| PostgreSQL | 5432 | Primary database |
+
+---
+
+## Quick Start (Dev)
+
+**Prerequisites:** Python 3.12+, Node 18+, PostgreSQL 15
+
+```bash
+# Clone
+git clone https://github.com/jaybharuka/resilo.git
+cd resilo
+
+# Python deps
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+
+# Node deps
+cd dashboard && npm install && cd ..
+
+# Configure
+copy .env.dev .env            # edit DATABASE_URL, JWT_SECRET, NVIDIA_API_KEY
+
+# Start everything (Windows)
+run-dev.bat
+
+# Stop everything
+stop-dev.bat
+```
+
+Open **http://localhost:3000** — default admin: `admin@company.local / Admin@1234`
+
+---
 
 ## Architecture
 
 ```
-Resilo Auth API
-â”œâ”€â”€ app/
-â”‚   â”œâ”€â”€ api/
-â”‚   â”‚   â””â”€â”€ auth_api.py           # FastAPI application
-â”‚   â”œâ”€â”€ core/
-â”‚   â”‚   â”œâ”€â”€ database.py           # SQLAlchemy models
-â”‚   â”‚   â”œâ”€â”€ logging_config.py     # Structured logging
-â”‚   â”‚   â”œâ”€â”€ audit.py              # Audit logging
-â”‚   â”‚   â”œâ”€â”€ authz.py              # Authorization checks
-â”‚   â”‚   â”œâ”€â”€ apikey.py             # API key management
-â”‚   â”‚   â”œâ”€â”€ encryption.py         # Field-level encryption
-â”‚   â”‚   â”œâ”€â”€ secrets.py            # Secrets management
-â”‚   â”‚   â”œâ”€â”€ retention.py          # Data retention policies
-â”‚   â”‚   â”œâ”€â”€ backup.py             # Database backups
-â”‚   â”‚   â”œâ”€â”€ metrics.py            # Prometheus metrics
-â”‚   â”‚   â”œâ”€â”€ trace_context.py      # Distributed tracing
-â”‚   â”‚   â””â”€â”€ http_client.py        # HTTP client helpers
-â”‚   â””â”€â”€ models/
-â”‚       â””â”€â”€ (Pydantic request/response models)
-â”œâ”€â”€ tests/
-â”‚   â””â”€â”€ test_auth_api.py          # Pytest async tests
-â”œâ”€â”€ alembic/                       # Database migrations
-â”œâ”€â”€ requirements.txt               # Python dependencies
-â”œâ”€â”€ .env.example                   # Environment template
-â””â”€â”€ README.md                      # This file
++-------------+     HTTPS      +----------------------+
+¦ Remote      ¦ -------------? ¦ FastAPI Core  :8000   ¦
+¦ Agent       ¦  heartbeat     ¦ runtime.py            ¦
+¦ (Python/Go) ¦ ?---- cmd ---- ¦ LangChain AI agent    ¦
++-------------+                +-----------------------+
+                                          ¦ SQLAlchemy
++-------------+   SSE / REST             ?
+¦ React SPA   ¦ ?------------ +----------------------+
+¦ :3000       ¦               ¦ PostgreSQL  :5432     ¦
++-------------+               +----------------------+
+       ¦ CRA proxy
++------?------+               +----------------------+
+¦ Node/Express¦               ¦ FastAPI Auth  :5001   ¦
+¦ :3011       ¦               ¦ JWT, OAuth, 2FA       ¦
++-------------+               +----------------------+
 ```
+
+---
 
 ## Key Features
 
-### Authentication
-- **JWT Tokens**: Configurable expiration (default 24h)
-- **Password Hashing**: bcrypt with salt
-- **2FA Support**: TOTP-based two-factor authentication
-- **Session Management**: Persistent user sessions with timeout
+### Remote Agent
+- Pushes CPU, memory, disk, network, temperature every 3s over plain HTTPS
+- Zero-config install: one env var + one command
+- Windows EXE build (no Python required on target): `desktop_agent/build_exe.bat`
+- Go agent in progress: `agent/go-agent/`
 
-### Authorization
-- **Role-Based Access Control**: admin, devops, viewer, manager, employee, guest
-- **Org-Scoped Access**: Users can only access their organization's data
-- **API Key Authentication**: Service-to-service calls with API keys
+### AI Anomaly Detection
+- Thresholds: CPU > 85% = critical, Memory > 90% = high
+- LangChain + NVIDIA NIM LLM analyzes each alert asynchronously
+- Three execution modes per agent:
+  - `dry_run` — log only
+  - `manual_approval` — queue for human review
+  - `auto_safe` — auto-execute safe actions
+- Safe actions: `scale_memory`, `disk_cleanup`, `restart_service`, `notify_only`, `noop`
+- Learning feedback loop tracks success rate per action
 
-### Security
-- **Field-Level Encryption**: Email and full_name encrypted at rest
-- **Audit Logging**: All sensitive operations logged for compliance
-- **Secrets Management**: Environment-based secrets with validation
-- **HTTPS Enforcement**: Enforced in production mode
-- **Rate Limiting**: Login (5/min), registration (3/hour)
+### Dashboard
+- Real-time metrics via SSE (no polling)
+- Agent status: LIVE / OFFLINE / PENDING with clickable filters
+- AI DECISIONS panel — full reasoning + confidence per decision
+- Activity timeline, learning feedback, alert history
 
-### Operations
-- **Automated Backups**: Daily database backups with retention policy
-- **Data Retention**: Automatic cleanup of expired sessions, tokens, and logs
-- **Health Checks**: Endpoints for monitoring backup and system health
-- **Prometheus Metrics**: Request latency, error rates, database queries
-- **Distributed Tracing**: W3C Trace Context propagation
+### Auth
+- JWT access tokens (15 min) + refresh tokens (7 days, httpOnly cookie)
+- Google OAuth2, TOTP 2FA, org-scoped multi-tenancy
+- Roles: `admin`, `member`, `viewer`
 
-## Development
+---
 
-### Running Tests
+## Project Structure
 
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test
-pytest tests/test_auth_api.py::test_login -v
-
-# Run with coverage
-pytest tests/ --cov=app --cov-report=html
+```
+resilo/
++-- app/
+¦   +-- api/
+¦   ¦   +-- runtime.py         # Core API — heartbeat, agents, AI pipeline
+¦   ¦   +-- core_api.py        # FastAPI app factory
+¦   ¦   +-- auth_api.py        # Auth service
+¦   +-- agents/
+¦       +-- langchain_agent.py # LangChain AI agent + tools
++-- dashboard/
+¦   +-- src/
+¦   ¦   +-- components/        # React components (RemoteAgents, Dashboard…)
+¦   ¦   +-- services/          # API clients (api.js, resiloApi.js)
+¦   ¦   +-- setupProxy.js      # CRA dev proxy rules
+¦   +-- server.js              # Node/Express gateway
++-- desktop_agent/
+¦   +-- resilo_agent.py        # Core agent logic
+¦   +-- resilo_gui.py          # Tkinter GUI (PyInstaller target)
+¦   +-- build_exe.bat          # Build Windows EXE
+¦   +-- demo_ai_pipeline.py    # Full AI pipeline demo script
++-- agent/go-agent/            # Go agent (in progress)
++-- docs/
+¦   +-- PRD.md
+¦   +-- DESIGN.md
+¦   +-- TECH_STACK.md
++-- .env.dev                   # Dev environment config
++-- run-dev.bat                # Start all 4 services
++-- stop-dev.bat               # Kill all services
 ```
 
-### Code Quality
+---
 
-```bash
-# Format code
-black app/ tests/
+## Environment Variables
 
-# Lint
-ruff check app/ tests/
+```env
+# .env.dev — single source of truth for local dev
+ENV=development
+PORT=3011
+CORE_API_URL=http://localhost:8000
 
-# Type checking
-mypy app/
+DATABASE_URL=postgresql+asyncpg://aiops:aiops@localhost:5432/aiops
+JWT_SECRET=your-secret-here
+NVIDIA_API_KEY=your-nvidia-nim-key   # Required for AI agent
+
+# Google OAuth (optional)
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+FRONTEND_URL=http://localhost:3000
 ```
 
-### Database Migrations
+---
+
+## AI Pipeline Demo
+
+Run the full detect ? analyze ? remediate loop in one command:
 
 ```bash
-# Create new migration
-alembic revision --autogenerate -m "Add new column"
+# Option 1: Auto-creates a demo agent (admin org)
+python desktop_agent/demo_ai_pipeline.py
 
-# Apply migrations
-alembic upgrade head
-
-# Rollback one migration
-alembic downgrade -1
+# Option 2: Use YOUR token from dashboard ? + New Agent
+python desktop_agent/demo_ai_pipeline.py --token resilo_xxx...
 ```
 
-## API Endpoints
-
-### Authentication
-- `POST /auth/login` - Login with email/password
-- `POST /auth/logout` - Logout and invalidate session
-- `POST /auth/register` - Register new organization
-- `POST /auth/change-password` - Change user password
-- `POST /auth/forgot-password` - Request password reset
-- `POST /auth/reset-password` - Reset password with token
-
-### Two-Factor Authentication
-- `POST /auth/2fa/setup` - Setup TOTP
-- `POST /auth/2fa/enable` - Enable 2FA
-- `POST /auth/2fa/disable` - Disable 2FA
-
-### User Management
-- `GET /users` - List users (admin only)
-- `GET /users/{user_id}` - Get user details
-- `POST /users` - Create new user (admin only)
-- `PUT /users/{user_id}` - Update user (admin only)
-- `DELETE /users/{user_id}` - Deactivate user (admin only)
-
-### Invites
-- `POST /auth/invites` - Create invite (admin only)
-- `GET /auth/invites` - List invites (admin only)
-- `DELETE /auth/invites/{token}` - Revoke invite (admin only)
-- `POST /auth/accept-invite` - Accept invite
-
-### API Keys
-- `POST /auth/api-keys` - Create API key (admin only)
-- `GET /auth/api-keys` - List API keys (admin only)
-- `DELETE /auth/api-keys/{key_id}` - Revoke API key (admin only)
-
-### Health & Monitoring
-- `GET /auth/health` - Service health check
-- `GET /auth/health/backups` - Backup health status
-- `GET /metrics` - Prometheus metrics
-
-## Configuration
-
-### Environment Variables
-
-Required:
-- `JWT_SECRET_KEY` - Secret for signing JWT tokens (min 32 chars)
-- `ENCRYPTION_KEY` - Fernet key for field-level encryption
-- `DATABASE_URL` - PostgreSQL connection string
-
-Optional:
-- `ENVIRONMENT` - "development" or "production" (default: development)
-- `ADMIN_DEFAULT_PASSWORD` - Default admin password (default: Admin@1234)
-- `BACKUP_DIR` - Backup directory (default: ./backups)
-- `BACKUP_RETENTION_COUNT` - Backups to keep (default: 7)
-
-See `.env.example` for all options.
-
-## Deployment
-
-### Production Checklist
-
-```bash
-# 1. Verify secrets
-echo $JWT_SECRET_KEY $ENCRYPTION_KEY $DATABASE_URL
-
-# 2. Run migrations
-alembic upgrade head
-
-# 3. Run tests
-pytest tests/ -v
-
-# 4. Create backup
-python -c "from app.core.backup import create_backup; create_backup()"
-
-# 5. Start service
-python -m uvicorn app.api.auth_api:app --host 0.0.0.0 --port 5001
+Expected output:
+```
+? AI PIPELINE COMPLETE
+  ISSUE    : CPU 96% + Memory 94% — CRITICAL thresholds breached
+  AI ACTION: scale_memory
+  TARGET   : system
 ```
 
-See `DEPLOYMENT.md` for detailed deployment procedures.
+Then open **http://localhost:3000/remote-agents** ? click the agent ? AI DECISIONS panel.
 
-## Documentation
+---
 
-- `DEPLOYMENT.md` - Deployment guide with pre/post-deployment checklists
-- `INCIDENT_RESPONSE.md` - Incident response procedures and runbooks
-- `RUNBOOKS.md` - Operational runbooks for maintenance tasks
-- `SECRETS_MANAGEMENT.md` - Secrets management and rotation
-- `DATA_RETENTION.md` - Data retention policies and cleanup
-- `CHANGELOG.md` - Version history and release notes
+## API Reference (Core — :8000)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/ingest/heartbeat` | Agent pushes metrics |
+| `GET` | `/agent/command` | Agent polls for queued commands |
+| `POST` | `/agents/onboard` | Generate registration token (JWT required) |
+| `POST` | `/agents/register` | Exchange token for agent key |
+| `PATCH` | `/api/orgs/{org_id}/agents/{id}/execution-mode` | Set AI execution mode |
+| `GET` | `/api/orgs/{org_id}/agents/{id}` | Agent detail + AI history |
+| `GET` | `/stream` | SSE real-time updates |
+
+## API Reference (Auth — :5001)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Email/password login |
+| `POST` | `/auth/register` | Register new org |
+| `POST` | `/auth/refresh` | Refresh access token |
+| `POST` | `/auth/2fa/setup` | Setup TOTP |
+| `GET` | `/auth/google` | Google OAuth redirect |
+
+---
 
 ## Contributing
 
-1. Create feature branch: `git checkout -b feature/my-feature`
-2. Make changes and commit: `git commit -m "Add my feature"`
-3. Push to branch: `git push origin feature/my-feature`
-4. Open Pull Request
+```bash
+git checkout -b feature/my-feature
+git commit -m "feat: my feature"
+git push origin feature/my-feature
+# open PR
+```
 
-### Code Style
-- Follow PEP 8
-- Use type hints
-- Write docstrings for functions
-- Add tests for new features
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/resilo/resilo/issues)
-- **Documentation**: See docs/ directory
-- **Email**: support@resilo.io
+---
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Version
-
-Current: 2.0.0 (see CHANGELOG.md for version history)
+MIT
