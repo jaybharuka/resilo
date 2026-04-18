@@ -1659,7 +1659,7 @@ def build_agents_router() -> APIRouter:
             await db.flush()
 
         raw_token = f"resilo_{secrets.token_urlsafe(32)}"
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
         record = OnboardingToken(
             token=raw_token,
             org_id=org_id,
@@ -1669,7 +1669,7 @@ def build_agents_router() -> APIRouter:
         )
         db.add(record)
         await db.commit()
-        return {"token": raw_token, "expires_in": 300, "org_id": org_id}
+        return {"token": raw_token, "expires_in": 1800, "org_id": org_id}
 
     @router.post("/agents/register")
     async def register_via_onboard_token(body: AgentRegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
