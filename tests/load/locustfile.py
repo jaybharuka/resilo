@@ -10,7 +10,7 @@ Environment variables (all optional — defaults work against local dev stack):
     AUTH_API_HOST       Full base URL for auth_api   (default: http://localhost:5001)
     CORE_API_HOST       Full base URL for core_api   (default: http://localhost:8000)
     LOAD_TEST_EMAIL     Admin email                  (default: admin@company.local)
-    LOAD_TEST_PASSWORD  Admin password               (default: Admin@1234)
+    LOAD_TEST_PASSWORD  Admin password               (set via ADMIN_DEFAULT_PASSWORD in .env)
     AGENT_KEY           Raw X-Agent-Key for heartbeat ingest
     ORG_ID              Organisation UUID for ingest + dashboard reads
 
@@ -39,7 +39,7 @@ from locust import HttpUser, between, events, task
 _AUTH_HOST  = os.getenv("AUTH_API_HOST",      "http://localhost:5001")
 _CORE_HOST  = os.getenv("CORE_API_HOST",      "http://localhost:8000")
 _EMAIL      = os.getenv("LOAD_TEST_EMAIL",    "admin@company.local")
-_PASSWORD   = os.getenv("LOAD_TEST_PASSWORD", "Admin@1234")
+_PASSWORD   = os.getenv("LOAD_TEST_PASSWORD") or os.getenv("ADMIN_DEFAULT_PASSWORD", "")
 _AGENT_KEY  = os.getenv("AGENT_KEY",          "")
 _ORG_ID     = os.getenv("ORG_ID",             "")
 

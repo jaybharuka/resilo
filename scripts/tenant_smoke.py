@@ -18,7 +18,7 @@ except ImportError as exc:  # pragma: no cover - dependency guard
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_LOGIN_PATH = "/auth/login"
 DEFAULT_EMAIL = "admin@company.local"
-DEFAULT_PASSWORD = "Admin@1234"
+DEFAULT_PASSWORD = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
 DEFAULT_ORG_IDS = ""
 DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT = 20

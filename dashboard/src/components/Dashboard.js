@@ -1,14 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { apiService, systemApi, realTimeService } from '../services/api';
-import realtime from '../services/realtime';
-import { metricStatus } from '../utils/thresholds';
-import { useResiloStore } from '../store/useResiloStore';
-import ActionPanel from './ActionPanel';
-import MetricCard from './resilo/MetricCard';
-import InfoTip from './InfoTip';
-import AlertsTable from './resilo/AlertsTable';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Activity, Clock, Cpu, Server, Zap } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { agentsApi, alertsApi, coreAxios } from '../services/resiloApi';
+import { Monitor, AlertTriangle, Bot, CheckCircle, Activity, Zap, Server, RefreshCw } from 'lucide-react';
 
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
 const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
@@ -21,336 +13,207 @@ const PANEL = {
   boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
 };
 
-export default function Dashboard() {
-  const { alerts, fetchDashboardData } = useResiloStore();
+const C = {
+  bg: 'rgb(14,13,11)', surface: 'rgb(22,20,16)', surface2: 'rgb(31,29,24)',
+  border: 'rgba(42,40,32,0.9)', amber: '#F59E0B', teal: '#2DD4BF',
+  red: '#F87171', text1: '#F5F0E8', text2: '#A89F8C', text3: '#6B6357', text4: '#4A443D',
+};
 
-  const [systemData, setSystemData] = useState({
-    cpu: 0, memory: 0, disk: 0, network_in: 0, network_out: 0, status: 'unknown', temperature: null,
-  });
-  const [systemInfo, setSystemInfo] = useState({ uptime: 'N/A', load_avg: 'N/A', platform: 'N/A', cpu_cores: 'N/A' });
-  const [metricsHistory, setMetricsHistory] = useState([]);
+function fmtTime(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return '—'; }
+}
+
+function CountCard({ icon, label, value, sub, color }) {
+  return (
+    <div style={{ ...PANEL, padding: '20px 22px', borderTop: `2px solid ${color}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ color }}>{icon}</span>
+        <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.12em', color: C.text4 }}>{label}</span>
+      </div>
+      <div style={{ ...DISPLAY, fontSize: '3rem', lineHeight: 1, color: C.text1, marginBottom: 6 }}>{value}</div>
+      {sub && <div style={{ ...MONO, fontSize: 10, color: C.text3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+export default function Dashboard() {
+  const [agents,    setAgents]    = useState([]);
+  const [alerts,    setAlerts]    = useState([]);
+  const [sysHealth, setSysHealth] = useState(null);
+  const [loading,   setLoading]   = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const [ag, al] = await Promise.all([agentsApi.list(), alertsApi.list()]);
+      setAgents(Array.isArray(ag) ? ag : []);
+      setAlerts(Array.isArray(al) ? al : []);
+    } catch {}
+    try {
+      const r = await coreAxios.get('/api/health/system');
+      setSysHealth(r.data);
+    } catch {}
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
-    let mounted = true;
-    const socket = realtime.connect();
-    fetchDashboardData();
+    load();
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [load]);
 
-    const normalizeAndSet = (data) => {
-      if (!mounted) return;
-      const cpu = data.cpu ?? 0;
-      const mem = data.memory ?? 0;
-      const disk = data.disk ?? data.storage ?? 0;
+  const liveAgents    = agents.filter(a => a.status === 'live');
+  const offlineAgents = agents.filter(a => a.status === 'offline');
+  const pendingAgents = agents.filter(a => a.status === 'pending');
 
-      setSystemData({
-        cpu, memory: mem, disk,
-        network_in:  data.network_in  ?? data.network?.received ?? 0,
-        network_out: data.network_out ?? data.network?.sent ?? 0,
-        status: data.status || 'unknown',
-        temperature: data.temperature ?? null,
-      });
+  const criticalAlerts = alerts.filter(a => a.severity === 'critical');
+  const highAlerts     = alerts.filter(a => a.severity === 'high');
+  const medAlerts      = alerts.filter(a => a.severity === 'medium' || a.severity === 'warning');
 
-      setMetricsHistory(prev => {
-        const now = new Date();
-        const h = now.getHours().toString().padStart(2, '0');
-        const m = now.getMinutes().toString().padStart(2, '0');
-        const s = now.getSeconds().toString().padStart(2, '0');
-        const newEntry = { time: `${h}:${m}:${s}`, cpu, memory: mem };
-        const updated = [...prev, newEntry];
-        return updated.length > 20 ? updated.slice(updated.length - 20) : updated;
-      });
-    };
+  const needsAttention = liveAgents
+    .filter(a => (a.cpu ?? 0) >= 85 || (a.memory ?? 0) >= 90 || (a.disk ?? 0) >= 95)
+    .sort((a, b) => Math.max(b.cpu ?? 0, b.memory ?? 0, b.disk ?? 0) - Math.max(a.cpu ?? 0, a.memory ?? 0, a.disk ?? 0))
+    .slice(0, 5);
 
-    const unsub = realTimeService.subscribe('system', normalizeAndSet);
+  const recentDecisions = agents.flatMap(a =>
+    (a.ai_history || []).map(d => ({ ...d, agent_label: a.label }))
+  ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10);
 
-    const fetchOnce = async () => {
-      try { const data = await apiService.getSystemData(); normalizeAndSet(data); } catch {}
-    };
-    const fetchInfo = async () => {
-      try { const info = await systemApi.getSystemInfo(); if (info && mounted) setSystemInfo(info); } catch {}
-    };
-
-    const ensureData = async () => {
-      await Promise.all([fetchOnce(), fetchInfo()]);
-    };
-
-    const timer = setTimeout(ensureData, 100);
-
-    return () => {
-      mounted = false;
-      clearTimeout(timer);
-      if (socket) realtime.disconnect();
-      unsub && unsub();
-    };
-  }, [fetchDashboardData]);
-
-  const displayMetrics = metricsHistory.length > 2 ? metricsHistory : [{ time: '...', cpu: 0, memory: 0 }];
-
-  const overallStatus = systemData.status === 'healthy' ? 'healthy'
-    : systemData.status === 'warning' ? 'warning'
-    : systemData.status === 'unknown' ? 'warning'
-    : 'critical';
-
-  const statusColor = { healthy: '#2DD4BF', warning: '#F59E0B', critical: '#F87171' }[overallStatus] || '#6B6357';
+  const ai_color = sysHealth?.ai_service === 'online' ? C.teal : sysHealth?.ai_service === 'degraded' ? C.amber : C.red;
+  const db_color = sysHealth?.database === 'online' ? C.teal : C.red;
 
   return (
-    <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
 
       {/* Page header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', color: '#F5F0E8', margin: 0, lineHeight: 1 }}>
-            System Overview
-          </h1>
-          <p style={{ ...MONO, fontSize: '11px', letterSpacing: '0.1em', color: '#4A443D', marginTop: '6px' }}>
-            RESILO OPERATIONS DASHBOARD
-          </p>
+          <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', color: C.text1, margin: 0, lineHeight: 1 }}>Dashboard</h1>
+          <p style={{ ...MONO, fontSize: 11, letterSpacing: '0.1em', color: C.text4, margin: '6px 0 0' }}>RESILO OPERATIONS OVERVIEW</p>
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '7px 14px',
-            borderRadius: '20px',
-            background: 'rgba(22,20,16,0.8)',
-            border: '1px solid rgba(42,40,32,0.9)',
-            ...MONO,
-            fontSize: '11px',
-            letterSpacing: '0.1em',
-            color: '#2DD4BF',
-          }}
-        >
-          <span
-            style={{
-              width: '6px',
-              height: '6px',
-              borderRadius: '50%',
-              background: '#2DD4BF',
-              boxShadow: '0 0 8px rgba(45,212,191,0.6)',
-              animation: 'pulse 2s infinite',
-              display: 'inline-block',
-            }}
-          />
-          LIVE
-        </div>
+        <button onClick={load} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, background: 'transparent', border: `1px solid ${C.border}`, color: C.text3, cursor: 'pointer', ...MONO, fontSize: 11 }}>
+          <RefreshCw size={12} /> Refresh
+        </button>
       </div>
 
-      {/* Metrics grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-        <MetricCard
-          title="CPU Usage"
-          value={systemData.cpu}
-          unit="%"
-          status={metricStatus('cpu', systemData.cpu)}
-          trend={0}
-          info="Percentage of CPU time spent on non-idle processes, sampled via psutil. Thresholds are configurable in Settings — warn and critical levels trigger alerts and auto-remediation rules."
-        />
-        <MetricCard
-          title="Memory Usage"
-          value={systemData.memory}
-          unit="%"
-          status={metricStatus('mem', systemData.memory)}
-          trend={0}
-          info="RAM utilisation as a percentage of total installed memory. Includes all user-space processes. High values may indicate memory leaks or insufficient capacity."
-        />
-        <MetricCard
-          title="Disk Usage"
-          value={systemData.disk}
-          unit="%"
-          status={metricStatus('disk', systemData.disk)}
-          trend={0}
-          info="Percentage of disk space used on the primary partition. Approaching 100% can cause write failures and service crashes. Log rotation and cleanup rules fire automatically."
-        />
-        <MetricCard
-          title="Network In"
-          value={(systemData.network_in / 1024).toFixed(2)}
-          unit="MB/s"
-          status="healthy"
-          trend={0}
-          info="Inbound network throughput in megabytes per second, summed across all interfaces. Spikes may indicate backup jobs, deployments, or unexpected traffic."
-        />
+      {/* Agent count cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <CountCard icon={<Monitor size={14} />}   label="LIVE AGENTS"    value={liveAgents.length}    color={C.teal}  sub={`${offlineAgents.length} offline`} />
+        <CountCard icon={<AlertTriangle size={14} />} label="CRITICAL"   value={criticalAlerts.length} color={C.red}   sub={`${highAlerts.length} high`} />
+        <CountCard icon={<AlertTriangle size={14} />} label="HIGH"        value={highAlerts.length}    color={C.amber} sub={`${medAlerts.length} medium`} />
+        <CountCard icon={<Activity size={14} />}  label="TOTAL AGENTS"  value={agents.length}         color={C.text3} sub={`${pendingAgents.length} pending`} />
       </div>
 
-      {/* Charts + Actions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-        {/* Time-series chart */}
-        <div className="col-span-2" style={PANEL}>
-          <div style={{ padding: '20px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Activity size={16} color="#F59E0B" />
-            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
-              SYSTEM PERFORMANCE
-            </span>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: '16px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', ...UI, fontSize: '12px', color: '#6B6357' }}>
-                <span style={{ width: '24px', height: '2px', background: '#F59E0B', display: 'inline-block', borderRadius: '1px' }} />
-                CPU
-              </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', ...UI, fontSize: '12px', color: '#6B6357' }}>
-                <span style={{ width: '24px', height: '2px', background: '#2DD4BF', display: 'inline-block', borderRadius: '1px' }} />
-                Memory
-              </span>
-            </div>
-          </div>
-          <div style={{ padding: '20px 22px', height: '280px' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={displayMetrics}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(42,40,32,0.8)" vertical={false} />
-                <XAxis
-                  dataKey="time"
-                  stroke="#3A342D"
-                  tick={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace", fill: '#4A443D' }}
-                />
-                <YAxis
-                  stroke="#3A342D"
-                  tick={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace", fill: '#4A443D' }}
-                  domain={[0, 100]}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'rgb(31,29,24)',
-                    borderColor: 'rgba(42,40,32,0.9)',
-                    borderRadius: '8px',
-                    fontFamily: "'IBM Plex Mono', monospace",
-                    fontSize: '11px',
-                  }}
-                  labelStyle={{ color: '#A89F8C' }}
-                  itemStyle={{ color: '#F5F0E8' }}
-                />
-                <Line type="monotone" dataKey="cpu"    stroke="#F59E0B" strokeWidth={2} dot={false} isAnimationActive={false} />
-                <Line type="monotone" dataKey="memory" stroke="#2DD4BF" strokeWidth={2} dot={false} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Action panel */}
-        <div className="col-span-1" style={{ ...PANEL, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '20px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Zap size={16} color="#F59E0B" />
-            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
-              SYSTEM ACTIONS
-            </span>
-          </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
-            <ActionPanel />
-          </div>
-        </div>
-
-      </div>
-
-      {/* Alerts + System Health */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-        {/* Active alerts */}
-        <div style={{ ...PANEL, overflow: 'hidden' }}>
-          <div style={{ padding: '18px 22px', borderBottom: '1px solid rgba(42,40,32,0.9)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span
-              style={{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                background: '#F87171',
-                boxShadow: '0 0 8px rgba(248,113,113,0.5)',
-                display: 'inline-block',
-              }}
-            />
-            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
-              ACTIVE ALERTS & INCIDENTS
-            </span>
-            {alerts?.length > 0 && (
-              <span
-                style={{
-                  marginLeft: 'auto',
-                  ...MONO,
-                  fontSize: '10px',
-                  letterSpacing: '0.08em',
-                  color: '#F87171',
-                  background: 'rgba(248,113,113,0.1)',
-                  border: '1px solid rgba(248,113,113,0.2)',
-                  borderRadius: '10px',
-                  padding: '2px 8px',
-                }}
-              >
-                {alerts.length}
-              </span>
+        {/* Agents needing attention */}
+        <div style={PANEL}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={14} color={C.amber} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>AGENTS NEEDING ATTENTION</span>
+            {needsAttention.length > 0 && (
+              <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: `${C.amber}18`, color: C.amber, border: `1px solid ${C.amber}40`, borderRadius: 10, padding: '1px 8px' }}>{needsAttention.length}</span>
             )}
           </div>
-          <AlertsTable alerts={alerts || []} />
+          {loading ? (
+            <div style={{ padding: '32px 0', textAlign: 'center' }}><span style={{ ...MONO, fontSize: 11, color: C.text4 }}>LOADING…</span></div>
+          ) : needsAttention.length === 0 ? (
+            <div style={{ padding: '32px 0', textAlign: 'center' }}>
+              <CheckCircle size={28} color={C.teal} style={{ display: 'block', margin: '0 auto 10px', opacity: 0.7 }} />
+              <span style={{ ...MONO, fontSize: 11, color: C.text4 }}>All agents healthy</span>
+            </div>
+          ) : (
+            <div style={{ padding: '12px 22px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {needsAttention.map(a => {
+                const top = Math.max(a.cpu ?? 0, a.memory ?? 0, a.disk ?? 0);
+                const col = top >= 95 ? C.red : C.amber;
+                return (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', borderRadius: 8, background: `${col}08`, border: `1px solid ${col}25` }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: col, flexShrink: 0, animation: 'pulse 1.5s ease-in-out infinite' }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ ...UI, fontSize: 13, fontWeight: 600, color: C.text1 }}>{a.label}</span>
+                      <span style={{ ...MONO, fontSize: 10, color: C.text4, marginLeft: 8 }}>{a.hostname}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, ...MONO, fontSize: 10 }}>
+                      {a.cpu    >= 85 && <span style={{ color: C.red }}>CPU {a.cpu?.toFixed(0)}%</span>}
+                      {a.memory >= 90 && <span style={{ color: C.amber }}>MEM {a.memory?.toFixed(0)}%</span>}
+                      {a.disk   >= 95 && <span style={{ color: C.red }}>DISK {a.disk?.toFixed(0)}%</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* System health */}
-        <div style={{ ...PANEL, padding: '22px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px' }}>
-            <Server size={16} color="#F59E0B" />
-            <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.12em', color: '#A89F8C' }}>
-              SYSTEM HEALTH
-            </span>
+        {/* Recent AI decisions */}
+        <div style={PANEL}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Bot size={14} color={C.teal} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>RECENT AI DECISIONS</span>
+            {recentDecisions.length > 0 && (
+              <span style={{ marginLeft: 6, ...MONO, fontSize: 10, background: `${C.teal}18`, color: C.teal, border: `1px solid ${C.teal}40`, borderRadius: 10, padding: '1px 8px' }}>{recentDecisions.length}</span>
+            )}
           </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-
-            {/* Overall status */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C' }}>Overall Status</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span
-                  style={{
-                    width: '7px',
-                    height: '7px',
-                    borderRadius: '50%',
-                    background: statusColor,
-                    boxShadow: `0 0 8px ${statusColor}80`,
-                    display: 'inline-block',
-                    animation: 'pulse 2s infinite',
-                  }}
-                />
-                <span style={{ ...MONO, fontSize: '11px', letterSpacing: '0.08em', color: statusColor, textTransform: 'uppercase' }}>
-                  {systemData.status || 'unknown'}
-                </span>
-              </div>
+          {loading ? (
+            <div style={{ padding: '32px 0', textAlign: 'center' }}><span style={{ ...MONO, fontSize: 11, color: C.text4 }}>LOADING…</span></div>
+          ) : recentDecisions.length === 0 ? (
+            <div style={{ padding: '32px 0', textAlign: 'center' }}>
+              <Bot size={28} color={C.text4} style={{ display: 'block', margin: '0 auto 10px', opacity: 0.4 }} />
+              <span style={{ ...MONO, fontSize: 11, color: C.text4 }}>No AI decisions yet</span>
             </div>
-
-            {/* Uptime */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Clock size={13} color="#6B6357" /> Uptime
-                <InfoTip size={13} info="Time elapsed since the system last booted. Resets on restart or crash. Long uptimes indicate stability; short uptimes may signal recent unexpected reboots." />
-              </span>
-              <span style={{ ...MONO, fontSize: '12px', color: '#F59E0B', letterSpacing: '0.04em' }}>
-                {systemData.uptime || systemInfo.boot_time || 'N/A'}
-              </span>
+          ) : (
+            <div style={{ padding: '8px 22px', display: 'flex', flexDirection: 'column', gap: 0, overflowY: 'auto', maxHeight: 340 }}>
+              {recentDecisions.map((d, i) => {
+                const isFallback = d.decision_source === 'rule_fallback';
+                const srcColor   = isFallback ? C.amber : C.teal;
+                return (
+                  <div key={i} style={{ padding: '10px 0', borderBottom: i < recentDecisions.length - 1 ? `1px solid rgba(42,40,32,0.5)` : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span style={{ ...MONO, fontSize: 9, padding: '1px 6px', borderRadius: 4, background: `${srcColor}15`, border: `1px solid ${srcColor}30`, color: srcColor }}>
+                        {isFallback ? 'RULE' : 'AI'}
+                      </span>
+                      <span style={{ ...MONO, fontSize: 10, color: C.amber }}>{d.alert_category?.toUpperCase()}</span>
+                      <span style={{ ...MONO, fontSize: 10, color: C.text4, marginLeft: 'auto' }}>{d.agent_label} · {fmtTime(d.timestamp)}</span>
+                    </div>
+                    {d.root_cause && <p style={{ ...UI, fontSize: 12, color: C.text2, margin: 0 }}>{d.root_cause}</p>}
+                    {d.recommended_action && (
+                      <span style={{ ...MONO, fontSize: 10, color: C.teal, display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                        <Zap size={9} /> {d.recommended_action}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-
-            {/* Load avg */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ ...UI, fontSize: '13px', color: '#A89F8C', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Cpu size={13} color="#6B6357" /> Load Average
-                <InfoTip size={13} info="1-minute CPU load average — the average number of processes waiting for CPU time. Values above the core count indicate CPU contention." />
-              </span>
-              <span style={{ ...MONO, fontSize: '12px', color: '#A89F8C', letterSpacing: '0.04em' }}>
-                {systemInfo.load_avg || 'N/A'}
-              </span>
-            </div>
-
-            {/* Divider */}
-            <div style={{ borderTop: '1px solid rgba(42,40,32,0.9)', paddingTop: '16px', marginTop: '4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-              <div>
-                <div style={{ ...MONO, fontSize: '10px', letterSpacing: '0.12em', color: '#4A443D', marginBottom: '6px' }}>PLATFORM</div>
-                <div style={{ ...UI, fontSize: '14px', fontWeight: 600, color: '#F5F0E8' }}>
-                  {systemInfo.platform || 'N/A'}
-                </div>
-              </div>
-              <div>
-                <div style={{ ...MONO, fontSize: '10px', letterSpacing: '0.12em', color: '#4A443D', marginBottom: '6px' }}>CPU CORES</div>
-                <div style={{ ...DISPLAY, fontSize: '2rem', letterSpacing: '0.04em', color: '#F5F0E8', lineHeight: 1 }}>
-                  {systemInfo.cpu_cores || 'N/A'}
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
+
       </div>
+
+      {/* System status bar */}
+      {sysHealth && (
+        <div style={{ ...PANEL, padding: '14px 22px', display: 'flex', gap: 0, flexWrap: 'wrap', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 24 }}>
+            <Server size={13} color={C.amber} />
+            <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.1em', color: C.text4 }}>SYSTEM STATUS</span>
+          </div>
+          {[
+            { label: 'AI SERVICE', value: sysHealth.ai_service?.toUpperCase(),  color: ai_color },
+            { label: 'DATABASE',   value: sysHealth.database?.toUpperCase(),    color: db_color },
+            { label: 'LIVE',       value: String(sysHealth.agents_live),         color: C.teal  },
+            { label: 'OFFLINE',    value: String(sysHealth.agents_offline),      color: C.red   },
+            { label: 'OPEN ALERTS',value: String(sysHealth.open_alerts),         color: sysHealth.open_alerts > 0 ? C.amber : C.text3 },
+            { label: 'LAST AI CALL', value: fmtTime(sysHealth.last_ai_call_at), color: C.text2 },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 20px', borderLeft: `1px solid ${C.border}` }}>
+              <span style={{ ...MONO, fontSize: 9, letterSpacing: '0.1em', color: C.text4 }}>{label}</span>
+              <span style={{ ...MONO, fontSize: 11, color }}>{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
     </div>
   );

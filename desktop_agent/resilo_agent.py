@@ -27,15 +27,18 @@ except ImportError:
     print("[error] psutil not installed. Run: pip install psutil")
     sys.exit(1)
 
+_prev_disk_io: dict[str, Any] = {"read_bytes": 0, "write_bytes": 0, "ts": 0.0}
+_BUFFER_PATH = os.path.join(os.path.expanduser("~"), ".resilo_buffer.json")
+
 
 def _disk_root() -> str:
     return "C:\\" if platform.system() == "Windows" else "/"
 
 
-def _load_avg() -> str | None:
+def _load_avg_full() -> tuple[float, float, float] | None:
     try:
         avg = psutil.getloadavg()
-        return f"{avg[0]:.2f} {avg[1]:.2f} {avg[2]:.2f}"
+        return (round(avg[0], 2), round(avg[1], 2), round(avg[2], 2))
     except AttributeError:
         return None
 
@@ -56,34 +59,131 @@ def _temperature() -> float | None:
     return None
 
 
+def get_top_processes(n: int = 5) -> dict[str, list[dict]]:
+    by_cpu: list[dict] = []
+    by_mem: list[dict] = []
+    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+        try:
+            info = proc.info
+            entry = {
+                "pid": info["pid"],
+                "name": info["name"] or "",
+                "cpu_percent": round(info["cpu_percent"] or 0.0, 1),
+                "memory_percent": round(info["memory_percent"] or 0.0, 1),
+            }
+            by_cpu.append(entry)
+            by_mem.append(entry)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    by_cpu.sort(key=lambda x: x["cpu_percent"], reverse=True)
+    by_mem.sort(key=lambda x: x["memory_percent"], reverse=True)
+    return {"by_cpu": by_cpu[:n], "by_mem": by_mem[:n]}
+
+
+def _disk_io_delta() -> tuple[float, float]:
+    global _prev_disk_io
+    now = time.time()
+    try:
+        io = psutil.disk_io_counters()
+        if io is None:
+            return 0.0, 0.0
+        dt = now - _prev_disk_io["ts"]
+        if _prev_disk_io["ts"] == 0.0 or dt <= 0:
+            _prev_disk_io = {"read_bytes": io.read_bytes, "write_bytes": io.write_bytes, "ts": now}
+            return 0.0, 0.0
+        dr = round((io.read_bytes  - _prev_disk_io["read_bytes"])  / dt / 1_048_576, 2)
+        dw = round((io.write_bytes - _prev_disk_io["write_bytes"]) / dt / 1_048_576, 2)
+        _prev_disk_io = {"read_bytes": io.read_bytes, "write_bytes": io.write_bytes, "ts": now}
+        return max(0.0, dr), max(0.0, dw)
+    except Exception:
+        return 0.0, 0.0
+
+
+def _net_conn_counts() -> dict[str, int]:
+    counts = {"established": 0, "close_wait": 0, "time_wait": 0}
+    try:
+        for conn in psutil.net_connections():
+            s = conn.status
+            if s == "ESTABLISHED":
+                counts["established"] += 1
+            elif s == "CLOSE_WAIT":
+                counts["close_wait"] += 1
+            elif s == "TIME_WAIT":
+                counts["time_wait"] += 1
+    except (psutil.AccessDenied, Exception):
+        pass
+    return counts
+
+
+def _disk_partitions_list() -> list[dict]:
+    parts = []
+    for p in psutil.disk_partitions(all=False):
+        try:
+            usage = psutil.disk_usage(p.mountpoint)
+            parts.append({
+                "device": p.device,
+                "mountpoint": p.mountpoint,
+                "total_gb": round(usage.total / 1_073_741_824, 2),
+                "used_gb":  round(usage.used  / 1_073_741_824, 2),
+                "percent":  round(usage.percent, 1),
+            })
+        except PermissionError:
+            continue
+    return parts
+
+
 def collect(device_id: str, label: str) -> dict[str, Any]:
-    vm = psutil.virtual_memory()
+    vm   = psutil.virtual_memory()
+    swap = psutil.swap_memory()
     disk = psutil.disk_usage(_disk_root())
-    net = psutil.net_io_counters()
-    return {
-        "cpu": round(psutil.cpu_percent(interval=0.5), 2),
-        "memory": round(vm.percent, 2),
-        "disk": round(disk.percent, 2),
-        "network_in": int(net.bytes_recv),
+    net  = psutil.net_io_counters()
+    load = _load_avg_full()
+    dr_mbps, dw_mbps = _disk_io_delta()
+    net_counts = _net_conn_counts()
+    battery    = psutil.sensors_battery()
+    payload: dict[str, Any] = {
+        "cpu":         round(psutil.cpu_percent(interval=0.5), 2),
+        "memory":      round(vm.percent, 2),
+        "disk":        round(disk.percent, 2),
+        "network_in":  int(net.bytes_recv),
         "network_out": int(net.bytes_sent),
         "temperature": _temperature(),
-        "load_avg": _load_avg(),
-        "processes": len(psutil.pids()),
+        "load_avg":    f"{load[0]} {load[1]} {load[2]}" if load else None,
+        "processes":   len(psutil.pids()),
         "uptime_secs": int(time.time() - psutil.boot_time()),
-        "extra": {
-            "device_id": device_id,
-            "agent_label": label,
-            "hostname": socket.gethostname(),
-            "platform": platform.system(),
-            "os_version": platform.version(),
-            "error_rate": 0,
-        },
+        "top_processes": get_top_processes(),
+        "swap_percent":  round(swap.percent, 1),
+        "swap_used_gb":  round(swap.used / 1_073_741_824, 2),
+        "disk_read_mbps":  dr_mbps,
+        "disk_write_mbps": dw_mbps,
+        "net_established": net_counts["established"],
+        "net_close_wait":  net_counts["close_wait"],
+        "net_time_wait":   net_counts["time_wait"],
+        "uptime_hours":    round((time.time() - psutil.boot_time()) / 3600, 1),
+        "disk_partitions": _disk_partitions_list(),
     }
+    if load:
+        payload["load_avg_1m"]  = load[0]
+        payload["load_avg_5m"]  = load[1]
+        payload["load_avg_15m"] = load[2]
+    if battery is not None:
+        payload["battery_percent"] = round(battery.percent, 1)
+        payload["battery_plugged"] = battery.power_plugged
+    payload["extra"] = {
+        "device_id":   device_id,
+        "agent_label": label,
+        "hostname":    socket.gethostname(),
+        "platform":    platform.system(),
+        "os_version":  platform.version(),
+        "error_rate":  0,
+    }
+    return payload
 
 
 # ── Sender ───────────────────────────────────────────────────────────────────
-_BUFFER: deque[dict[str, Any]] = deque(maxlen=50)
-_RETRY_DELAYS = (2, 4, 8)
+_BUFFER: deque[dict[str, Any]] = deque(maxlen=20)
+_RETRY_DELAYS = (5, 10, 30, 60, 60)
+_OFFLINE_MODE = False
 
 
 def _post(url: str, body: dict[str, Any], agent_key: str) -> tuple[int, dict[str, Any]]:
@@ -107,28 +207,64 @@ def _post(url: str, body: dict[str, Any], agent_key: str) -> tuple[int, dict[str
         return 0, {"error": str(exc)}
 
 
-def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> tuple[bool, float]:
-    """Send heartbeat. Returns (success, poll_interval)."""
-    url = f"{backend_url.rstrip('/')}/ingest/heartbeat"
-    body = {"org_id": org_id, "metrics": metrics}
+def _save_buffer() -> None:
+    try:
+        with open(_BUFFER_PATH, "w") as f:
+            json.dump(list(_BUFFER), f)
+    except Exception:
+        pass
+
+
+def _load_buffer() -> None:
+    try:
+        with open(_BUFFER_PATH) as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            for item in data:
+                _BUFFER.append(item)
+        if _BUFFER:
+            print(f"[offline] Loaded {len(_BUFFER)} buffered payload(s) from disk")
+    except Exception:
+        pass
+
+
+def _flush_buffer(url: str, agent_key: str) -> None:
+    flushed = 0
     while _BUFFER:
-        buffered = _BUFFER[0]
-        for delay in _RETRY_DELAYS:
-            status, _ = _post(url, buffered, agent_key)
-            if status == 200:
-                _BUFFER.popleft()
-                break
-            time.sleep(delay)
+        status, _ = _post(url, _BUFFER[0], agent_key)
+        if status == 200:
+            _BUFFER.popleft()
+            flushed += 1
         else:
             break
-    for delay in (*_RETRY_DELAYS, None):
+    if flushed:
+        print(f"[reconnect] Flushed {flushed} buffered heartbeat(s) to backend")
+    _save_buffer()
+
+
+def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> tuple[bool, float]:
+    """Send heartbeat with backoff retry. Returns (success, poll_interval)."""
+    global _OFFLINE_MODE
+    url  = f"{backend_url.rstrip('/')}/ingest/heartbeat"
+    body = {"org_id": org_id, "metrics": metrics}
+    for i, delay in enumerate((*_RETRY_DELAYS, None)):
         status, resp = _post(url, body, agent_key)
         if status == 200:
+            if _OFFLINE_MODE:
+                print("[reconnect] Back online — flushing offline buffer …")
+                _OFFLINE_MODE = False
+                _flush_buffer(url, agent_key)
             return True, float(resp.get("poll_interval", 5))
         if delay is None:
             break
+        if i == 0 and not _OFFLINE_MODE:
+            print(f"[warn] Heartbeat failed (status={status}) — retrying with backoff …")
         time.sleep(delay)
+    if not _OFFLINE_MODE:
+        print("[offline] Entering offline mode — payloads buffered to disk")
+        _OFFLINE_MODE = True
     _BUFFER.append(body)
+    _save_buffer()
     return False, 5.0
 
 
@@ -329,6 +465,8 @@ def main() -> None:
     if not cfg.get("device_id"):
         cfg["device_id"] = str(uuid.uuid4())
         _save_cfg(cfg)
+
+    _load_buffer()
 
     interval = 5.0
     print(f"[info] Agent running — backend={cfg['backend_url']} interval={interval}s")

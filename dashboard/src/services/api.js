@@ -683,12 +683,12 @@ const _coreApi  = (() => {
 
 export const agentApi = {
   onboard:      async (label)                => (await _coreApi.post('/agents/onboard', {}, { headers: { 'X-Agent-Label': label } })).data,
-  createToken:  async (label)                => (await api.post('/agents/token', { label })).data,
-  list:         async ()                     => { try { return (await api.get('/agents')).data; } catch { return []; } },
-  get:          async (id)                   => (await api.get(`/agents/${id}`)).data,
-  remove:       async (id)                   => (await api.delete(`/agents/${id}`)).data,
-  sendCommand:  async (id, action, params)   => (await api.post(`/agents/${id}/command`, { action, params: params || {} })).data,
-  getCommands:  async (id)                   => { try { return (await api.get(`/agents/${id}/commands`)).data; } catch { return { pending: [], history: [], actions: {} }; } },
+  createToken:  async (label)                => (await _coreApi.post('/agents/token', { label })).data,
+  list:         async ()                     => { try { return (await _coreApi.get('/agents')).data; } catch { return []; } },
+  get:          async (id)                   => (await _coreApi.get(`/agents/${id}`)).data,
+  remove:       async (id)                   => (await _coreApi.delete(`/agents/${id}`)).data,
+  sendCommand:  async (id, action, params)   => (await _coreApi.post(`/agents/${id}/command`, { action, params: params || {} })).data,
+  getCommands:  async (id)                   => { try { return (await _coreApi.get(`/agents/${id}/commands`)).data; } catch { return { pending: [], history: [], actions: {} }; } },
 };
 
 export const integrationsApi = {

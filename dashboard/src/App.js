@@ -6,15 +6,9 @@ import Dashboard from './components/Dashboard';
 import AIAssistant from './components/AIAssistant';
 import Settings from './components/Settings';
 import Alerts from './components/Alerts';
-import Security from './components/Security';
 import Register from './components/Register';
 import Forbidden from './components/Forbidden';
-import Insights from './components/Insights';
-import Remediation from './components/Remediation';
-import Analytics from './components/Analytics';
-import InfraHub from './components/InfraHub';
 import RemoteAgents from './components/RemoteAgents';
-import NotificationSettings from './components/resilo/NotificationSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
 import { ThemeProvider } from './context/ThemeContext';
@@ -28,7 +22,6 @@ import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
 import IncidentDeclare from './components/IncidentDeclare';
 import ConnectionStatus from './components/ConnectionStatus';
-import OnboardingWizard from './components/OnboardingWizard';
 import { RefreshCw } from 'lucide-react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -95,7 +88,7 @@ function Topbar() {
 }
 
 function AppShell() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const location = useLocation();
   const AUTH_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/auth/callback', '/accept-invite', '/redeem'];
   const isAuthPage   = AUTH_ROUTES.some(p => location.pathname.startsWith(p));
@@ -103,7 +96,12 @@ function AppShell() {
 
   // Redirect already-authenticated users away from the login/register pages
   if (isAuthenticated && isAuthPage) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/remote-agents" replace />;
+  }
+
+  // Force password change before accessing any other page
+  if (isAuthenticated && user?.must_change_password && location.pathname !== '/settings' && !isAuthPage) {
+    return <Navigate to="/settings" replace />;
   }
 
   return (
@@ -117,21 +115,11 @@ function AppShell() {
         {!isAuthPage && <Topbar />}
         {!isAuthPage && isAuthenticated && <HealthRibbon />}
         <Routes>
+          <Route path="/remote-agents" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Remote Agents failed to load"><RemoteAgents /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/onboarding"  element={<ProtectedRoute><ErrorBoundary fallbackTitle="Onboarding failed to load"><OnboardingWizard /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/insights"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Insights failed to load"><Insights /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/alerts"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Alerts failed to load"><Alerts /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/remediation" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Remediation failed to load"><Remediation /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/security"    element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Security failed to load"><Security /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/analytics"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Analytics failed to load"><Analytics /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/infra"         element={<ProtectedRoute><ErrorBoundary fallbackTitle="Infrastructure Hub failed to load"><InfraHub /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/devices"       element={<Navigate to="/infra" replace />} />
-          <Route path="/users"         element={<Navigate to="/infra" replace />} />
-          <Route path="/remote-agents" element={<ProtectedRoute requireRole="admin"><ErrorBoundary fallbackTitle="Remote Agents failed to load"><RemoteAgents /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/invites"       element={<Navigate to="/infra" replace />} />
-          <Route path="/notifications" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Notifications failed to load"><NotificationSettings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/register"    element={<Register />} />
           <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />
           <Route path="/accept-invite"   element={<AcceptInvite />} />
@@ -140,8 +128,8 @@ function AppShell() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password"  element={<ResetPassword />} />
           <Route path="/forbidden"       element={<Forbidden />} />
-          <Route path="/"            element={<Navigate to="/dashboard" replace />} />
-          <Route path="*"            element={<Navigate to="/dashboard" replace />} />
+          <Route path="/"            element={<Navigate to="/remote-agents" replace />} />
+          <Route path="*"            element={<Navigate to="/remote-agents" replace />} />
         </Routes>
       </main>
     </div>

@@ -53,7 +53,7 @@ run-dev.bat
 stop-dev.bat
 ```
 
-Open **http://localhost:3000** — default admin: `admin@company.local / Admin@1234`
+Open **http://localhost:3000** — default admin: `admin@company.local / [set ADMIN_DEFAULT_PASSWORD in .env]`
 
 ---
 

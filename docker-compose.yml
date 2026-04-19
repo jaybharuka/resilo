@@ -525,6 +525,41 @@ services:
     networks:
       - aiops-network
 
+  # ── AIOps Remediation Agent (port 5002) ───────────────────────────────────
+  aiops-agent:
+    build:
+      context: ./agents/aiops_agent
+      dockerfile: Dockerfile
+    container_name: aiops-agent
+    ports:
+      - "5002:5002"
+    environment:
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - NVIDIA_BASE_URL=${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-meta/llama-3.3-70b-instruct}
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - PROMETHEUS_URL=http://prometheus:9090
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-60}
+      - MAX_REMEDIATION_ATTEMPTS=${MAX_REMEDIATION_ATTEMPTS:-3}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.6}
+      - STEP_DELAY_SECONDS=${STEP_DELAY_SECONDS:-2}
+      - VERIFY_DELAY_SECONDS=${VERIFY_DELAY_SECONDS:-10}
+      - DRY_RUN=${DRY_RUN:-true}
+    depends_on:
+      - alertmanager
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    restart: unless-stopped
+    networks:
+      - aiops-network
+
 networks:
   aiops-network:
     driver: bridge

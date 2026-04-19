@@ -123,7 +123,7 @@ async function getSystemData() {
         architecture: osInfo.arch,
         totalProcesses: processes.all,
         runningProcesses: processes.running,
-        threads: processes.all + Math.floor(Math.random() * 50)
+        threads: processes.all || 0
       },
       
       // Health and status

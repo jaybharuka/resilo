@@ -3,7 +3,7 @@
 Reset admin@company.local password in PostgreSQL.
 
 Usage:
-    python reset_admin_password.py                   # sets Admin@1234
+    python reset_admin_password.py                   # uses ADMIN_DEFAULT_PASSWORD env var
     python reset_admin_password.py --password <pw>   # custom password
 """
 import asyncio

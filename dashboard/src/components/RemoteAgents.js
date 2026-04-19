@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { agentApi } from '../services/api';
 import { agentsApi } from '../services/resiloApi';
+import OnboardingWizard from './OnboardingWizard';
 import InfoTip from './InfoTip';
 import {
   Monitor, Plus, RefreshCw, Trash2, Copy, CheckCheck,
@@ -140,8 +141,16 @@ const STATUS_META = {
   pending: { color: C.amber, dot: C.amber, label: 'PENDING', pulse: true  },
 };
 
-function Bar({ pct }) {
-  const color = pct >= 90 ? C.red : pct >= 75 ? C.amber : C.teal;
+const EXEC_MODE_META = {
+  dry_run:         { label: 'DRY RUN', color: C.text3, bg: `${C.text4}15`, border: `1px solid ${C.text4}35` },
+  manual_approval: { label: 'MANUAL',  color: C.amber, bg: `${C.amber}10`, border: `1px solid ${C.amber}30` },
+  auto_safe:       { label: 'AUTO',    color: C.teal,  bg: `${C.teal}10`,  border: `1px solid ${C.teal}30`  },
+};
+
+const STATUS_ORDER = { live: 0, offline: 1, pending: 2 };
+
+function Bar({ pct, alertPct = 90, warnPct = 75 }) {
+  const color = pct >= alertPct ? C.red : pct >= warnPct ? C.amber : C.teal;
   return (
     <div style={{ height: 4, borderRadius: 2, background: C.surface2, overflow: 'hidden', flex: 1 }}>
       <div style={{ width: `${Math.min(100, pct || 0)}%`, height: '100%', background: color, borderRadius: 2, transition: 'width 0.5s' }} />
@@ -453,7 +462,7 @@ function AgentCard({ agent, onSelect, onRemove }) {
         ...PANEL, padding: '18px 20px', cursor: 'pointer',
         borderTop: `2px solid ${sm.dot}`,
         transition: 'box-shadow 0.15s, border-color 0.15s',
-        position: 'relative',
+        position: 'relative', paddingBottom: 36,
       }}
       onMouseEnter={e => { e.currentTarget.style.boxShadow = `0 0 0 1px ${sm.dot}40, 0 8px 32px rgba(0,0,0,0.4)`; }}
       onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 24px rgba(0,0,0,0.3)'; }}
@@ -497,20 +506,27 @@ function AgentCard({ agent, onSelect, onRemove }) {
       {agent.status === 'live' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
           {[
-            { label: 'CPU',  pct: agent.cpu,    unit: '%' },
-            { label: 'MEM',  pct: agent.memory, unit: '%' },
-            { label: 'DISK', pct: agent.disk,   unit: '%' },
-          ].map(({ label, pct, unit }) => (
+            { label: 'CPU',  pct: agent.cpu,    alertPct: 85, warnPct: 70 },
+            { label: 'MEM',  pct: agent.memory, alertPct: 90, warnPct: 70 },
+            { label: 'DISK', pct: agent.disk,   alertPct: 95, warnPct: 70 },
+          ].map(({ label, pct, alertPct, warnPct }) => (
             <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ ...MONO, fontSize: 9, color: C.text4, width: 30 }}>{label}</span>
-              <Bar pct={pct} />
-              <span style={{ ...MONO, fontSize: 10, color: pct >= 90 ? C.red : pct >= 75 ? C.amber : C.teal, width: 36, textAlign: 'right' }}>
-                {pct != null ? `${pct.toFixed(0)}${unit}` : '—'}
+              <Bar pct={pct} alertPct={alertPct} warnPct={warnPct} />
+              <span style={{ ...MONO, fontSize: 10, color: pct >= alertPct ? C.red : pct >= warnPct ? C.amber : C.teal, width: 36, textAlign: 'right' }}>
+                {pct != null ? `${pct.toFixed(0)}%` : '—'}
               </span>
             </div>
           ))}
         </div>
       )}
+
+      {/* Execution mode badge */}
+      {(() => { const em = EXEC_MODE_META[agent.execution_mode] || EXEC_MODE_META.dry_run; return (
+        <span style={{ position: 'absolute', bottom: 12, right: 14, ...MONO, fontSize: 9, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 10, background: em.bg, border: em.border, color: em.color }}>
+          {em.label}
+        </span>
+      ); })()}
 
       {agent.status === 'pending' && (
         <p style={{ ...UI, fontSize: 12, color: C.text4, margin: 0 }}>
@@ -805,6 +821,53 @@ function CommandHistory({ agentId, refreshTick }) {
   );
 }
 
+// ─── Top Processes Panel ─────────────────────────────────────────────────────
+function TopProcessesPanel({ processes }) {
+  const [tab, setTab] = useState('cpu');
+  const rows = tab === 'cpu' ? (processes.by_cpu || []) : (processes.by_mem || []);
+  return (
+    <div style={PANEL}>
+      <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Cpu size={14} color={C.amber} />
+        <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>TOP PROCESSES</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          {['cpu', 'mem'].map(t => (
+            <button key={t} onClick={() => setTab(t)} style={{ padding: '3px 10px', borderRadius: 6, cursor: 'pointer', ...MONO, fontSize: 10, background: tab === t ? `${C.amber}20` : 'transparent', border: `1px solid ${tab === t ? C.amber : C.border}`, color: tab === t ? C.amber : C.text4 }}>BY {t.toUpperCase()}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+              {['#', 'Process', 'CPU %', 'MEM %'].map(h => (
+                <th key={h} style={{ padding: '8px 16px', ...MONO, fontSize: 9, letterSpacing: '0.09em', color: C.text4, textAlign: 'left', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((p, i) => {
+              const cpuCol = p.cpu_percent >= 80 ? C.red : p.cpu_percent >= 50 ? C.amber : C.text2;
+              const memCol = p.memory_percent >= 80 ? C.red : p.memory_percent >= 50 ? C.amber : C.text2;
+              return (
+                <tr key={p.pid || i} style={{ borderBottom: i < rows.length - 1 ? `1px solid rgba(42,40,32,0.4)` : 'none' }}>
+                  <td style={{ padding: '9px 16px', ...MONO, fontSize: 10, color: C.text4 }}>{i + 1}</td>
+                  <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: C.text1, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name || '—'}</td>
+                  <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: cpuCol }}>{(p.cpu_percent || 0).toFixed(1)}%</td>
+                  <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: memCol }}>{(p.memory_percent || 0).toFixed(1)}%</td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: '20px 16px', textAlign: 'center', ...MONO, fontSize: 11, color: C.text4 }}>No data</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Agent Detail View ────────────────────────────────────────────────────────
 export function AgentDetail({ agentId, onBack }) {
   const [agent, setAgent]       = useState(null);
@@ -888,6 +951,22 @@ export function AgentDetail({ agentId, onBack }) {
         </span>
       </div>
 
+      {/* System info bar */}
+      {(m.uptime_hours != null || m.load_avg_1m != null || m.battery_percent != null) && (
+        <div style={{ display: 'flex', gap: 0, ...PANEL, background: C.surface2, overflow: 'hidden' }}>
+          {[
+            m.uptime_hours != null && { label: 'UPTIME', value: fmtUptime((m.uptime_hours || 0) * 3600) },
+            m.load_avg_1m  != null && { label: 'LOAD',   value: `${m.load_avg_1m} / ${m.load_avg_5m} / ${m.load_avg_15m}` },
+            m.battery_percent != null && { label: 'BATTERY', value: `${m.battery_percent}%${m.battery_plugged ? ' (charging)' : ''}` },
+          ].filter(Boolean).map((item, i, arr) => (
+            <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 18px', borderRight: i < arr.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+              <span style={{ ...MONO, fontSize: 9, letterSpacing: '0.1em', color: C.text4 }}>{item.label}</span>
+              <span style={{ ...MONO, fontSize: 11, color: C.text2 }}>{item.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Metric tiles — with inline Fix Issue button */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {tiles.map(t => {
@@ -906,21 +985,8 @@ export function AgentDetail({ agentId, onBack }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: col, boxShadow: `0 0 6px ${col}80`, display: 'inline-block' }} />
                 <span style={{ ...MONO, fontSize: 10, color: col, letterSpacing: '0.08em' }}>{t.status.toUpperCase()}</span>
-                {/* Fix Issue button shown when anomaly + live */}
                 {isAnomaly && t.fix && agent.status === 'live' && (
-                  <button
-                    onClick={() => sendFix(t.fix)}
-                    style={{
-                      marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
-                      padding: '3px 9px', borderRadius: 4, cursor: 'pointer',
-                      background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-                      color: C.red, ...MONO, fontSize: 9, letterSpacing: '0.06em',
-                      transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.2)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.1)'; }}
-                    title={`Auto-fix: ${t.fix}`}
-                  >
+                  <button onClick={() => sendFix(t.fix)} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4, padding: '3px 9px', borderRadius: 4, cursor: 'pointer', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', color: C.red, ...MONO, fontSize: 9, transition: 'all 0.15s' }} title={`Auto-fix: ${t.fix}`}>
                     <Play size={9} /> FIX ISSUE
                   </button>
                 )}
@@ -929,6 +995,21 @@ export function AgentDetail({ agentId, onBack }) {
           );
         })}
       </div>
+
+      {/* Swap gauge (if present) */}
+      {m.swap_percent != null && (
+        <div style={{ ...PANEL, padding: '18px 20px', borderTop: `2px solid ${m.swap_percent >= 80 ? C.red : m.swap_percent >= 50 ? C.amber : C.text4}` }}>
+          <div style={{ ...MONO, fontSize: 10, letterSpacing: '0.14em', color: C.text4, marginBottom: 10 }}>SWAP</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+            <span style={{ ...DISPLAY, fontSize: '2.8rem', lineHeight: 1, color: C.text1 }}>{m.swap_percent.toFixed(1)}</span>
+            <span style={{ ...MONO, fontSize: 12, color: C.text3 }}>%</span>
+          </div>
+          <div style={{ marginTop: 8 }}><Bar pct={m.swap_percent} alertPct={80} warnPct={50} /></div>
+        </div>
+      )}
+
+      {/* Top Processes panel */}
+      {m.top_processes && <TopProcessesPanel processes={m.top_processes} />}
 
       {/* Live chart */}
       <div style={PANEL}>
@@ -1068,14 +1149,25 @@ export function AgentDetail({ agentId, onBack }) {
               const statusColor = d.status === 'dry_run' ? C.amber : d.status === 'queued' ? C.teal : C.text4;
               const statusLabel = d.status === 'dry_run' ? 'DRY RUN' : d.status === 'queued' ? 'QUEUED' : 'NEEDS REVIEW';
               const confPct = Math.round((d.confidence || 0) * 100);
+              const isFallback = d.decision_source === 'rule_fallback';
               return (
                 <div key={i} style={{ padding: '14px 16px', borderRadius: 8, background: `${C.teal}08`, border: `1px solid ${C.border}` }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                     <span style={{ ...MONO, fontSize: 10, color: C.amber, letterSpacing: '0.08em' }}>{d.alert_category?.toUpperCase()}</span>
                     <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>·</span>
                     <span style={{ ...MONO, fontSize: 10, background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}40`, borderRadius: 4, padding: '1px 7px' }}>{statusLabel}</span>
+                    {/* Source badge */}
+                    {isFallback
+                      ? <span style={{ ...MONO, fontSize: 9, padding: '1px 7px', borderRadius: 4, background: `${C.amber}15`, border: `1px solid ${C.amber}40`, color: C.amber }}>RULE FALLBACK</span>
+                      : <span style={{ ...MONO, fontSize: 9, padding: '1px 7px', borderRadius: 4, background: `${C.teal}15`, border: `1px solid ${C.teal}40`, color: C.teal }}>AI</span>}
                     <span style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: C.text4 }}>{new Date(d.timestamp).toLocaleTimeString()}</span>
                   </div>
+                  {isFallback && (
+                    <p style={{ ...MONO, fontSize: 10, color: C.amber, margin: '0 0 8px' }}>⚠ AI unavailable — rule-based fallback used</p>
+                  )}
+                  {d.contributing_process && (
+                    <p style={{ ...UI, fontSize: 11, color: C.text3, margin: '0 0 6px' }}>Triggered by: {d.contributing_process}</p>
+                  )}
                   {d.root_cause && <p style={{ ...UI, fontSize: 12, color: C.text2, margin: '0 0 6px', fontWeight: 600 }}>{d.root_cause}</p>}
                   {d.summary && <p style={{ ...UI, fontSize: 12, color: C.text3, margin: '0 0 8px' }}>{d.summary}</p>}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -1086,6 +1178,13 @@ export function AgentDetail({ agentId, onBack }) {
                     )}
                     <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>confidence {confPct}%</span>
                     {d.impact && <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>impact {d.impact}</span>}
+                    {/* Action buttons */}
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                      {d.status === 'needs_review' && (
+                        <button onClick={async () => { try { await agentsApi.approveAction(agentId, d.id); fetchDetail(); } catch {} }} style={{ padding: '3px 10px', borderRadius: 6, cursor: 'pointer', background: `${C.teal}15`, border: `1px solid ${C.teal}40`, color: C.teal, ...MONO, fontSize: 10 }}>APPROVE</button>
+                      )}
+                      <button onClick={() => {}} style={{ padding: '3px 10px', borderRadius: 6, cursor: 'pointer', background: 'transparent', border: `1px solid ${C.border}`, color: C.text4, ...MONO, fontSize: 10 }}>DISMISS</button>
+                    </div>
                   </div>
                 </div>
               );
@@ -1255,17 +1354,23 @@ export function AgentDetail({ agentId, onBack }) {
             <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>NETWORK & MEMORY</span>
           </div>
           {[
-            { label: 'Net Received',  value: fmtBytes(m.network_in)   },
-            { label: 'Net Sent',      value: fmtBytes(m.network_out)  },
-            { label: 'Memory Total',  value: fmtBytes(m.memory_total) },
-            { label: 'Memory Used',   value: fmtBytes(m.memory_used)  },
-            { label: 'Memory Free',   value: (m.memory_total && m.memory_used) ? fmtBytes(m.memory_total - m.memory_used) : null },
-          ].filter(r => r.value && r.value !== '—').map(({ label, value }) => (
+            { label: 'Net Received',   value: fmtBytes(m.network_in)   },
+            { label: 'Net Sent',       value: fmtBytes(m.network_out)  },
+            { label: 'Memory Total',   value: fmtBytes(m.memory_total) },
+            { label: 'Memory Used',    value: fmtBytes(m.memory_used)  },
+            { label: 'Memory Free',    value: (m.memory_total && m.memory_used) ? fmtBytes(m.memory_total - m.memory_used) : null },
+            m.net_established != null ? { label: 'Established',  value: String(m.net_established)  } : null,
+            m.net_close_wait  != null ? { label: 'Close-Wait',   value: String(m.net_close_wait),  warn: m.net_close_wait > 50  } : null,
+            m.net_time_wait   != null ? { label: 'Time-Wait',    value: String(m.net_time_wait)    } : null,
+          ].filter(r => r && r.value && r.value !== '—').map(({ label, value, warn }) => (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid rgba(42,40,32,0.6)` }}>
-              <span style={{ ...UI, fontSize: 12, color: C.text3 }}>{label}</span>
-              <span style={{ ...MONO, fontSize: 11, color: C.text2 }}>{value}</span>
+              <span style={{ ...UI, fontSize: 12, color: warn ? C.amber : C.text3 }}>{label}{warn ? ' ⚠' : ''}</span>
+              <span style={{ ...MONO, fontSize: 11, color: warn ? C.amber : C.text2 }}>{value}</span>
             </div>
           ))}
+          {m.net_close_wait > 50 && (
+            <p style={{ ...MONO, fontSize: 10, color: C.amber, margin: '10px 0 0' }}>⚠ Possible connection leak detected (CLOSE_WAIT &gt; 50)</p>
+          )}
 
           <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[
@@ -1287,6 +1392,43 @@ export function AgentDetail({ agentId, onBack }) {
           </div>
         </div>
       </div>
+
+      {/* Disk partitions table (if more than 1 partition) */}
+      {m.disk_partitions && m.disk_partitions.length > 1 && (
+        <div style={{ ...PANEL, overflow: 'hidden' }}>
+          <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <HardDrive size={14} color={C.amber} />
+            <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>DISK PARTITIONS</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  {['Mount', 'Total', 'Used', 'Free', '%'].map(h => (
+                    <th key={h} style={{ padding: '8px 16px', ...MONO, fontSize: 9, letterSpacing: '0.09em', color: C.text4, textAlign: 'left' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {m.disk_partitions.map((dp, i) => {
+                  const pct = dp.percent || 0;
+                  const col = pct >= 90 ? C.red : pct >= 70 ? C.amber : C.text2;
+                  return (
+                    <tr key={i} style={{ background: pct >= 90 ? `${C.red}06` : 'transparent', borderBottom: i < m.disk_partitions.length - 1 ? `1px solid rgba(42,40,32,0.4)` : 'none' }}>
+                      <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: col }}>{dp.mountpoint || dp.device}</td>
+                      <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: C.text3 }}>{fmtBytes(dp.total)}</td>
+                      <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: col }}>{fmtBytes(dp.used)}</td>
+                      <td style={{ padding: '9px 16px', ...MONO, fontSize: 11, color: C.text3 }}>{fmtBytes(dp.free)}</td>
+                      <td style={{ padding: '9px 16px', ...MONO, fontSize: 12, fontWeight: 700, color: col }}>{pct.toFixed(1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1342,55 +1484,26 @@ export default function RemoteAgents() {
     );
   }
 
+  const sortedAgents = [...agents].sort((a, b) => (STATUS_ORDER[a.status] ?? 2) - (STATUS_ORDER[b.status] ?? 2));
+  const visibleAgents = filterStatus ? sortedAgents.filter(a => a.status === filterStatus) : sortedAgents;
+
   return (
-    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}} @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
-        <div>
-          <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', color: C.text1, margin: 0, lineHeight: 1 }}>
-            Remote Agents
-          </h1>
-          <p style={{ ...MONO, fontSize: 11, letterSpacing: '0.1em', color: C.text4, marginTop: 6, margin: '6px 0 0' }}>
-            PUSH-BASED SYSTEM MONITORING · REAL METRICS · ZERO VPN
-            <InfoTip size={13} info="Each remote agent is a lightweight Python script running on a user's machine. It pushes real psutil metrics every 3 seconds over HTTP — no VPN, no port forwarding, no firewall config needed." />
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={handleRefresh}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, background: 'transparent', border: `1px solid ${C.border}`, color: C.text3, cursor: 'pointer', ...MONO, fontSize: 11 }}
-            onMouseEnter={e => { e.currentTarget.style.color = C.text1; e.currentTarget.style.borderColor = C.amber + '60'; }}
-            onMouseLeave={e => { e.currentTarget.style.color = C.text3; e.currentTarget.style.borderColor = C.border; }}
-          >
-            <RefreshCw size={13} style={spinning ? { animation: 'spin 0.6s linear infinite' } : {}} />
-            Refresh
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 18px', borderRadius: 8, background: C.amberAlpha, border: '1px solid rgba(245,158,11,0.35)', color: C.amber, cursor: 'pointer', ...MONO, fontSize: 11, letterSpacing: '0.08em' }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.18)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = C.amberAlpha; }}
-          >
-            <Plus size={13} /> NEW AGENT
-          </button>
-        </div>
-      </div>
-
-      {/* Summary pills — clickable filters */}
+      {/* Status filter pills — first visible element */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {[
+          { label: 'ALL',     key: null,      count: agents.length, color: C.text3 },
           { label: 'LIVE',    key: 'live',    count: liveCount,     color: C.teal  },
           { label: 'OFFLINE', key: 'offline', count: offlineCount,  color: C.red   },
           { label: 'PENDING', key: 'pending', count: pendingCount,  color: C.amber },
-          { label: 'TOTAL',   key: null,      count: agents.length, color: C.text3 },
         ].map(({ label, key, count, color }) => {
           const active = filterStatus === key;
           return (
             <button
               key={label}
-              onClick={() => setFilterStatus(active ? null : key)}
+              onClick={() => setFilterStatus(active && key !== null ? null : key)}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 20,
                 background: active ? color + '22' : C.surface2,
                 border: `1px solid ${active ? color : C.border}`,
@@ -1402,6 +1515,23 @@ export default function RemoteAgents() {
             </button>
           );
         })}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button onClick={handleRefresh} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'transparent', border: `1px solid ${C.border}`, color: C.text3, cursor: 'pointer', ...MONO, fontSize: 11 }} onMouseEnter={e => { e.currentTarget.style.color = C.text1; }} onMouseLeave={e => { e.currentTarget.style.color = C.text3; }}>
+            <RefreshCw size={12} style={spinning ? { animation: 'spin 0.6s linear infinite' } : {}} /> Refresh
+          </button>
+          <button onClick={() => setShowModal(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: C.amberAlpha, border: '1px solid rgba(245,158,11,0.35)', color: C.amber, cursor: 'pointer', ...MONO, fontSize: 11 }} onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.18)'; }} onMouseLeave={e => { e.currentTarget.style.background = C.amberAlpha; }}>
+            <Plus size={12} /> NEW AGENT
+          </button>
+        </div>
+      </div>
+
+      {/* Page header (below pills) */}
+      <div>
+        <h1 style={{ ...DISPLAY, fontSize: '2.2rem', letterSpacing: '0.06em', color: C.text1, margin: 0, lineHeight: 1 }}>Remote Agents</h1>
+        <p style={{ ...MONO, fontSize: 11, letterSpacing: '0.1em', color: C.text4, margin: '6px 0 0' }}>
+          PUSH-BASED SYSTEM MONITORING · REAL METRICS · ZERO VPN
+          <InfoTip size={13} info="Each remote agent is a lightweight Python script running on a user's machine. It pushes real psutil metrics every 3 seconds over HTTP — no VPN, no port forwarding, no firewall config needed." />
+        </p>
       </div>
 
       {/* Agent grid / empty state */}
@@ -1410,23 +1540,10 @@ export default function RemoteAgents() {
           <span style={{ ...MONO, fontSize: 11, color: C.text4 }}>LOADING…</span>
         </div>
       ) : agents.length === 0 ? (
-        <div style={{ ...PANEL, padding: '64px 24px', textAlign: 'center' }}>
-          <Monitor size={40} color={C.text4} style={{ margin: '0 auto 16px', opacity: 0.4, display: 'block' }} />
-          <p style={{ ...UI, fontSize: 15, fontWeight: 600, color: C.text2, margin: '0 0 8px' }}>No remote agents yet</p>
-          <p style={{ ...UI, fontSize: 13, color: C.text4, margin: '0 0 24px', lineHeight: 1.6, maxWidth: 400, marginLeft: 'auto', marginRight: 'auto' }}>
-            Click <strong style={{ color: C.amber }}>New Agent</strong> to generate a token.
-            Share the one-line install command and the device will appear here within seconds.
-          </p>
-          <button
-            onClick={() => setShowModal(true)}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 22px', borderRadius: 8, background: C.amberAlpha, border: '1px solid rgba(245,158,11,0.35)', color: C.amber, cursor: 'pointer', ...MONO, fontSize: 12 }}
-          >
-            <Plus size={14} /> NEW AGENT
-          </button>
-        </div>
+        <OnboardingWizard onAgentConnected={fetchAgents} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {(filterStatus ? agents.filter(a => a.status === filterStatus) : agents).map(agent => (
+          {visibleAgents.map(agent => (
             <AgentCard
               key={agent.id}
               agent={agent}

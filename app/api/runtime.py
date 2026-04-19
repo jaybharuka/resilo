@@ -19,14 +19,14 @@ from urllib.parse import urlencode
 
 import httpx
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import (Agent, AlertRecord, MetricSnapshot,
+from app.core.database import (Agent, AgentActionLog, AlertRecord, MetricSnapshot,
                                OnboardingToken, Organization, RemediationJob,
                                SessionLocal, User, UserSession, get_db)
 from app.core.pricing import PricingService
@@ -226,6 +226,22 @@ class MetricPayload(BaseModel):
     processes: int | None = None
     uptime_secs: int | None = None
     extra: dict[str, Any] | None = None
+    # Extended metrics (Section 5A) — all Optional so old agents still work
+    top_processes:   dict[str, Any] | None = None
+    swap_percent:    float | None = None
+    swap_used_gb:    float | None = None
+    disk_read_mbps:  float | None = None
+    disk_write_mbps: float | None = None
+    net_established: int | None = None
+    net_close_wait:  int | None = None
+    net_time_wait:   int | None = None
+    load_avg_1m:     float | None = None
+    load_avg_5m:     float | None = None
+    load_avg_15m:    float | None = None
+    uptime_hours:    float | None = None
+    battery_percent: float | None = None
+    battery_plugged: bool | None = None
+    disk_partitions: list | None = None
 
 
 class HeartbeatRequest(BaseModel):
@@ -437,6 +453,22 @@ def _serialize_metric(snapshot: MetricSnapshot) -> dict[str, Any]:
         "processes": snapshot.processes,
         "uptime_secs": snapshot.uptime_secs,
         "extra": snapshot.extra or {},
+        # Extended metrics
+        "top_processes":   snapshot.top_processes,
+        "swap_percent":    snapshot.swap_percent,
+        "swap_used_gb":    snapshot.swap_used_gb,
+        "disk_read_mbps":  snapshot.disk_read_mbps,
+        "disk_write_mbps": snapshot.disk_write_mbps,
+        "net_established": snapshot.net_established,
+        "net_close_wait":  snapshot.net_close_wait,
+        "net_time_wait":   snapshot.net_time_wait,
+        "load_avg_1m":     snapshot.load_avg_1m,
+        "load_avg_5m":     snapshot.load_avg_5m,
+        "load_avg_15m":    snapshot.load_avg_15m,
+        "uptime_hours":    snapshot.uptime_hours,
+        "battery_percent": snapshot.battery_percent,
+        "battery_plugged": snapshot.battery_plugged,
+        "disk_partitions": snapshot.disk_partitions,
     }
 
 
@@ -464,7 +496,8 @@ def _compute_agent_status(agent: "Agent") -> str:
     """Compute real-time status from last_seen — never reads stale DB field."""
     if not agent.last_seen:
         return "pending"
-    delta = (_now() - agent.last_seen.replace(tzinfo=None) if agent.last_seen.tzinfo else _now() - agent.last_seen).total_seconds()
+    last = agent.last_seen if agent.last_seen.tzinfo else agent.last_seen.replace(tzinfo=timezone.utc)
+    delta = (_now() - last).total_seconds()
     return "live" if delta < _AGENT_LIVE_SECS else "offline"
 
 
@@ -550,16 +583,20 @@ async def _require_org_access(request: Request, org_id: str) -> dict[str, Any]:
 
 
 _ALERT_RULES = [
-    {"category": "cpu",    "severity": "critical", "threshold": 85.0, "recover": 70.0, "field": "cpu",
+    {"category": "cpu",    "severity": "critical", "threshold": 85.0, "recover": 80.0, "field": "cpu",
      "title": "High CPU usage",    "detail": "CPU usage exceeded {value:.1f}% (threshold {threshold:.0f}%)"},
-    {"category": "memory", "severity": "high",     "threshold": 90.0, "recover": 75.0, "field": "memory",
+    {"category": "memory", "severity": "high",     "threshold": 90.0, "recover": 85.0, "field": "memory",
      "title": "High memory usage", "detail": "Memory usage exceeded {value:.1f}% (threshold {threshold:.0f}%)"},
 ]
 
 
-async def _check_anomalies(db: AsyncSession, org_id: str, agent_id: str, cpu: float, memory: float) -> list[AlertRecord]:
+async def _check_anomalies(
+    db: AsyncSession, org_id: str, agent_id: str, cpu: float, memory: float
+) -> tuple[list[AlertRecord], list[str]]:
+    """Return (newly_created, resolved_ids). Recovery thresholds per spec: cpu<80, memory<85."""
     values = {"cpu": cpu, "memory": memory}
     created: list[AlertRecord] = []
+    resolved_ids: list[str] = []
     for rule in _ALERT_RULES:
         value = values.get(rule["field"], 0.0)
 
@@ -585,7 +622,6 @@ async def _check_anomalies(db: AsyncSession, org_id: str, agent_id: str, cpu: fl
                 )
                 db.add(alert)
                 created.append(alert)
-                asyncio.create_task(_lc_analyze(alert, cpu, memory))
 
         elif value <= rule["recover"]:
             open_alerts = await db.execute(
@@ -598,9 +634,11 @@ async def _check_anomalies(db: AsyncSession, org_id: str, agent_id: str, cpu: fl
             for alert in open_alerts.scalars().all():
                 alert.status = "resolved"
                 alert.resolved_at = _now()
+                alert.resolution_reason = "Metric returned to normal"
+                resolved_ids.append(alert.id)
                 logging.info("[auto-resolve] %s alert resolved for agent %s", rule["category"], agent_id)
 
-    return created
+    return created, resolved_ids
 
 
 _AI_SYSTEM_PROMPT = """You are an expert SRE analyzing a system alert.
@@ -703,12 +741,22 @@ async def _ai_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
             hist.pop()
 
     except Exception as exc:
+        global _LAST_AI_ERROR
+        _LAST_AI_ERROR = str(exc)
         logging.warning("[AI] Analysis failed for alert %s: %s", alert.category, exc)
 
 
-async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
+async def _lc_analyze(
+    alert: AlertRecord,
+    cpu: float,
+    memory: float,
+    top_processes: dict | None = None,
+    load_avg_1m: float | None = None,
+    load_avg_5m: float | None = None,
+    load_avg_15m: float | None = None,
+) -> None:
     """LangChain agent analysis — background task, never raises."""
-    from app.agents.langchain_agent import analyze_alert as _lc_agent
+    from app.agents.langchain_agent import analyze_alert as _lc_agent, can_auto_execute, get_action_success_rates
 
     exec_mode = _AGENT_EXEC_MODE.get(alert.agent_id, "dry_run")
     logging.info("[AGENT] Alert received: agent=%s mode=%s", alert.agent_id, exec_mode)
@@ -718,15 +766,33 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
         "severity": alert.severity,
         "title": alert.title,
         "detail": alert.detail,
+        "top_processes_at_alert": top_processes,
+        "load_avg": {"1m": load_avg_1m, "5m": load_avg_5m, "15m": load_avg_15m},
     }
-    metrics = {"cpu": cpu, "memory": memory, "disk": 0.0}
+    metrics = {
+        "cpu": cpu, "memory": memory, "disk": 0.0,
+        "load_avg_1m": load_avg_1m, "load_avg_5m": load_avg_5m, "load_avg_15m": load_avg_15m,
+    }
+
+    # Query per-agent action success rates from AgentActionLog
+    action_success_rates: dict = {}
+    try:
+        async with SessionLocal() as _db:
+            action_success_rates = await get_action_success_rates(alert.agent_id, _db)
+    except Exception as _exc:
+        logging.warning("[AGENT] Could not query action success rates: %s", _exc)
 
     alert_context = f"{alert.category}:{alert.severity}"
-    success_rate   = _get_success_rate(alert.agent_id, "restart_service", alert_context)
-    failure_streak = _get_failure_streak(alert.agent_id, "restart_service", alert_context)
+    success_rate    = _get_success_rate(alert.agent_id, "restart_service", alert_context)
+    failure_streak  = _get_failure_streak(alert.agent_id, "restart_service", alert_context)
     action_rankings = _get_action_rankings(alert.agent_id, alert_context)
-    decision = await _lc_agent(alert_data, metrics, success_rate, alert_context,
-                                failure_streak, action_rankings)
+    decision = await _lc_agent(
+        alert_data, metrics, success_rate, alert_context, failure_streak, action_rankings,
+        top_processes=top_processes,
+        load_avg_1m=load_avg_1m, load_avg_5m=load_avg_5m, load_avg_15m=load_avg_15m,
+        action_success_rates=action_success_rates,
+        execution_mode=exec_mode,
+    )
     action  = decision["action"]
     target  = decision["target"]
     # Confidence calibration: blend LLM score with historical success rate
@@ -750,14 +816,42 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
         disp_status = "needs_approval"
         logging.info("[AGENT EXECUTION] mode=supervised — queued for approval: %s → %s", action, target)
     elif exec_mode == "auto_safe":
-        if action in _SAFE_ACTIONS and decision["safe"]:
+        # 3D: query restart count from agent_action_log then check safe-list
+        restart_count = 0
+        try:
+            async with SessionLocal() as _db:
+                from sqlalchemy import func as _sqlfunc
+                one_hour_ago = _now() - timedelta(hours=1)
+                row = await _db.execute(
+                    select(_sqlfunc.count()).where(
+                        AgentActionLog.agent_id == alert.agent_id,
+                        AgentActionLog.action == "restart_service",
+                        AgentActionLog.executed_at >= one_hour_ago,
+                    )
+                )
+                restart_count = row.scalar() or 0
+        except Exception as _exc:
+            logging.warning("[AGENT] Could not query restart count: %s", _exc)
+
+        allowed, block_reason = can_auto_execute(action, target, alert.agent_id, restart_count)
+        low_conf = decision["confidence"] < 0.75
+        if allowed and decision["safe"] and not low_conf:
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
             logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
             asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context, exec_mode))
+            try:
+                async with SessionLocal() as _db:
+                    _db.add(AgentActionLog(agent_id=alert.agent_id, action=action, target=target, success=True))
+                    await _db.commit()
+            except Exception as _exc:
+                logging.warning("[AGENT] Could not log action: %s", _exc)
         else:
+            if low_conf:
+                block_reason = f"confidence {decision['confidence']:.2f} < 0.75 threshold — requires manual approval"
             disp_status = "needs_review"
-            logging.info("[AGENT EXECUTION] mode=autonomous — unsafe action blocked: %s", action)
+            logging.info("[AGENT EXECUTION] mode=autonomous — blocked: %s",
+                         block_reason or "unsafe action")
     else:
         disp_status = "dry_run"
 
@@ -765,13 +859,16 @@ async def _lc_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
         "timestamp": _now().isoformat(),
         "alert_category": alert.category,
         "severity": alert.severity,
-        "root_cause": decision["reason"],
+        "root_cause": decision.get("reasoning") or decision.get("reason", ""),
         "confidence": decision["confidence"],
         "impact": alert.severity,
         "summary": f"LangChain agent: {action}" + (f" → {target}" if target else ""),
         "recommended_action": action,
+        "contributing_process": decision.get("contributing_process"),
         "safe_to_auto_fix": decision["safe"],
         "status": disp_status,
+        "decision_source": decision.get("decision_source", "langchain"),
+        "block_reason": block_reason if disp_status == "needs_review" else None,
     }
     hist = _AI_HISTORY.setdefault(alert.agent_id, [])
     hist.insert(0, record)
@@ -1161,6 +1258,11 @@ _AI_HISTORY: dict[str, list[dict]] = {}
 # Per-agent execution mode: "dry_run" | "manual_approval" | "auto_safe"
 _AGENT_EXEC_MODE: dict[str, str] = {}
 
+# Last AI error message + 60-second NIM health cache (5C)
+_LAST_AI_ERROR: str | None = None
+_NIM_HEALTH_CACHE: dict = {"status": None, "ts": 0.0}
+_NIM_HEALTH_TTL = 60.0
+
 # Pending approvals: agent_id → [{id, action, target, ai_decision, created_at}]
 _PENDING_APPROVALS: dict[str, list[dict]] = {}
 
@@ -1197,6 +1299,7 @@ def build_metrics_router() -> APIRouter:
     @router.post("/ingest/heartbeat")
     async def ingest_heartbeat(
         body: HeartbeatRequest,
+        background_tasks: BackgroundTasks,
         request: Request,
         x_agent_key: str | None = Header(default=None, alias="X-Agent-Key"),
         db: AsyncSession = Depends(get_db),
@@ -1222,13 +1325,41 @@ def build_metrics_router() -> APIRouter:
             processes=body.metrics.processes,
             uptime_secs=body.metrics.uptime_secs,
             extra=body.metrics.extra,
+            top_processes=body.metrics.top_processes,
+            swap_percent=body.metrics.swap_percent,
+            swap_used_gb=body.metrics.swap_used_gb,
+            disk_read_mbps=body.metrics.disk_read_mbps,
+            disk_write_mbps=body.metrics.disk_write_mbps,
+            net_established=body.metrics.net_established,
+            net_close_wait=body.metrics.net_close_wait,
+            net_time_wait=body.metrics.net_time_wait,
+            load_avg_1m=body.metrics.load_avg_1m,
+            load_avg_5m=body.metrics.load_avg_5m,
+            load_avg_15m=body.metrics.load_avg_15m,
+            uptime_hours=body.metrics.uptime_hours,
+            battery_percent=body.metrics.battery_percent,
+            battery_plugged=body.metrics.battery_plugged,
+            disk_partitions=body.metrics.disk_partitions,
         )
         db.add(snapshot)
         await db.commit()
         await db.refresh(snapshot)
-        await _check_anomalies(db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory)
+        created_alerts, resolved_ids = await _check_anomalies(db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory)
+        if created_alerts:
+            await db.flush()
+            for _a in created_alerts:
+                db.expunge(_a)
         await db.commit()
-        _get_realtime_hub(request).publish("metric_update", _serialize_metric(snapshot), body.org_id)
+        _hub = _get_realtime_hub(request)
+        for rid in resolved_ids:
+            _hub.publish("alert_resolved", {"alert_id": rid, "agent_id": agent.id}, body.org_id)
+        for _a in created_alerts:
+            background_tasks.add_task(
+                _lc_analyze, _a, body.metrics.cpu, body.metrics.memory,
+                body.metrics.top_processes,
+                body.metrics.load_avg_1m, body.metrics.load_avg_5m, body.metrics.load_avg_15m,
+            )
+        _hub.publish("metric_update", _serialize_metric(snapshot), body.org_id)
         poll_interval = _get_agent_poll_interval(agent.id)
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(),
                 "snapshot": _serialize_metric(snapshot), "poll_interval": poll_interval}
@@ -1705,6 +1836,86 @@ def build_agents_router() -> APIRouter:
             "org_id": record.org_id,
             "agent_id": agent.id,
             "agent_key": raw_key,
+        }
+
+    @router.get("/api/health/system")
+    async def system_health_summary(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Dashboard health card: AI service (60s cached NIM ping), DB, agent counts, open alerts."""
+        try:
+            header = request.headers.get("authorization", "")
+            if header.startswith("Bearer "):
+                _decode_token(header.removeprefix("Bearer ").strip(), "access")
+            else:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        api_key = os.getenv("NVIDIA_API_KEY", "")
+
+        # 60-second cached NIM health check
+        now_ts = time.time()
+        if not api_key:
+            ai_service = "offline"
+        elif now_ts - _NIM_HEALTH_CACHE["ts"] > _NIM_HEALTH_TTL:
+            try:
+                async with httpx.AsyncClient(timeout=5) as _hc:
+                    _r = await _hc.post(
+                        f"{os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1')}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct"),
+                              "messages": [{"role": "user", "content": "ping"}],
+                              "max_tokens": 1},
+                    )
+                _NIM_HEALTH_CACHE["status"] = "online" if _r.status_code < 400 else "degraded"
+            except Exception:
+                _NIM_HEALTH_CACHE["status"] = "offline"
+            _NIM_HEALTH_CACHE["ts"] = now_ts
+            ai_service = _NIM_HEALTH_CACHE["status"]
+        else:
+            ai_service = _NIM_HEALTH_CACHE["status"] or "online"
+
+        # Degrade if most recent decision was a rule_fallback
+        all_decisions: list[dict] = []
+        for decisions in _AI_HISTORY.values():
+            all_decisions.extend(decisions)
+        all_decisions.sort(key=lambda d: d.get("timestamp", ""), reverse=True)
+        last_ai_call_at = all_decisions[0].get("timestamp") if all_decisions else None
+        if ai_service == "online" and all_decisions and all_decisions[0].get("decision_source") == "rule_fallback":
+            ai_service = "degraded"
+
+        try:
+            await db.execute(text("SELECT 1"))
+            database = "online"
+        except Exception:
+            database = "offline"
+
+        try:
+            _cutoff = _now() - timedelta(seconds=_AGENT_LIVE_SECS)
+            agent_rows = await db.execute(select(Agent).where(Agent.is_active.is_(True)))
+            all_ag = agent_rows.scalars().all()
+            agents_live    = sum(1 for a in all_ag if a.last_seen and (
+                a.last_seen if a.last_seen.tzinfo else a.last_seen.replace(tzinfo=timezone.utc)
+            ) > _cutoff)
+            agents_offline = len(all_ag) - agents_live
+        except Exception:
+            agents_live = agents_offline = 0
+
+        try:
+            alert_rows = await db.execute(select(AlertRecord).where(AlertRecord.status == "open"))
+            open_count = len(alert_rows.scalars().all())
+        except Exception:
+            open_count = 0
+
+        return {
+            "ai_service":      ai_service,
+            "database":        database,
+            "last_ai_call_at": last_ai_call_at,
+            "last_ai_error":   _LAST_AI_ERROR,
+            "agents_live":     agents_live,
+            "agents_offline":  agents_offline,
+            "open_alerts":     open_count,
         }
 
     return router

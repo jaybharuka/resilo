@@ -12,7 +12,7 @@
 #   AUTH_API_HOST       default: http://localhost:5001
 #   CORE_API_HOST       default: http://localhost:8000
 #   LOAD_TEST_EMAIL     default: admin@company.local
-#   LOAD_TEST_PASSWORD  default: Admin@1234
+#   LOAD_TEST_PASSWORD  set via ADMIN_DEFAULT_PASSWORD in .env
 #   AGENT_KEY           agent X-Agent-Key (required for MetricIngestionTest)
 #   ORG_ID              organisation UUID  (required for MetricIngestionTest + DashboardLoadTest)
 #   DURATION            seconds each scenario runs   default: 60

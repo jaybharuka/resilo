@@ -30,7 +30,7 @@ The following secrets **must** be set in your environment before starting the ap
 
 These secrets have sensible defaults but can be overridden:
 
-- `ADMIN_DEFAULT_PASSWORD`: Default admin password (default: "Admin@1234")
+- `ADMIN_DEFAULT_PASSWORD`: Default admin password (required — set in .env before first startup)
 - `ENVIRONMENT`: "development" or "production" (default: "development")
 - `FRONTEND_URL`: Frontend application URL (default: "http://localhost:3000")
 - `BACKUP_DIR`: Directory for database backups (default: "./backups")

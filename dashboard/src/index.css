@@ -6,6 +6,11 @@
   to   { transform: rotate(360deg); }
 }
 
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ─── Design tokens ─── */
 :root {
   --amber:        #F59E0B;

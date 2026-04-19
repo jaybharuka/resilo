@@ -10,7 +10,7 @@ except ImportError:
 
 LOGIN_URL = os.getenv('LOGIN_TEST_URL', 'http://localhost:5000/auth/login')
 LOGIN_EMAIL = os.getenv('LOGIN_TEST_EMAIL', 'admin@company.local')
-LOGIN_PASSWORD = os.getenv('LOGIN_TEST_PASSWORD', 'Admin@1234')
+LOGIN_PASSWORD = os.getenv('LOGIN_TEST_PASSWORD') or os.getenv('ADMIN_DEFAULT_PASSWORD', '')
 
 req = urllib.request.Request(
     LOGIN_URL,

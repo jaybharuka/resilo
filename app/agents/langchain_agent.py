@@ -2,10 +2,8 @@
 LangChain-based AIOps agent for alert analysis and remediation planning.
 Uses NVIDIA NIM (OpenAI-compatible) as the LLM backend.
 
-Tools (never execute directly — return intent only):
-  restart_service  — queue a service restart
-  get_system_metrics — expose metrics to the agent
-  noop             — safe fallback
+Section 6: Direct JSON generation — no tool calls. The LLM returns a JSON
+object that is parsed directly. On any failure, rule_based_fallback() is used.
 
 Output flows back to runtime._lc_analyze which applies execution-mode guards.
 """
@@ -16,83 +14,117 @@ import logging
 import os
 from typing import Any
 
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-
 log = logging.getLogger("langchain_agent")
 
-_SYSTEM_PROMPT = (
-    "You are an AIOps agent responsible for maintaining system health.\n"
-    "Rules:\n"
-    "- Prefer safe actions. Never execute destructive commands.\n"
-    "- For high memory (>85%): call scale_memory.\n"
-    "- For high disk (>85%): call disk_cleanup.\n"
-    "- For high CPU with a known service: call restart_service.\n"
-    "- For high CPU with no clear service to restart: call notify_only.\n"
-    "- If truly unsure, call noop.\n"
-    "- Call exactly ONE tool, then stop.\n"
-    "- Briefly explain your reasoning."
-)
+_SYSTEM_PROMPT = """\
+You are an AI infrastructure operations agent. You analyze server alerts \
+and decide on safe remediation actions.
+
+You will receive:
+- Current metric values (CPU%, Memory%, Disk%, Swap%, Load average)
+- The top 5 processes by CPU and by Memory at the time of the alert
+- The agent's execution mode: dry_run | manual_approval | auto_safe
+- Historical success rate for each action type on this agent
+
+Your response must be JSON with this exact structure:
+{
+  "action": "scale_memory" | "disk_cleanup" | "restart_service" | "notify_only" | "noop",
+  "target": "service name if restart_service, else null",
+  "reasoning": "1-2 sentences explaining your diagnosis based on the process data",
+  "confidence": 0.0,
+  "contributing_process": "process name if a specific process is the cause, else null"
+}
+
+Rules:
+- If top process CPU > 70%, name it in contributing_process and explain it
+- If action is restart_service and execution_mode is auto_safe, confidence must be > 0.75
+- If you are uncertain, choose notify_only rather than a potentially harmful action
+- Never recommend restarting system-critical services (sshd, postgresql, nginx, docker, systemd)
+- Respond ONLY with the JSON object — no markdown, no prose, no explanation outside the JSON\
+"""
 
 _SAFE_ACTIONS: frozenset[str] = frozenset({"restart_service", "scale_memory", "disk_cleanup", "notify_only", "noop"})
 
+PROTECTED_SERVICES: frozenset[str] = frozenset({
+    "sshd", "ssh", "postgresql", "postgres", "mysql", "nginx", "apache2",
+    "httpd", "docker", "containerd", "kubelet", "etcd", "kube-apiserver",
+    "systemd", "init", "dbus", "NetworkManager",
+})
 
-def _build_agent(metrics: dict[str, Any]) -> AgentExecutor:
-    llm = ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct"),
-        api_key=os.getenv("NVIDIA_API_KEY", "placeholder"),
-        base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        temperature=0.2,
-        max_tokens=512,
-    )
+MAX_AUTO_RESTARTS_PER_HOUR: int = 3
 
-    @tool
-    def restart_service(service_name: str) -> str:
-        """Queue a restart for the named service. Does NOT execute — returns intent only."""
-        return json.dumps({"action": "restart_service", "target": service_name})
 
-    @tool
-    def scale_memory(target: str = "") -> str:
-        """Signal to free up memory (clear caches, reduce buffers). Use for high-memory alerts."""
-        return json.dumps({"action": "scale_memory", "target": target or "system"})
+def can_auto_execute(
+    action: str,
+    target: str,
+    agent_id: str,
+    restart_count_last_hour: int = 0,
+) -> tuple[bool, str]:
+    """Return (allowed, reason). Called before queuing any auto_safe command."""
+    if action not in _SAFE_ACTIONS:
+        return False, f"action '{action}' not in SAFE_ACTIONS"
+    if action == "restart_service":
+        if target.lower() in PROTECTED_SERVICES:
+            return False, f"service '{target}' is in PROTECTED_SERVICES — requires manual approval"
+        if restart_count_last_hour >= MAX_AUTO_RESTARTS_PER_HOUR:
+            return False, (
+                f"restart rate limit reached: {restart_count_last_hour}/{MAX_AUTO_RESTARTS_PER_HOUR} "
+                f"restarts in the last hour for agent {agent_id}"
+            )
+    return True, ""
 
-    @tool
-    def disk_cleanup(target: str = "") -> str:
-        """Signal to clean up disk space (logs, tmp files). Use for high-disk alerts."""
-        return json.dumps({"action": "disk_cleanup", "target": target or "system"})
 
-    @tool
-    def notify_only(reason: str = "") -> str:
-        """Send a notification only — no remediation action. Use when unsure or impact is unclear."""
-        return json.dumps({"action": "notify_only", "target": reason or "operator"})
+def rule_based_fallback(alert_data: dict[str, Any]) -> dict[str, Any]:
+    """Simple rule-based fallback when LLM is unavailable. confidence=0.4, source=rule_fallback."""
+    category = alert_data.get("category", "")
+    if category == "cpu":
+        action, target = "notify_only", "high_cpu"
+        reason = "CPU pressure detected — notifying operator (LLM unavailable)"
+    elif category == "memory":
+        action, target = "scale_memory", "system"
+        reason = "Memory pressure detected — scale_memory recommended (LLM unavailable)"
+    elif category == "disk":
+        action, target = "disk_cleanup", "system"
+        reason = "Disk pressure detected — cleanup recommended (LLM unavailable)"
+    else:
+        action, target = "notify_only", category
+        reason = f"Alert detected: {category} (LLM unavailable — rule fallback)"
+    return {
+        "action": action,
+        "target": target,
+        "reasoning": reason,
+        "confidence": 0.4,
+        "contributing_process": None,
+        "safe": True,
+        "decision_source": "rule_fallback",
+    }
 
-    @tool
-    def get_system_metrics() -> str:
-        """Return the current system metrics from the alert context."""
-        return json.dumps(metrics)
 
-    @tool
-    def noop() -> str:
-        """Do nothing. Safe fallback when no action is needed or situation is unclear."""
-        return json.dumps({"action": "noop", "target": ""})
+async def get_action_success_rates(agent_id: str, db: Any) -> dict[str, str]:
+    """Query AgentActionLog and return per-action success rates as human-readable strings."""
+    from sqlalchemy import Integer, func, select
+    from app.core.database import AgentActionLog
 
-    tools = [restart_service, scale_memory, disk_cleanup, notify_only, get_system_metrics, noop]
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", _SYSTEM_PROMPT),
-        ("human", "{input}"),
-        MessagesPlaceholder("agent_scratchpad"),
-    ])
-    agent = create_openai_tools_agent(llm, tools, prompt)
-    return AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=False,
-        max_iterations=3,
-        handle_parsing_errors=True,
-        return_intermediate_steps=True,
-    )
+    try:
+        result = await db.execute(
+            select(
+                AgentActionLog.action,
+                func.count().label("total"),
+                func.sum(func.cast(AgentActionLog.success, Integer)).label("successes"),
+            )
+            .where(AgentActionLog.agent_id == agent_id)
+            .group_by(AgentActionLog.action)
+        )
+        rates: dict[str, str] = {}
+        for row in result.all():
+            total = row.total or 0
+            successes = int(row.successes or 0)
+            pct = int(successes / total * 100) if total > 0 else 0
+            rates[row.action] = f"{successes}/{total} ({pct}%)"
+        return rates
+    except Exception as exc:
+        log.warning("[AGENT] get_action_success_rates failed: %s", exc)
+        return {}
 
 
 async def analyze_alert(
@@ -102,70 +134,85 @@ async def analyze_alert(
     context: str = "",
     failure_streak: int = 0,
     action_rankings: list[dict] | None = None,
+    top_processes: dict | None = None,
+    load_avg_1m: float | None = None,
+    load_avg_5m: float | None = None,
+    load_avg_15m: float | None = None,
+    action_success_rates: dict[str, str] | None = None,
+    execution_mode: str = "dry_run",
 ) -> dict[str, Any]:
-    """Run the LangChain agent against an alert. Never raises — returns noop on failure."""
+    """Direct JSON generation via NVIDIA NIM. Never raises — returns rule_based_fallback on failure."""
     if not os.getenv("NVIDIA_API_KEY"):
-        log.warning("[AGENT] NVIDIA_API_KEY not set — skipping LangChain analysis")
-        return {"action": "noop", "target": "", "reason": "no api key", "confidence": 0.0, "safe": True}
+        log.warning("[AGENT] NVIDIA_API_KEY not set — using rule-based fallback")
+        return rule_based_fallback(alert_data)
 
-    # Build history context lines
-    history_lines: list[str] = []
-    if success_rate is not None:
-        ctx_label = f" in [{context}] scenarios" if context else ""
-        history_lines.append(
-            f"Historical success rate for restart_service{ctx_label}: {success_rate * 100:.0f}%"
-        )
-    if failure_streak >= 2:
-        history_lines.append(
-            f"WARNING: restart_service has failed {failure_streak} times in a row — consider a different action."
-        )
-    if action_rankings:
-        ranked_str = " | ".join(
-            f"{r['action']}:{int(r['rate'] * 100)}%" if r["rate"] is not None else f"{r['action']}:no data"
-            for r in action_rankings
-        )
-        history_lines.append(f"Action success rankings [{context}]: {ranked_str}")
+    tp = top_processes or {}
+    by_cpu = tp.get("by_cpu", [])
+    by_mem = tp.get("by_mem", [])
 
-    history_note = ("\n" + "\n".join(history_lines)) if history_lines else ""
+    def _fmt_procs(procs: list) -> str:
+        if not procs:
+            return "no data"
+        return ", ".join(
+            f"{p.get('name', '?')}({p.get('cpu_percent', 0):.1f}% cpu, {p.get('memory_percent', 0):.1f}% mem)"
+            for p in procs[:5]
+        )
 
-    input_text = (
-        f"Alert: {alert_data['category']} | Severity: {alert_data['severity']}\n"
-        f"Title: {alert_data['title']}\n"
-        f"Detail: {alert_data['detail']}\n"
-        f"Metrics: CPU={metrics.get('cpu', 0):.1f}% | "
-        f"Memory={metrics.get('memory', 0):.1f}% | "
-        f"Disk={metrics.get('disk', 0):.1f}%"
-        f"{history_note}"
+    rates_str = json.dumps(action_success_rates or {}, ensure_ascii=False)
+
+    user_message = (
+        f"Alert: {alert_data.get('category', '')} at {metrics.get('cpu', metrics.get('memory', 0)):.1f}%"
+        f" — Severity: {alert_data.get('severity', '')}\n"
+        f"Agent mode: {execution_mode}\n"
+        f"Metrics: CPU={metrics.get('cpu', 0):.1f}%  Memory={metrics.get('memory', 0):.1f}%"
+        f"  Disk={metrics.get('disk', 0):.1f}%\n"
+        f"Load average: {load_avg_1m} / {load_avg_5m} / {load_avg_15m}\n"
+        f"Top CPU processes: {_fmt_procs(by_cpu)}\n"
+        f"Top Memory processes: {_fmt_procs(by_mem)}\n"
+        f"Historical action success rates: {rates_str}"
     )
 
-    log.info("[AGENT] Alert received: %s (%s)", alert_data["category"], alert_data["severity"])
+    log.info("[AGENT] Invoking NIM: alert=%s severity=%s mode=%s",
+             alert_data.get("category"), alert_data.get("severity"), execution_mode)
 
     try:
-        executor = _build_agent(metrics)
-        result = await executor.ainvoke({"input": input_text})
+        from langchain_openai import ChatOpenAI  # lazy — not all envs have langchain installed
+        llm = ChatOpenAI(
+            model=os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct"),
+            api_key=os.getenv("NVIDIA_API_KEY", "placeholder"),
+            base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+            temperature=0.2,
+            max_tokens=512,
+        )
+        response = await llm.ainvoke([
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": user_message},
+        ])
+        raw = response.content.strip()
+        start = raw.find("{"); end = raw.rfind("}") + 1
+        if start == -1:
+            raise ValueError("No JSON object in LLM response")
+        parsed = json.loads(raw[start:end])
 
-        action, target, reason = "noop", "", result.get("output", "")
-        steps = result.get("intermediate_steps", [])
-        if steps:
-            agent_action, tool_output = steps[-1]
-            try:
-                parsed = json.loads(tool_output)
-                action = parsed.get("action", "noop")
-                target = parsed.get("target", "")
-            except (json.JSONDecodeError, ValueError):
-                action = getattr(agent_action, "tool", "noop")
+        action  = parsed.get("action", "noop")
+        target  = parsed.get("target") or ""
+        if isinstance(target, str) and target.lower() in ("null", "none"):
+            target = ""
 
         decision = {
-            "action": action,
-            "target": target,
-            "reason": reason,
-            "confidence": 0.8 if action != "noop" else 0.5,
-            "safe": action in _SAFE_ACTIONS,
+            "action":               action if action in _SAFE_ACTIONS else "noop",
+            "target":               target,
+            "reasoning":            parsed.get("reasoning", ""),
+            "confidence":           float(parsed.get("confidence", 0.7)),
+            "contributing_process": parsed.get("contributing_process"),
+            "safe":                 action in _SAFE_ACTIONS,
+            "decision_source":      "langchain",
         }
-        log.info("[AGENT PLAN] action=%s target=%s confidence=%.2f",
-                 action, target, decision["confidence"])
+        log.info("[AGENT PLAN] action=%s target=%s conf=%.2f contributing=%s",
+                 decision["action"], target, decision["confidence"],
+                 decision["contributing_process"])
         return decision
 
     except Exception as exc:
-        log.warning("[AGENT] Analysis failed: %s", exc)
-        return {"action": "noop", "target": "", "reason": str(exc), "confidence": 0.0, "safe": True}
+        log.warning("[AGENT] LangChain invoke failed: %s — falling back to rule-based", exc)
+        return rule_based_fallback(alert_data)

@@ -26,34 +26,24 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     async function initAuth() {
-      const storedToken = localStorage.getItem('aiops:token');
-      if (storedToken) {
-        setTokenGetter(() => storedToken); // Synchronous token getter for custom JWT
-        try {
+      // Access token lives in memory only — on any page load, silently refresh via httpOnly cookie.
+      try {
+        const refreshRes = await authApi.refresh();
+        if (refreshRes?.token) {
+          setTokenGetter(() => refreshRes.token);
           const meData = await authApi.me();
-          // FastAPI returns user directly; legacy API wraps in {user: ...}
           const u = meData?.id ? meData : meData?.user;
-          if (u) {
-            setUser(u);
-            setRole(u.role || 'employee');
-            try { localStorage.setItem('aiops:user', JSON.stringify(u)); } catch {}
-            _startMetrics(u);
-          } else {
-            setUser(null);
-            try { localStorage.removeItem('aiops:user'); } catch {}
-          }
-        } catch (err) {
-          console.error("Token validation failed", err);
-          setTokenGetter(null);
-          localStorage.removeItem('aiops:token');
-          setUser(null);
+          if (u) { setUser(u); setRole(u.role || 'employee'); _startMetrics(u); return; }
         }
-      } else {
-        setUser(null);
-      }
+      } catch {}
+      // No valid cookie / session — clear legacy storage and show login
+      setTokenGetter(null);
+      try { localStorage.removeItem('aiops:token'); localStorage.removeItem('aiops:refresh'); localStorage.removeItem('aiops:user'); } catch {}
+      try { sessionStorage.removeItem('aiops:token'); } catch {}
+      setUser(null);
     }
     initAuth();
-  }, []);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const isLoading = user === undefined;
   const isAuthenticated = !!user;
@@ -66,13 +56,17 @@ export function AuthProvider({ children }) {
       if (res?.requires_2fa) {
         return { ok: false, requires_2fa: true, temp_token: res.temp_token };
       }
-      if (res?.token && res?.user) {
-        localStorage.setItem('aiops:token', res.token);
-        try { localStorage.setItem('aiops:user', JSON.stringify(res.user)); } catch {}
+      if (res?.token) {
         setTokenGetter(() => res.token);
-        setUser(res.user);
-        setRole(res.user.role || 'employee');
-        _startMetrics(res.user);
+        let u = res.user;
+        if (!u) {
+          try { const meData = await authApi.me(); u = meData?.id ? meData : meData?.user; } catch {}
+        }
+        if (u) {
+          setUser(u);
+          setRole(u.role || 'employee');
+          _startMetrics(u);
+        }
         return { ok: true };
       } else {
         throw new Error('Invalid response from server.');
@@ -94,18 +88,34 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  const loginWithGoogle = useCallback(async () => {
-    setAuthError('Google Login is not available in local mode.');
-    throw new Error('Google Login unavailable');
+  const loginWithGoogle = useCallback(() => {
+    window.location.href = '/auth/google';
   }, []);
+
+  const initFromOAuth = useCallback(async (token) => {
+    setAuthError(null);
+    try {
+      setTokenGetter(() => token);
+      const meData = await authApi.me();
+      const u = meData?.id ? meData : meData?.user;
+      if (!u) throw new Error('Could not load user info');
+      setUser(u);
+      setRole(u.role || 'employee');
+      _startMetrics(u);
+      return { ok: true };
+    } catch (err) {
+      setTokenGetter(null);
+      setUser(null);
+      throw err;
+    }
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const logout = useCallback(async () => {
     try { await authApi.logout(); } catch {}
     _stopMetrics();
     setTokenGetter(null);
-    localStorage.removeItem('aiops:token');
-    localStorage.removeItem('aiops:refresh');
-    localStorage.removeItem('aiops:user');
+    try { localStorage.removeItem('aiops:token'); localStorage.removeItem('aiops:refresh'); localStorage.removeItem('aiops:user'); } catch {}
+    try { sessionStorage.removeItem('aiops:token'); } catch {}
     setUser(null);
     setRole('employee');
   }, []);
@@ -116,10 +126,11 @@ export function AuthProvider({ children }) {
     loading: isLoading,
     login,
     loginWithGoogle,
+    initFromOAuth,
     logout,
     isAuthenticated,
     authError,
-  }), [user, role, isLoading, login, loginWithGoogle, logout, isAuthenticated, authError]);
+  }), [user, role, isLoading, login, loginWithGoogle, initFromOAuth, logout, isAuthenticated, authError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

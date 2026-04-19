@@ -6,6 +6,7 @@
  * The auth token is attached from localStorage on every request.
  */
 import axios from 'axios';
+import { getAccessToken } from './api';
 
 const CORE_BASE_URL = (() => {
   try {
@@ -16,11 +17,10 @@ const CORE_BASE_URL = (() => {
   if (env && env.trim()) return env.trim();
   try {
     if (typeof window !== 'undefined' && window.location) {
-      const { protocol, hostname } = window.location;
-      return `${protocol}//${hostname}:8001`;
+      return window.location.origin;
     }
   } catch {}
-  return 'http://localhost:8001';
+  return 'http://localhost:3011';
 })();
 
 const coreAxios = axios.create({
@@ -29,10 +29,10 @@ const coreAxios = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Attach the JWT on every request
-coreAxios.interceptors.request.use((config) => {
+// Attach the JWT on every request (uses the shared in-memory token from api.js)
+coreAxios.interceptors.request.use(async (config) => {
   try {
-    const token = localStorage.getItem('aiops:token');
+    const token = await getAccessToken();
     if (token) {
       config.headers = config.headers || {};
       config.headers['Authorization'] = `Bearer ${token}`;
@@ -41,13 +41,32 @@ coreAxios.interceptors.request.use((config) => {
   return config;
 });
 
-// Read org_id from stored user profile (cached in localStorage as 'aiops:user')
+// Read org_id: decode from the in-memory JWT, fallback to localStorage
 function getOrgId() {
   try {
     const raw = localStorage.getItem('aiops:user');
-    if (raw) {
-      const u = JSON.parse(raw);
-      return u?.org_id || null;
+    if (raw) { const u = JSON.parse(raw); if (u?.org_id) return u.org_id; }
+  } catch {}
+  // Decode org_id from the JWT payload (base64url middle segment)
+  try {
+    const tok = localStorage.getItem('aiops:token');
+    if (tok) {
+      const payload = JSON.parse(atob(tok.split('.')[1]));
+      if (payload?.org_id) return payload.org_id;
+    }
+  } catch {}
+  return null;
+}
+
+// Resolve org_id async — waits for the in-memory token when localStorage is empty
+async function resolveOrgId() {
+  const cached = getOrgId();
+  if (cached) return cached;
+  try {
+    const token = await getAccessToken();
+    if (token) {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      if (payload?.org_id) return payload.org_id;
     }
   } catch {}
   return null;
@@ -118,9 +137,16 @@ export const alertsApi = {
 
 export const agentsApi = {
   list: async (orgId) => {
-    const oid = orgId || getOrgId();
+    const oid = orgId || await resolveOrgId();
     if (!oid) return [];
     const res = await coreAxios.get(`${orgPath(oid)}/agents`);
+    return res.data;
+  },
+
+  getById: async (orgId, agentId) => {
+    const oid = orgId || await resolveOrgId();
+    if (!oid) return null;
+    const res = await coreAxios.get(`${orgPath(oid)}/agents/${agentId}`);
     return res.data;
   },
 
@@ -131,8 +157,24 @@ export const agentsApi = {
   },
 
   remove: async (orgId, agentId) => {
-    const oid = orgId || getOrgId();
+    const oid = orgId || await resolveOrgId();
     await coreAxios.delete(`${orgPath(oid)}/agents/${agentId}`);
+  },
+
+  resolveAlert: async (orgId, agentId, alertId) => {
+    const oid = orgId || await resolveOrgId();
+    await coreAxios.patch(`${orgPath(oid)}/agents/${agentId}/alerts/${alertId}/resolve`);
+  },
+
+  setExecMode: async (orgId, agentId, mode) => {
+    const oid = orgId || await resolveOrgId();
+    const res = await coreAxios.patch(`${orgPath(oid)}/agents/${agentId}/execution-mode`, { mode });
+    return res.data;
+  },
+
+  approveAction: async (agentId, approvalId) => {
+    const res = await coreAxios.post(`/agent/approve`, { agent_id: agentId, approval_id: approvalId });
+    return res.data;
   },
 
   sendCommand: async (orgId, agentId, action, params = {}) => {
@@ -347,5 +389,5 @@ const legacyApi = {
   triggerRemediation: (actionId, data) => coreAxios.post(`${orgPath(getOrgId())}/remediation`, data),
 };
 
-export { getOrgId, CORE_BASE_URL };
+export { getOrgId, CORE_BASE_URL, coreAxios };
 export default legacyApi;

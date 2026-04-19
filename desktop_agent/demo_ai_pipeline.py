@@ -6,7 +6,12 @@ Usage:
   python demo_ai_pipeline.py                          # auto-creates agent via admin login
   python demo_ai_pipeline.py --token resilo_xxxx...   # use YOUR token from dashboard New Agent
 """
-import json, sys, time, urllib.request, urllib.error
+import json, os, sys, time, urllib.request, urllib.error
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+except ImportError:
+    pass
 
 BACKEND = "http://localhost:8000"
 AUTH    = "http://localhost:5001"
@@ -27,7 +32,8 @@ def _req(method, base, path, body=None, headers=None):
 
 def login():
     r = _req("POST", AUTH, "/auth/login",
-             {"email": "admin@company.local", "password": "Admin@1234"})
+             {"email": os.getenv("ADMIN_DEFAULT_EMAIL", "admin@company.local"),
+              "password": os.getenv("ADMIN_DEFAULT_PASSWORD")})
     t = r.get("token")
     org_id = r.get("user", {}).get("org_id") or r.get("org_id")
     if not t:

@@ -239,10 +239,26 @@ class MetricSnapshot(Base):
     network_in:   Mapped[int]           = mapped_column(BigInteger, default=0, nullable=False)
     network_out:  Mapped[int]           = mapped_column(BigInteger, default=0, nullable=False)
     temperature:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    load_avg:     Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    processes:    Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    uptime_secs:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    extra:        Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)
+    load_avg:       Mapped[Optional[str]]   = mapped_column(String(50), nullable=True)
+    processes:      Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    uptime_secs:    Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    extra:          Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)
+    # Extended metrics (Section 5A)
+    top_processes:  Mapped[Optional[dict]]  = mapped_column(JSON,    nullable=True)
+    swap_percent:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    swap_used_gb:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    disk_read_mbps: Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    disk_write_mbps:Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    net_established:Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    net_close_wait: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    net_time_wait:  Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    load_avg_1m:    Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    load_avg_5m:    Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    load_avg_15m:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    uptime_hours:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    battery_percent:Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    battery_plugged:Mapped[Optional[bool]]  = mapped_column(Boolean, nullable=True)
+    disk_partitions:Mapped[Optional[list]]  = mapped_column(JSON,    nullable=True)
 
     agent: Mapped["Agent"] = relationship("Agent", back_populates="metrics")
 
@@ -265,9 +281,10 @@ class AlertRecord(Base):
     detail:        Mapped[str]           = mapped_column(Text, nullable=False)
     metric_value:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     threshold:     Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    status:        Mapped[str]           = mapped_column(String(20), default="open", nullable=False)  # open|acknowledged|resolved
-    resolved_at:   Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    status:            Mapped[str]           = mapped_column(String(20), default="open", nullable=False)  # open|acknowledged|resolved
+    resolved_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at:        Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     agent:        Mapped[Optional["Agent"]]        = relationship("Agent", back_populates="alerts")
     remediations: Mapped[list["RemediationRecord"]] = relationship("RemediationRecord", back_populates="alert")
@@ -510,6 +527,26 @@ class Incident(Base):
     resolved_at:  Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by:  Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     timeline:     Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{ts, actor, note}]
+
+
+# ── Agent Action Log (auto-execution audit + rate limiting) ──────────────────
+
+class AgentActionLog(Base):
+    """
+    Immutable record of every action auto-executed in auto_safe mode.
+    Used to enforce MAX_AUTO_RESTARTS_PER_HOUR rate limit.
+    """
+    __tablename__ = "agent_action_log"
+    __table_args__ = (
+        Index("ix_agentactionlog_agent_executed", "agent_id", "executed_at"),
+    )
+
+    id:          Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id:    Mapped[str]            = mapped_column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    action:      Mapped[str]            = mapped_column(String(100), nullable=False)
+    target:      Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
+    executed_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    success:     Mapped[bool]           = mapped_column(Boolean, default=True, nullable=False)
 
 
 async def wait_for_db() -> None:

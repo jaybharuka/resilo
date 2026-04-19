@@ -21,7 +21,7 @@ validate_environment()
 DATABASE_URL = os.getenv("DATABASE_URL")
 DEFAULT_ADMIN_EMAIL = os.getenv("SEED_ADMIN_EMAIL", os.getenv("ADMIN_DEFAULT_EMAIL", "admin@company.local"))
 DEFAULT_ADMIN_USERNAME = os.getenv("SEED_ADMIN_USERNAME", "admin")
-DEFAULT_ADMIN_PASSWORD = os.getenv("SEED_ADMIN_PASSWORD", os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@1234"))
+DEFAULT_ADMIN_PASSWORD = os.getenv("SEED_ADMIN_PASSWORD") or os.getenv("ADMIN_DEFAULT_PASSWORD")
 DEFAULT_LOGIN_HOST = os.getenv("LOGIN_TEST_URL", "http://localhost:5000/auth/login")
 
 

@@ -2,12 +2,11 @@
 setlocal enabledelayedexpansion
 
 REM ─── Resilo dev launcher ──────────────────────────────────────────────────
-REM Loads .env.dev, kills stale processes, starts all 4 services,
+REM Loads .env.dev, kills stale processes, starts 3 services,
 REM health-checks each one before continuing.
 REM
 REM  FastAPI Auth   → http://localhost:5001  (health: /auth/health)
 REM  FastAPI Core   → http://localhost:8000  (health: /health/live)
-REM  Node/Express   → http://localhost:3011  (health: /api/health)
 REM  React dev      → http://localhost:3000  (PORT locked)
 REM ──────────────────────────────────────────────────────────────────────────
 
@@ -30,13 +29,13 @@ if not exist "%~dp0.env.dev" (
 )
 
 REM ── Kill stale processes ───────────────────────────────────────────────────
-echo [1/5] Killing stale Python and Node processes...
+echo [1/4] Killing stale Python and Node processes...
 taskkill /F /IM python.exe  >nul 2>&1
 taskkill /F /IM pythonw.exe >nul 2>&1
 taskkill /F /IM node.exe    >nul 2>&1
 
 REM Free ports explicitly (belt-and-suspenders)
-for %%P in (5001 8000 3011 3000) do (
+for %%P in (5001 8000 3000) do (
     for /f "tokens=5" %%i in ('netstat -ano 2^>nul ^| findstr ":%%P " ^| findstr LISTENING') do (
         taskkill /F /PID %%i >nul 2>&1
     )
@@ -44,7 +43,7 @@ for %%P in (5001 8000 3011 3000) do (
 timeout /t 2 /nobreak >nul
 
 REM ── FastAPI Auth ───────────────────────────────────────────────────────────
-echo [2/5] Starting Auth API on :5001...
+echo [2/4] Starting Auth API on :5001...
 start "Auth API :5001" cmd /k ".venv\Scripts\uvicorn.exe app.api.auth_api:app --host 127.0.0.1 --port 5001 --reload"
 
 set attempts=0
@@ -69,7 +68,7 @@ exit /b 1
 :auth_ok
 
 REM ── FastAPI Core ───────────────────────────────────────────────────────────
-echo [3/5] Starting Core API on :8000...
+echo [3/4] Starting Core API on :8000...
 start "Core API :8000" cmd /k ".venv\Scripts\uvicorn.exe app.api.core_api:app --host 127.0.0.1 --port 8000 --reload"
 
 set attempts=0
@@ -95,28 +94,8 @@ pause
 exit /b 1
 :core_ok
 
-REM ── Node / Express ─────────────────────────────────────────────────────────
-echo [4/5] Starting Node/Express on :3011...
-start "Node :3011" cmd /k "cd /d %~dp0dashboard && node server.js"
-
-set attempts=0
-:wait_node
-timeout /t 2 /nobreak >nul
-curl -sf http://localhost:3011/api/health >nul 2>&1
-if %errorlevel%==0 (
-    echo        Node      ✓  ready
-    goto :node_ok
-)
-set /a attempts+=1
-if %attempts% lss 10 (
-    echo        Node      …  waiting ^(%attempts%/10^)
-    goto :wait_node
-)
-echo [WARN]  Node did not respond after 20s — continuing anyway
-:node_ok
-
-REM ── React dev server (port locked) ─────────────────────────────────────────
-echo [5/5] Starting React dev server on :3000...
+REM ── React dev server (port locked) ───────────────────────────────────────────────────
+echo [4/4] Starting React dev server on :3000...
 start "React :3000" cmd /k "cd /d %~dp0dashboard && set PORT=3000 && npx craco start"
 
 echo.
@@ -124,7 +103,7 @@ echo ─────────────────────────
 echo  All services started.
 echo.
 echo  Open:   http://localhost:3000
-echo  Admin:  admin@company.local / Admin@1234
+echo  Admin:  Set ADMIN_DEFAULT_PASSWORD in .env
 echo.
 echo  IMPORTANT: use http://localhost:3000 — never 127.0.0.1
 echo  React will be available in ~30s (CRA compile time)
