@@ -50,5 +50,17 @@ app.include_router(legacy_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
+    import logging, subprocess, sys
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            logging.info("[startup] alembic upgrade head OK\n%s", result.stdout.strip())
+        else:
+            logging.error("[startup] alembic upgrade head FAILED\n%s", result.stderr.strip())
+    except Exception as exc:
+        logging.error("[startup] alembic upgrade head exception: %s", exc)
     await wait_for_db()
     await init_db()
