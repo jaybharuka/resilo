@@ -50,17 +50,38 @@ app.include_router(legacy_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    import logging, os
-    from alembic import command as alembic_command
-    from alembic.config import Config as AlembicConfig
-    try:
-        _ini = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "alembic.ini")
-        if not os.path.exists(_ini):
-            _ini = "alembic.ini"  # fallback: CWD
-        cfg = AlembicConfig(_ini)
-        alembic_command.upgrade(cfg, "head")
-        logging.warning("[startup] alembic upgrade head OK")
-    except Exception as exc:
-        logging.error("[startup] alembic upgrade head FAILED: %s", exc)
+    import logging
+    from sqlalchemy import text
+    from app.core.database import engine
     await wait_for_db()
     await init_db()
+    # Ensure extended metric columns exist (idempotent — ADD COLUMN IF NOT EXISTS)
+    _cols = [
+        ("top_processes",   "JSON"),
+        ("swap_percent",    "FLOAT"),
+        ("swap_used_gb",    "FLOAT"),
+        ("disk_read_mbps",  "FLOAT"),
+        ("disk_write_mbps", "FLOAT"),
+        ("net_established", "INTEGER"),
+        ("net_close_wait",  "INTEGER"),
+        ("net_time_wait",   "INTEGER"),
+        ("load_avg_1m",     "FLOAT"),
+        ("load_avg_5m",     "FLOAT"),
+        ("load_avg_15m",    "FLOAT"),
+        ("uptime_hours",    "FLOAT"),
+        ("battery_percent", "FLOAT"),
+        ("battery_plugged", "BOOLEAN"),
+        ("disk_partitions", "JSON"),
+    ]
+    try:
+        async with engine.begin() as conn:
+            for col, typ in _cols:
+                await conn.execute(text(
+                    f"ALTER TABLE metric_snapshots ADD COLUMN IF NOT EXISTS {col} {typ}"
+                ))
+            await conn.execute(text(
+                "ALTER TABLE alert_records ADD COLUMN IF NOT EXISTS resolution_reason TEXT"
+            ))
+        logging.warning("[startup] schema columns ensured OK")
+    except Exception as exc:
+        logging.error("[startup] schema ensure FAILED: %s", exc)
