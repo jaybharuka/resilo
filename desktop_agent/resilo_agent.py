@@ -59,16 +59,22 @@ def _temperature() -> float | None:
     return None
 
 
+_PSEUDO_PROCESSES = {"system idle process", "idle", "system", "registry", "memory compression"}
+
 def get_top_processes(n: int = 5) -> dict[str, list[dict]]:
+    cpu_count = max(psutil.cpu_count(logical=True) or 1, 1)
     by_cpu: list[dict] = []
     by_mem: list[dict] = []
     for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
         try:
             info = proc.info
+            name = info["name"] or ""
+            if name.lower() in _PSEUDO_PROCESSES:
+                continue
             entry = {
                 "pid": info["pid"],
-                "name": info["name"] or "",
-                "cpu_percent": round(info["cpu_percent"] or 0.0, 1),
+                "name": name,
+                "cpu_percent": round((info["cpu_percent"] or 0.0) / cpu_count, 1),
                 "memory_percent": round(info["memory_percent"] or 0.0, 1),
             }
             by_cpu.append(entry)
