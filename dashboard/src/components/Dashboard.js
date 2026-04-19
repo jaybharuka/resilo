@@ -79,12 +79,24 @@ export default function Dashboard() {
     (a.ai_history || []).map(d => ({ ...d, agent_label: a.label }))
   ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10);
 
+  const allDecisionSources = recentDecisions.map(d => d.decision_source);
+  const onlyRuleFallback = allDecisionSources.length > 0 && allDecisionSources.every(s => s === 'rule_fallback');
+
   const ai_color = sysHealth?.ai_service === 'online' ? C.teal : sysHealth?.ai_service === 'degraded' ? C.amber : C.red;
   const db_color = sysHealth?.database === 'online' ? C.teal : C.red;
 
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+
+      {/* Rule-fallback warning banner — shown when NVIDIA_API_KEY is not set */}
+      {onlyRuleFallback && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderRadius: 8, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)' }}>
+          <AlertTriangle size={14} color={C.amber} style={{ flexShrink: 0 }} />
+          <span style={{ ...MONO, fontSize: 11, color: C.amber }}>AI RUNNING IN RULE FALLBACK MODE</span>
+          <span style={{ ...UI, fontSize: 12, color: C.text2, marginLeft: 4 }}>— NVIDIA_API_KEY not set in production. Decisions are lookup-table rules, not LLM analysis. Set the key in Render → Environment to enable real AI.</span>
+        </div>
+      )}
 
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>

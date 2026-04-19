@@ -82,6 +82,15 @@ async def _startup() -> None:
             await conn.execute(text(
                 "ALTER TABLE alert_records ADD COLUMN IF NOT EXISTS resolution_reason TEXT"
             ))
+            await conn.execute(text(
+                "ALTER TABLE agent_action_log ADD COLUMN IF NOT EXISTS metadata_json TEXT"
+            ))
         logging.warning("[startup] schema columns ensured OK")
     except Exception as exc:
         logging.error("[startup] schema ensure FAILED: %s", exc)
+
+    try:
+        from app.api.runtime import restore_ai_history_from_db
+        await restore_ai_history_from_db()
+    except Exception as exc:
+        logging.warning("[startup] AI history restore failed: %s", exc)

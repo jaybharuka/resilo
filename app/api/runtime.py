@@ -836,7 +836,8 @@ async def _lc_analyze(
             logging.warning("[AGENT] Could not query restart count: %s", _exc)
 
         allowed, block_reason = can_auto_execute(action, target, alert.agent_id, restart_count)
-        low_conf = decision["confidence"] < 0.75
+        min_conf = _CONFIDENCE_THRESHOLDS.get(action, 0.75)
+        low_conf = decision["confidence"] < min_conf
         if allowed and decision["safe"] and not low_conf:
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
@@ -850,7 +851,7 @@ async def _lc_analyze(
                 logging.warning("[AGENT] Could not log action: %s", _exc)
         else:
             if low_conf:
-                block_reason = f"confidence {decision['confidence']:.2f} < 0.75 threshold — requires manual approval"
+                block_reason = f"confidence {decision['confidence']:.2f} < {min_conf:.2f} threshold for {action} — requires manual approval"
             disp_status = "needs_review"
             logging.info("[AGENT EXECUTION] mode=autonomous — blocked: %s",
                          block_reason or "unsafe action")
@@ -876,6 +877,23 @@ async def _lc_analyze(
     hist.insert(0, record)
     if len(hist) > 10:
         hist.pop()
+
+    # Persist to DB so decisions survive server restarts
+    try:
+        async with SessionLocal() as _db:
+            await _db.execute(text(
+                "INSERT INTO agent_action_log (agent_id, action, target, success, metadata_json) "
+                "VALUES (:agent_id, :action, :target, :success, :meta)"
+            ), {
+                "agent_id": alert.agent_id,
+                "action": action,
+                "target": target or "",
+                "success": True,
+                "meta": json.dumps(record),
+            })
+            await _db.commit()
+    except Exception as _exc:
+        logging.warning("[AGENT] Could not persist AI decision to DB: %s", _exc)
 
 
 def _get_success_rate(agent_id: str, action: str, context: str | None = None) -> float | None:
@@ -1257,8 +1275,40 @@ _PENDING_COMMANDS: dict[str, list[dict]] = {}
 # In-memory AI decision history: agent_id → last 10 decisions
 _AI_HISTORY: dict[str, list[dict]] = {}
 
+# Action-aware confidence thresholds for auto_safe execution
+_CONFIDENCE_THRESHOLDS: dict[str, float] = {
+    "notify_only":     0.0,   # notifying is always safe regardless of confidence
+    "noop":            0.0,
+    "disk_cleanup":    0.6,
+    "scale_memory":    0.7,
+    "restart_service": 0.85,  # highest bar — service restarts are disruptive
+}
+
 # Per-agent execution mode: "dry_run" | "manual_approval" | "auto_safe"
 _AGENT_EXEC_MODE: dict[str, str] = {}
+
+
+async def restore_ai_history_from_db() -> None:
+    """Repopulate _AI_HISTORY from DB on startup so decisions survive server restarts."""
+    try:
+        async with SessionLocal() as db:
+            rows = await db.execute(text(
+                "SELECT agent_id, metadata_json FROM agent_action_log "
+                "WHERE metadata_json IS NOT NULL "
+                "ORDER BY executed_at DESC "
+                "LIMIT 500"
+            ))
+            for agent_id, meta in rows:
+                bucket = _AI_HISTORY.setdefault(agent_id, [])
+                if len(bucket) >= 10:
+                    continue
+                try:
+                    bucket.append(json.loads(meta))
+                except Exception:
+                    pass
+        logging.info("[AGENT] Restored AI history for %d agents from DB", len(_AI_HISTORY))
+    except Exception as exc:
+        logging.warning("[AGENT] Could not restore AI history: %s", exc)
 
 # Last AI error message + 60-second NIM health cache (5C)
 _LAST_AI_ERROR: str | None = None

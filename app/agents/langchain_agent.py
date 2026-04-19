@@ -166,7 +166,7 @@ async def analyze_alert(
         f"Agent mode: {execution_mode}\n"
         f"Metrics: CPU={metrics.get('cpu', 0):.1f}%  Memory={metrics.get('memory', 0):.1f}%"
         f"  Disk={metrics.get('disk', 0):.1f}%\n"
-        f"Load average: {load_avg_1m} / {load_avg_5m} / {load_avg_15m}\n"
+        f"Load average: {f'{load_avg_1m:.2f} / {load_avg_5m:.2f} / {load_avg_15m:.2f}' if load_avg_1m is not None else 'unavailable (Windows)'}\n"
         f"Top CPU processes: {_fmt_procs(by_cpu)}\n"
         f"Top Memory processes: {_fmt_procs(by_mem)}\n"
         f"Historical action success rates: {rates_str}"
