@@ -511,6 +511,8 @@ def _serialize_agent(agent: Agent) -> dict[str, Any]:
         "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
         "created_at": agent.created_at.isoformat() if agent.created_at else None,
         "platform_info": agent.platform_info or {},
+        "ai_history": _AI_HISTORY.get(agent.id, []),
+        "execution_mode": _AGENT_EXEC_MODE.get(agent.id, "dry_run"),
     }
 
 
