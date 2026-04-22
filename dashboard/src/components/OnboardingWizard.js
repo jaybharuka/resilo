@@ -60,9 +60,11 @@ export default function OnboardingWizard({ onAgentConnected }) {
   const timeoutRef = useRef(null);
   const prevIds    = useRef([]);
 
-  const backendUrl = window.location.hostname === 'localhost'
-    ? 'http://localhost:8000'
-    : `${window.location.protocol}//${window.location.hostname}`;
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || (
+    window.location.hostname === 'localhost'
+      ? 'http://localhost:8000'
+      : `${window.location.protocol}//${window.location.hostname}`
+  );
   const agentUrl = 'https://raw.githubusercontent.com/jaybharuka/resilo/main/desktop_agent/resilo_agent.py';
 
   const cmds = {

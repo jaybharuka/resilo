@@ -13,7 +13,7 @@ import {
   CheckCheck, X, Shield, BarChart2, Layers,
   ToggleLeft, ToggleRight, Eye, EyeOff,
 } from 'lucide-react';
-
+  
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
 const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
