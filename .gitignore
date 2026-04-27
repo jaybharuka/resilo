@@ -16,6 +16,24 @@ dashboard/.env.staging
 # Secret replacement artifacts
 expressions.txt
 
+# Go standard library source tree (accidentally present — not part of this project)
+/src/
+/test/
+/bin/
+/lib/
+/misc/
+/pkg/
+/doc/
+/api/
+/go.env
+/codereview.cfg
+/PATENTS
+
+# Binary evidence / capture files
+evidence/
+*.dmp
+*.pcap
+
 # CI/CD service account keys — never commit
 *-key.json
 *-cicd-key.json

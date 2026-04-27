@@ -1,6 +1,0 @@
-{
-  "database.host": "staging-db.example.com",
-  "database.port": 5432,
-  "api.secret_key": "super-secret-key-123",
-  "logging.level": "WARNING"
-}
