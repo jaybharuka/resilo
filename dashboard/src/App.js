@@ -88,15 +88,31 @@ function Topbar() {
 }
 
 function AppShell() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
   const location = useLocation();
   const AUTH_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/auth/callback', '/accept-invite', '/redeem'];
   const isAuthPage   = AUTH_ROUTES.some(p => location.pathname.startsWith(p));
   const hideSidebar  = isAuthPage;
 
-  // Redirect already-authenticated users away from the login/register pages
+  if (loading && !isAuthPage) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: '100vh', background: 'rgb(12,11,9)' }}>
+        <div style={{ width: '28px', height: '28px', borderRadius: '50%',
+          border: '2px solid rgba(245,158,11,0.2)', borderTopColor: '#F59E0B',
+          animation: 'spin 0.7s linear infinite' }} />
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    );
+  }
+
+  // Auth resolved — handle redirects before any layout renders
   if (isAuthenticated && isAuthPage) {
     return <Navigate to="/remote-agents" replace />;
+  }
+
+  if (!isAuthenticated && !isAuthPage) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
   // Force password change before accessing any other page

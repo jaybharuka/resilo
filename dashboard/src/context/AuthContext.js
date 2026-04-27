@@ -1,15 +1,18 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { setTokenGetter, authApi, AUTH_BASE_URL } from '../services/api';
+import { setTokenGetter, authApi } from '../services/api';
 import { startMetricsPush, stopMetricsPush } from '../services/browserMetrics';
 import { resiloApi } from '../services/resiloApi';
 
 const AuthContext = createContext(null);
+const TOKEN_KEY = 'resilo_token';
+const USER_KEY  = 'resilo_user';
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(undefined); // undefined = loading
-  const [role, setRole] = useState('employee');
+  const [user, setUser]           = useState(undefined);
+  const [role, setRole]           = useState('employee');
+  const [loading, setLoading]     = useState(true);
   const [authError, setAuthError] = useState(null);
-  const metricsPushing = useRef(false);
+  const metricsPushing            = useRef(false);
 
   function _startMetrics(u) {
     if (!u?.org_id || metricsPushing.current) return;
@@ -25,112 +28,64 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
-    async function initAuth() {
-      // Access token lives in memory only — on any page load, silently refresh via httpOnly cookie.
-      try {
-        const refreshRes = await authApi.refresh();
-        if (refreshRes?.token) {
-          setTokenGetter(() => refreshRes.token);
-          const meData = await authApi.me();
-          const u = meData?.id ? meData : meData?.user;
-          if (u) { setUser(u); setRole(u.role || 'employee'); _startMetrics(u); return; }
-        }
-      } catch {}
-      // No valid cookie / session — clear legacy storage and show login
-      setTokenGetter(null);
-      try { localStorage.removeItem('aiops:token'); localStorage.removeItem('aiops:refresh'); localStorage.removeItem('aiops:user'); } catch {}
-      try { sessionStorage.removeItem('aiops:token'); } catch {}
-      setUser(null);
-    }
-    initAuth();
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token) { setUser(null); setLoading(false); return; }
+    setTokenGetter(() => token);
+    authApi.me()
+      .then(u => { setUser(u); setRole(u.role || 'employee'); _startMetrics(u); })
+      .catch(() => {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+        setTokenGetter(null);
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isLoading = user === undefined;
-  const isAuthenticated = !!user;
-
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async ({ email, password }) => {
     setAuthError(null);
     try {
       const res = await authApi.login({ email, password });
-      // 2FA required — surface to the login page
-      if (res?.requires_2fa) {
-        return { ok: false, requires_2fa: true, temp_token: res.temp_token };
-      }
       if (res?.token) {
+        localStorage.setItem(TOKEN_KEY, res.token);
+        localStorage.setItem(USER_KEY, JSON.stringify(res.user));
         setTokenGetter(() => res.token);
-        let u = res.user;
-        if (!u) {
-          try { const meData = await authApi.me(); u = meData?.id ? meData : meData?.user; } catch {}
-        }
-        if (u) {
-          setUser(u);
-          setRole(u.role || 'employee');
-          _startMetrics(u);
-        }
-        return { ok: true };
-      } else {
-        throw new Error('Invalid response from server.');
+        setUser(res.user);
+        setRole(res.user?.role || 'employee');
+        _startMetrics(res.user);
       }
+      return res;
     } catch (err) {
-      // FastAPI uses {detail: "..."}, legacy API uses {error: "..."}
-      const serverError = err?.response?.data?.detail || err?.response?.data?.error;
-      const status = err?.response?.status;
-      let msg;
-      if (!err?.response) {
-        msg = `Cannot reach server at ${AUTH_BASE_URL} — is the backend running?`;
-      } else if (status === 429) {
-        msg = err?.response?.data?.error || 'Too many attempts. Please wait and try again.';
-      } else {
-        msg = serverError || `Sign-in failed (HTTP ${status || 'unknown'}).`;
-      }
+      const msg = err?.response?.data?.detail || 'Login failed.';
       setAuthError(msg);
-      throw new Error(msg);
-    }
-  }, []);
-
-  const loginWithGoogle = useCallback(() => {
-    window.location.href = '/auth/google';
-  }, []);
-
-  const initFromOAuth = useCallback(async (token) => {
-    setAuthError(null);
-    try {
-      setTokenGetter(() => token);
-      const meData = await authApi.me();
-      const u = meData?.id ? meData : meData?.user;
-      if (!u) throw new Error('Could not load user info');
-      setUser(u);
-      setRole(u.role || 'employee');
-      _startMetrics(u);
-      return { ok: true };
-    } catch (err) {
-      setTokenGetter(null);
-      setUser(null);
       throw err;
     }
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const logout = useCallback(async () => {
-    try { await authApi.logout(); } catch {}
     _stopMetrics();
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
     setTokenGetter(null);
-    try { localStorage.removeItem('aiops:token'); localStorage.removeItem('aiops:refresh'); localStorage.removeItem('aiops:user'); } catch {}
-    try { sessionStorage.removeItem('aiops:token'); } catch {}
     setUser(null);
     setRole('employee');
+    try { await authApi.logout(); } catch {}
   }, []);
+
+  const isAuthenticated = !!user;
 
   const value = useMemo(() => ({
     user,
     role: user?.role || role,
-    loading: isLoading,
+    loading,
     login,
-    loginWithGoogle,
-    initFromOAuth,
+    loginWithGoogle: login,
+    initFromOAuth: login,
     logout,
     isAuthenticated,
     authError,
-  }), [user, role, isLoading, login, loginWithGoogle, initFromOAuth, logout, isAuthenticated, authError]);
+    setAuthError,
+  }), [user, role, loading, login, logout, isAuthenticated, authError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

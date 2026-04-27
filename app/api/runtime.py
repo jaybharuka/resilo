@@ -291,6 +291,45 @@ class OrgSettingsUpdate(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+class ClerkSyncRequest(BaseModel):
+    clerk_token: str
+    email: str
+    full_name: str = ""
+    username: str = ""
+
+
+_CLERK_JWKS_URL = os.getenv(
+    "CLERK_JWKS_URL",
+    "https://genuine-python-45.clerk.accounts.dev/.well-known/jwks.json",
+)
+_clerk_jwks_cache: dict = {}
+_clerk_jwks_ts: float = 0.0
+_clerk_jwks_ttl: float = 3600.0
+
+
+async def _get_clerk_jwks() -> dict:
+    global _clerk_jwks_cache, _clerk_jwks_ts
+    if _clerk_jwks_cache and (time.time() - _clerk_jwks_ts < _clerk_jwks_ttl):
+        return _clerk_jwks_cache
+    async with httpx.AsyncClient(timeout=10) as client:
+        res = await client.get(_CLERK_JWKS_URL)
+        res.raise_for_status()
+        _clerk_jwks_cache = res.json()
+        _clerk_jwks_ts = time.time()
+    return _clerk_jwks_cache
+
+
+async def _verify_clerk_token(token: str) -> str | None:
+    """Verify a Clerk-issued JWT via JWKS. Returns the Clerk user_id (sub) or None."""
+    try:
+        jwks = await _get_clerk_jwks()
+        payload = jwt.decode(token, jwks, algorithms=["RS256"], options={"verify_aud": False})
+        return payload.get("sub")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Clerk token verification failed: %s", exc)
+        return None
+
+
 def _jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET_KEY")
     if not secret:
@@ -747,6 +786,108 @@ async def _ai_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
         logging.warning("[AI] Analysis failed for alert %s: %s", alert.category, exc)
 
 
+# ---------------------------------------------------------------------------
+# Backend action handlers — called directly by the server (not the agent)
+# ---------------------------------------------------------------------------
+
+async def _restart_service(target: str, params: dict) -> dict:
+    """kubectl rollout restart deployment/<target>."""
+    dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
+    if dry_run:
+        logging.info("[DRY_RUN] would restart deployment/%s", target)
+        return {"action": "restart_service", "target": target, "status": "dry_run"}
+    ns = params.get("namespace", os.getenv("KUBE_NAMESPACE", "default"))
+    proc = await asyncio.create_subprocess_shell(
+        f"kubectl rollout restart deployment/{target} -n {ns}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    ok = proc.returncode == 0
+    logging.info("[ACTION] restart_service %s ns=%s ok=%s", target, ns, ok)
+    return {"action": "restart_service", "target": target, "status": "ok" if ok else "error",
+            "stderr": stderr.decode(errors="replace")}
+
+
+async def _scale_deployment(target: str, params: dict) -> dict:
+    """kubectl scale deployment/<target> --replicas=N."""
+    dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
+    replicas = int(params.get("replicas", 2))
+    ns = params.get("namespace", os.getenv("KUBE_NAMESPACE", "default"))
+    if dry_run:
+        logging.info("[DRY_RUN] would scale deployment/%s to %d replicas", target, replicas)
+        return {"action": "scale_deployment", "target": target, "replicas": replicas, "status": "dry_run"}
+    proc = await asyncio.create_subprocess_shell(
+        f"kubectl scale deployment/{target} --replicas={replicas} -n {ns}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    ok = proc.returncode == 0
+    logging.info("[ACTION] scale_deployment %s replicas=%d ok=%s", target, replicas, ok)
+    return {"action": "scale_deployment", "target": target, "replicas": replicas,
+            "status": "ok" if ok else "error", "stderr": stderr.decode(errors="replace")}
+
+
+async def _notify_only(target: str, params: dict) -> dict:
+    """Post alert notification to Slack webhook."""
+    webhook = os.getenv("SLACK_WEBHOOK_URL")
+    if not webhook:
+        logging.warning("[ACTION] SLACK_WEBHOOK_URL not set — notification skipped for %s", target)
+        return {"action": "notify_only", "target": target, "status": "skipped"}
+    msg = params.get("message", f"AIOps alert on {target}")
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(webhook, json={"text": f":warning: *AIOps Agent* — {msg}"})
+        r.raise_for_status()
+    logging.info("[ACTION] notify_only sent to Slack for %s", target)
+    return {"action": "notify_only", "target": target, "status": "ok"}
+
+
+async def _create_incident(target: str, params: dict) -> dict:
+    """Trigger PagerDuty incident via Events API v2."""
+    key = os.getenv("PAGERDUTY_ROUTING_KEY")
+    if not key:
+        logging.warning("[ACTION] PAGERDUTY_ROUTING_KEY not set — incident skipped for %s", target)
+        return {"action": "create_incident", "target": target, "status": "skipped"}
+    body = {
+        "routing_key": key,
+        "event_action": "trigger",
+        "payload": {
+            "summary": params.get("summary", f"AIOps: incident on {target}"),
+            "severity": params.get("severity", "warning"),
+            "source": target,
+        },
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post("https://events.pagerduty.com/v2/enqueue", json=body)
+        r.raise_for_status()
+    logging.info("[ACTION] create_incident triggered for %s dedup=%s", target, r.json().get("dedup_key"))
+    return {"action": "create_incident", "target": target,
+            "dedup_key": r.json().get("dedup_key"), "status": "ok"}
+
+
+async def _dispatch_action(action: str, target: str, params: dict | None = None) -> dict:
+    """Dispatch a resolved AI action to the appropriate backend handler."""
+    p = params or {}
+    try:
+        if action == "restart_service":
+            return await _restart_service(target, p)
+        if action == "scale_deployment":
+            return await _scale_deployment(target, p)
+        if action == "notify_only":
+            return await _notify_only(target, p)
+        if action == "create_incident":
+            return await _create_incident(target, p)
+        logging.info("[DISPATCH] No backend handler for action=%s target=%s — agent will handle", action, target)
+        return {"action": action, "target": target, "status": "agent_queued"}
+    except Exception as exc:
+        logging.error("[DISPATCH] action=%s target=%s failed: %s", action, target, exc)
+        return {"action": action, "target": target, "status": "error", "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+
+
 async def _lc_analyze(
     alert: AlertRecord,
     cpu: float,
@@ -841,6 +982,7 @@ async def _lc_analyze(
             _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
             disp_status = "queued"
             logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
+            asyncio.create_task(_dispatch_action(action, target, decision.get("params")))
             asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context, exec_mode))
             try:
                 async with SessionLocal() as _db:
@@ -1265,6 +1407,43 @@ def build_auth_router() -> APIRouter:
     async def auth_health() -> dict[str, str]:
         return {"status": "ok", "service": "auth"}
 
+    @router.post("/auth/clerk-sync")
+    async def clerk_sync(body: ClerkSyncRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        clerk_user_id = await _verify_clerk_token(body.clerk_token)
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Invalid Clerk token")
+
+        email = body.email.strip().lower()
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            org_name = email.split("@")[0].capitalize()
+            base_slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") or "org"
+            slug = f"{base_slug}-{str(uuid.uuid4())[:6]}"
+            org = Organization(name=org_name, slug=slug, plan="free", is_active=True, settings={})
+            db.add(org)
+            await db.flush()
+            username = body.username.strip().lower() or email.split("@")[0]
+            user = User(
+                org_id=org.id,
+                email=email,
+                username=username,
+                hashed_password=_hash_password(secrets.token_urlsafe(32)),
+                role="admin",
+                is_active=True,
+                must_change_password=False,
+                full_name=body.full_name.strip() or None,
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            _log_auth_event("clerk_register", email=email, user_id=user.id, detail=f"clerk_id={clerk_user_id}")
+        else:
+            _log_auth_event("clerk_login", email=email, user_id=user.id)
+
+        return {"token": _create_access_token(user), "user": _serialize_user(user)}
+
     return router
 
 
@@ -1620,7 +1799,8 @@ def build_alerts_router() -> APIRouter:
         if approval["action"] not in {"restart_service", "run_script", "notify_only"}:
             raise HTTPException(status_code=400, detail="Action not in allowlist")
         _PENDING_COMMANDS.setdefault(agent_id, []).append({"action": approval["action"], "target": approval["target"]})
-        logging.info("[APPROVAL] Approved and queued: %s → %s for agent %s", approval["action"], approval["target"], agent_id)
+        asyncio.create_task(_dispatch_action(approval["action"], approval["target"], approval.get("params")))
+        logging.info("[APPROVAL] Approved and dispatched: %s → %s for agent %s", approval["action"], approval["target"], agent_id)
         return {"ok": True, "queued": approval}
 
     @router.patch("/api/orgs/{org_id}/agents/{agent_id}/execution-mode")
