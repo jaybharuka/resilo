@@ -195,7 +195,6 @@ class RealtimeHub:
 
 
 class RegisterRequest(BaseModel):
-    org_name:  str
     full_name: str
     email:     str
     username:  str
@@ -1075,7 +1074,7 @@ def build_auth_router() -> APIRouter:
     async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         email    = body.email.strip().lower()
         username = body.username.strip().lower()
-        org_name = body.org_name.strip()
+        org_name = email.split("@")[0].capitalize()
 
         dup_email = await db.execute(select(User).where(User.email == email))
         if dup_email.scalar_one_or_none():
