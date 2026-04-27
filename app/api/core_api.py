@@ -10,8 +10,8 @@ validate_environment()
 from app.api.remediation_jobs_runtime import build_remediation_jobs_router
 from app.api.remediation_runtime import build_remediation_router
 from app.api.runtime import (build_agents_router, build_alerts_router,
-                             build_health_router, build_metrics_router,
-                             build_stream_router)
+                             build_auth_router, build_health_router,
+                             build_metrics_router, build_stream_router)
 from app.api.v1_api import build_v1_router
 from app.api.intelligence_api import build_intelligence_router
 from app.core.database import init_db, wait_for_db
@@ -19,6 +19,7 @@ from app.core.database import init_db, wait_for_db
 metrics_router = build_metrics_router()
 alerts_router = build_alerts_router()
 agents_router = build_agents_router()
+auth_router = build_auth_router()
 health_router = build_health_router()
 stream_router = build_stream_router()
 remediation_router = build_remediation_router()
@@ -29,6 +30,7 @@ router = APIRouter()
 router.include_router(metrics_router)
 router.include_router(alerts_router)
 router.include_router(agents_router)
+router.include_router(auth_router)
 router.include_router(health_router)
 router.include_router(stream_router)
 router.include_router(remediation_router)
