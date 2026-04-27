@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIOps Predictive Analytics Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 300;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto auto auto;
+            gap: 2rem;
+            height: calc(100vh - 100px);
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            overflow-y: auto;
+        }
+        
+        .card h2 {
+            font-size: 1.5rem;
+            font-weight: 400;
+            margin-bottom: 1rem;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .metric-card {
+            text-align: center;
+            padding: 1rem;
+            border-radius: 8px;
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .metric-card.cpu {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+        }
+        
+        .metric-card.memory {
+            background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+        }
+        
+        .metric-card.disk {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        
+        .metric-card.network {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+        
+        .metric-label {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+        
+        .prediction-item {
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid;
+            transition: transform 0.2s ease;
+        }
+        
+        .prediction-item:hover {
+            transform: translateX(5px);
+        }
+        
+        .prediction-item.low {
+            background: #e8f5e8;
+            border-color: #4caf50;
+        }
+        
+        .prediction-item.medium {
+            background: #fff7e6;
+            border-color: #ff9800;
+        }
+        
+        .prediction-item.high {
+            background: #ffebee;
+            border-color: #f44336;
+        }
+        
+        .prediction-item.critical {
+            background: #fce4ec;
+            border-color: #e91e63;
+        }
+        
+        .prediction-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .prediction-metric {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        
+        .prediction-risk {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: white;
+        }
+        
+        .risk-low { background: #4caf50; }
+        .risk-medium { background: #ff9800; }
+        .risk-high { background: #f44336; }
+        .risk-critical { background: #e91e63; }
+        
+        .prediction-details {
+            font-size: 0.9rem;
+            color: #666;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.5rem;
+        }
+        
+        .capacity-item {
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid #007bff;
+        }
+        
+        .capacity-header {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #2c3e50;
+        }
+        
+        .capacity-values {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .capacity-recommendation {
+            background: #e3f2fd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: #1976d2;
+        }
+        
+        .failure-item {
+            padding: 1rem;
+            background: #ffebee;
+            border-radius: 8px;
+            border-left: 4px solid #f44336;
+            margin-bottom: 1rem;
+        }
+        
+        .failure-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .failure-probability {
+            background: #f44336;
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .failure-actions {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        
+        .failure-actions ul {
+            margin: 0.5rem 0;
+            padding-left: 1rem;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .status-good { background: #4caf50; }
+        .status-warning { background: #ff9800; }
+        .status-critical { background: #f44336; }
+        
+        .trend-indicator {
+            font-size: 0.8rem;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+        }
+        
+        .trend-increasing {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+        
+        .trend-decreasing {
+            background: #e8f5e8;
+            color: #388e3c;
+        }
+        
+        .trend-stable {
+            background: #f5f5f5;
+            color: #757575;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔮 AIOps Predictive Analytics Dashboard</h1>
+    </div>
+    
+    <div class="container">
+        <!-- Current System Metrics -->
+        <div class="card full-width">
+            <h2>📊 Current System Status</h2>
+            <div id="current-metrics" class="metric-grid">
+                <div class="loading">Loading system metrics...</div>
+            </div>
+        </div>
+        
+        <!-- Predictions -->
+        <div class="card">
+            <h2>🔮 24-Hour Predictions</h2>
+            <div id="predictions" class="loading">Generating predictions...</div>
+        </div>
+        
+        <!-- Capacity Forecasts -->
+        <div class="card">
+            <h2>📈 Capacity Planning</h2>
+            <div id="capacity-forecasts" class="loading">Analyzing capacity...</div>
+        </div>
+        
+        <!-- Failure Risks -->
+        <div class="card">
+            <h2>⚠️ Failure Risk Analysis</h2>
+            <div id="failure-risks" class="loading">Assessing risks...</div>
+        </div>
+        
+        <!-- Analytics Summary -->
+        <div class="card">
+            <h2>📈 Analytics Summary</h2>
+            <div id="analytics-summary" class="loading">Loading analytics...</div>
+        </div>
+    </div>
+    
+    <script>
+        function formatTime(isoString) {
+            return new Date(isoString).toLocaleTimeString();
+        }
+        
+        function formatDate(isoString) {
+            return new Date(isoString).toLocaleDateString();
+        }
+        
+        function renderCurrentMetrics(metrics) {
+            const container = document.getElementById('current-metrics');
+            
+            if (!metrics || !metrics.timestamp) {
+                container.innerHTML = '<div class="loading">No metrics available</div>';
+                return;
+            }
+            
+            container.innerHTML = `
+                <div class="metric-card cpu">
+                    <div class="metric-value">${metrics.cpu_percent.toFixed(1)}%</div>
+                    <div class="metric-label">CPU Usage</div>
+                </div>
+                <div class="metric-card memory">
+                    <div class="metric-value">${metrics.memory_percent.toFixed(1)}%</div>
+                    <div class="metric-label">Memory Usage</div>
+                </div>
+                <div class="metric-card disk">
+                    <div class="metric-value">${metrics.disk_percent.toFixed(1)}%</div>
+                    <div class="metric-label">Disk Usage</div>
+                </div>
+                <div class="metric-card network">
+                    <div class="metric-value">${formatTime(metrics.timestamp)}</div>
+                    <div class="metric-label">Last Updated</div>
+                </div>
+            `;
+        }
+        
+        function renderPredictions(predictions) {
+            const container = document.getElementById('predictions');
+            
+            if (!predictions || predictions.length === 0) {
+                container.innerHTML = '<div class="loading">No predictions available</div>';
+                return;
+            }
+            
+            // Show latest predictions for each metric
+            const latestPredictions = {};
+            predictions.forEach(pred => {
+                if (!latestPredictions[pred.metric] || 
+                    new Date(pred.prediction_time) > new Date(latestPredictions[pred.metric].prediction_time)) {
+                    latestPredictions[pred.metric] = pred;
+                }
+            });
+            
+            container.innerHTML = Object.values(latestPredictions).map(pred => `
+                <div class="prediction-item ${pred.risk_level}">
+                    <div class="prediction-header">
+                        <div class="prediction-metric">${pred.metric.replace(/_/g, ' ')}</div>
+                        <div class="prediction-risk risk-${pred.risk_level}">${pred.risk_level}</div>
+                    </div>
+                    <div class="prediction-details">
+                        <div><strong>Predicted:</strong> ${pred.predicted_value.toFixed(2)}</div>
+                        <div><strong>Confidence:</strong> ${(pred.confidence * 100).toFixed(0)}%</div>
+                        <div><strong>Trend:</strong> 
+                            <span class="trend-indicator trend-${pred.trend}">${pred.trend}</span>
+                        </div>
+                        <div><strong>Target:</strong> ${formatTime(pred.target_time)}</div>
+                        ${pred.time_to_threshold ? `<div><strong>Alert in:</strong> ${pred.time_to_threshold} min</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderCapacityForecasts(forecasts) {
+            const container = document.getElementById('capacity-forecasts');
+            
+            if (!forecasts || forecasts.length === 0) {
+                container.innerHTML = '<div class="loading">No capacity forecasts available</div>';
+                return;
+            }
+            
+            container.innerHTML = forecasts.map(forecast => `
+                <div class="capacity-item">
+                    <div class="capacity-header">${forecast.metric.replace(/_/g, ' ')}</div>
+                    <div class="capacity-values">
+                        <div><strong>Current:</strong> ${forecast.current_usage.toFixed(1)}</div>
+                        <div><strong>7 days:</strong> ${forecast.predicted_usage_7d.toFixed(1)}</div>
+                        <div><strong>30 days:</strong> ${forecast.predicted_usage_30d.toFixed(1)}</div>
+                        <div><strong>Growth:</strong> ${forecast.growth_rate_daily.toFixed(2)}/day</div>
+                    </div>
+                    ${forecast.capacity_exhaustion_date ? 
+                        `<div><strong>Exhaustion:</strong> ${formatDate(forecast.capacity_exhaustion_date)}</div>` : ''}
+                    <div class="capacity-recommendation">
+                        ${forecast.recommended_action}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderFailureRisks(risks) {
+            const container = document.getElementById('failure-risks');
+            
+            if (!risks || risks.length === 0) {
+                container.innerHTML = '<div class="loading">No high-risk failures detected</div>';
+                return;
+            }
+            
+            container.innerHTML = risks.map(risk => `
+                <div class="failure-item">
+                    <div class="failure-header">
+                        <div><strong>${risk.metric.replace(/_/g, ' ')}</strong></div>
+                        <div class="failure-probability">${(risk.failure_probability * 100).toFixed(0)}% risk</div>
+                    </div>
+                    <div class="failure-actions">
+                        <strong>Recommended Actions:</strong>
+                        <ul>
+                            ${risk.recommended_actions.map(action => `<li>${action}</li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderAnalyticsSummary(summary) {
+            const container = document.getElementById('analytics-summary');
+            
+            if (!summary) {
+                container.innerHTML = '<div class="loading">Loading analytics...</div>';
+                return;
+            }
+            
+            const riskTotal = Object.values(summary.risk_distribution || {}).reduce((a, b) => a + b, 0);
+            const highRiskCount = (summary.risk_distribution?.high || 0) + (summary.risk_distribution?.critical || 0);
+            
+            container.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                    <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 8px;">
+                        <div style="font-size: 1.5rem; font-weight: bold; color: #007bff;">${summary.total_metrics_monitored || 0}</div>
+                        <div style="font-size: 0.9rem; color: #666;">Metrics Monitored</div>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 8px;">
+                        <div style="font-size: 1.5rem; font-weight: bold; color: #28a745;">${summary.trained_models || 0}</div>
+                        <div style="font-size: 0.9rem; color: #666;">ML Models</div>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 8px;">
+                        <div style="font-size: 1.5rem; font-weight: bold; color: #ffc107;">${summary.recent_predictions || 0}</div>
+                        <div style="font-size: 0.9rem; color: #666;">Recent Predictions</div>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 8px;">
+                        <div style="font-size: 1.5rem; font-weight: bold; color: ${highRiskCount > 0 ? '#dc3545' : '#28a745'};">${highRiskCount}</div>
+                        <div style="font-size: 0.9rem; color: #666;">High Risk Alerts</div>
+                    </div>
+                </div>
+                
+                ${Object.keys(summary.risk_distribution || {}).length > 0 ? `
+                <div style="margin-top: 1rem;">
+                    <strong>Risk Distribution:</strong>
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; margin-top: 0.5rem;">
+                        <div style="text-align: center;">
+                            <div style="color: #28a745; font-weight: bold;">${summary.risk_distribution.low || 0}</div>
+                            <div style="font-size: 0.8rem;">Low</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="color: #ffc107; font-weight: bold;">${summary.risk_distribution.medium || 0}</div>
+                            <div style="font-size: 0.8rem;">Medium</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="color: #fd7e14; font-weight: bold;">${summary.risk_distribution.high || 0}</div>
+                            <div style="font-size: 0.8rem;">High</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="color: #dc3545; font-weight: bold;">${summary.risk_distribution.critical || 0}</div>
+                            <div style="font-size: 0.8rem;">Critical</div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                <div style="margin-top: 1rem; font-size: 0.9rem; color: #666;">
+                    Last Updated: ${formatTime(summary.last_updated)}
+                </div>
+            `;
+        }
+        
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/dashboard-data');
+                const data = await response.json();
+                
+                renderCurrentMetrics(data.system_metrics);
+                renderPredictions(data.predictions);
+                renderCapacityForecasts(data.capacity_forecasts);
+                renderFailureRisks(data.failure_risks);
+                renderAnalyticsSummary(data.analytics_summary);
+                
+            } catch (error) {
+                console.error('Error updating dashboard:', error);
+            }
+        }
+        
+        // Initial load
+        updateDashboard();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(updateDashboard, 30000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIOps Alert Correlation Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 300;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto auto;
+            gap: 2rem;
+            height: calc(100vh - 100px);
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            overflow-y: auto;
+        }
+        
+        .card h2 {
+            font-size: 1.5rem;
+            font-weight: 400;
+            margin-bottom: 1rem;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .summary-grid {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        
+        .metric {
+            text-align: center;
+            padding: 1rem;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+        
+        .metric.success {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        
+        .metric.warning {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+        
+        .metric-label {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+        
+        .alert {
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+            border-radius: 8px;
+            border-left: 4px solid;
+            transition: transform 0.2s ease;
+        }
+        
+        .alert:hover {
+            transform: translateX(5px);
+        }
+        
+        .alert.critical {
+            background: #fee;
+            border-color: #e74c3c;
+        }
+        
+        .alert.warning {
+            background: #fff7e6;
+            border-color: #f39c12;
+        }
+        
+        .alert.info {
+            background: #e8f6ff;
+            border-color: #3498db;
+        }
+        
+        .alert.suppressed {
+            opacity: 0.6;
+            background: #f8f9fa;
+            border-color: #6c757d;
+        }
+        
+        .alert-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .alert-metric {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        
+        .alert-severity {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .severity-critical {
+            background: #e74c3c;
+            color: white;
+        }
+        
+        .severity-warning {
+            background: #f39c12;
+            color: white;
+        }
+        
+        .severity-info {
+            background: #3498db;
+            color: white;
+        }
+        
+        .alert-message {
+            color: #666;
+            margin-bottom: 0.5rem;
+        }
+        
+        .alert-meta {
+            font-size: 0.8rem;
+            color: #888;
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .root-cause {
+            border: 2px solid #e74c3c;
+            background: #fff5f5;
+        }
+        
+        .root-cause-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .confidence {
+            background: #e74c3c;
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+        
+        .symptoms {
+            margin-top: 1rem;
+        }
+        
+        .symptom {
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-left: 3px solid #6c757d;
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+        }
+        
+        .timeline-item {
+            padding: 0.5rem;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .timeline-item:last-child {
+            border-bottom: none;
+        }
+        
+        .timeline-time {
+            font-size: 0.8rem;
+            color: #666;
+            min-width: 60px;
+        }
+        
+        .timeline-content {
+            flex: 1;
+            margin-left: 1rem;
+        }
+        
+        .status-bar {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔗 AIOps Alert Correlation Dashboard</h1>
+    </div>
+    
+    <div class="container">
+        <!-- Summary Metrics -->
+        <div class="card summary-grid">
+            <h2>📊 Correlation Summary</h2>
+            <div id="summary-metrics" class="loading">Loading metrics...</div>
+        </div>
+        
+        <!-- Active Alerts -->
+        <div class="card">
+            <h2>🚨 Active Alerts</h2>
+            <div id="active-alerts" class="loading">Loading alerts...</div>
+        </div>
+        
+        <!-- Root Cause Analysis -->
+        <div class="card">
+            <h2>🎯 Root Cause Analysis</h2>
+            <div id="root-causes" class="loading">Analyzing causes...</div>
+        </div>
+        
+        <!-- Alert Timeline -->
+        <div class="card">
+            <h2>⏱️ Recent Timeline</h2>
+            <div id="alert-timeline" class="loading">Loading timeline...</div>
+        </div>
+    </div>
+    
+    <div class="status-bar">
+        <div>Last Updated: <span id="last-updated">--</span></div>
+        <div>Auto-refresh: <span class="pulse">●</span></div>
+    </div>
+    
+    <script>
+        let dashboardData = {};
+        
+        function formatTime(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleTimeString();
+        }
+        
+        function formatDateTime(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+        
+        function renderSummaryMetrics(summary) {
+            const container = document.getElementById('summary-metrics');
+            
+            const metrics = [
+                { 
+                    label: 'Total Alerts', 
+                    value: summary.total_alerts || 0,
+                    class: summary.total_alerts > 10 ? 'warning' : 'success'
+                },
+                { 
+                    label: 'Active Alerts', 
+                    value: summary.active_alerts || 0,
+                    class: summary.active_alerts > 5 ? 'warning' : 'success'
+                },
+                { 
+                    label: 'Suppressed', 
+                    value: summary.suppressed_alerts || 0,
+                    class: 'success'
+                },
+                { 
+                    label: 'Root Causes', 
+                    value: summary.root_causes_identified || 0,
+                    class: summary.root_causes_identified > 0 ? 'warning' : 'success'
+                },
+                { 
+                    label: 'Alert Reduction', 
+                    value: summary.alert_reduction || '0%',
+                    class: 'success'
+                }
+            ];
+            
+            container.innerHTML = metrics.map(metric => `
+                <div class="metric ${metric.class}">
+                    <div class="metric-value">${metric.value}</div>
+                    <div class="metric-label">${metric.label}</div>
+                </div>
+            `).join('');
+        }
+        
+        function renderActiveAlerts(alerts) {
+            const container = document.getElementById('active-alerts');
+            
+            if (!alerts || alerts.length === 0) {
+                container.innerHTML = '<div class="loading">No active alerts</div>';
+                return;
+            }
+            
+            const activeAlerts = alerts.filter(alert => !alert.suppressed).slice(0, 10);
+            
+            container.innerHTML = activeAlerts.map(alert => `
+                <div class="alert ${alert.severity} ${alert.suppressed ? 'suppressed' : ''}">
+                    <div class="alert-header">
+                        <div class="alert-metric">${alert.metric}</div>
+                        <div class="alert-severity severity-${alert.severity}">${alert.severity}</div>
+                    </div>
+                    <div class="alert-message">${alert.message}</div>
+                    <div class="alert-meta">
+                        <span>Value: ${alert.value}</span>
+                        <span>Threshold: ${alert.threshold}</span>
+                        <span>Time: ${formatTime(alert.timestamp)}</span>
+                        ${alert.root_cause_confidence > 0.7 ? `<span style="color: #e74c3c;">Root Cause (${(alert.root_cause_confidence * 100).toFixed(0)}%)</span>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderRootCauses(rootCauses) {
+            const container = document.getElementById('root-causes');
+            
+            if (!rootCauses || rootCauses.length === 0) {
+                container.innerHTML = '<div class="loading">No root causes identified</div>';
+                return;
+            }
+            
+            container.innerHTML = rootCauses.map(rc => `
+                <div class="root-cause">
+                    <div class="root-cause-header">
+                        <strong>${rc.root_cause.metric}</strong>
+                        <div class="confidence">${(rc.confidence * 100).toFixed(0)}% confidence</div>
+                    </div>
+                    <div class="alert-message">${rc.root_cause.message}</div>
+                    <div class="symptoms">
+                        <strong>Related Symptoms (${rc.symptoms.length}):</strong>
+                        ${rc.symptoms.map(symptom => `
+                            <div class="symptom">
+                                <strong>${symptom.metric}:</strong> ${symptom.message}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function renderTimeline(timeline) {
+            const container = document.getElementById('alert-timeline');
+            
+            if (!timeline || timeline.length === 0) {
+                container.innerHTML = '<div class="loading">No recent alerts</div>';
+                return;
+            }
+            
+            container.innerHTML = timeline.reverse().map(item => `
+                <div class="timeline-item">
+                    <div class="timeline-time">${formatTime(item.timestamp)}</div>
+                    <div class="timeline-content">
+                        <strong>${item.metric}</strong> [${item.severity}]
+                        <br><small>${item.message}</small>
+                        ${item.suppressed ? ' <em>(suppressed)</em>' : ''}
+                        ${item.root_cause_confidence > 0.7 ? ' <strong style="color: #e74c3c;">(ROOT CAUSE)</strong>' : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/dashboard-data');
+                dashboardData = await response.json();
+                
+                renderSummaryMetrics(dashboardData.correlation_summary);
+                renderActiveAlerts(dashboardData.active_alerts);
+                renderRootCauses(dashboardData.root_cause_analysis);
+                renderTimeline(dashboardData.alert_timeline);
+                
+                document.getElementById('last-updated').textContent = formatTime(dashboardData.last_updated);
+                
+            } catch (error) {
+                console.error('Error updating dashboard:', error);
+            }
+        }
+        
+        // Initial load
+        updateDashboard();
+        
+        // Auto-refresh every 5 seconds
+        setInterval(updateDashboard, 5000);
+    </script>
+</body>
+</html>

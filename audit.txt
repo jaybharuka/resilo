@@ -1,0 +1,3805 @@
+
+
+Claude.html
+html
+
+okay so what should i start implementing from this audit report/chat , for our project resilo
+
+Mar 30
+
+Synthesized audit findings into prioritized implementation roadmap
+Synthesized audit findings into prioritized implementation roadmap
+Now I have everything I need. Here's the full picture from your audit chat, broken down clearly.
+
+The Audit Summary
+Your project scored 34/100 overall. The audit identified 7 categories — and the good news is the problems are concrete and fixable. Here's what to implement, strictly in order of priority:
+
+🔴 Do These First (Days 1–3) — Security & Data Integrity
+1. Fix the live security exploit (Day 1 — ~1 hour, ~4 lines of code) There's a public endpoint where a Windows machine can be taken over with a single URL visit. The audit said this is not theoretical — it's a live exploit right now. Find and add auth middleware/validation to that endpoint before anything else.
+
+2. Fix the JWT secret (Day 2 — ~1 hour) Your JWT secret is hardcoded with a fallback and regenerates on every server restart, silently logging out all users. Fix this by pulling it from a .env file with python-dotenv and making startup fail if it's missing — never fall back silently.
+
+3. Kill the default/hardcoded password (Day 3) Same .env cleanup. Any hardcoded credentials need to go. One leaked env file = full compromise.
+
+🟠 Do These Next (Days 4–7) — Foundation
+4. Write your first 10 tests (Day 4–5) Your testing score was 8/100 — the single most dangerous score. Start with just the login/auth flow:
+
+bash
+pip install pytest pytest-asyncio pytest-cov httpx
+Write 10 tests covering login, token validation, and a failed auth attempt. Don't add features until these exist.
+
+5. Migrate to a single database via Alembic (Day 6–8, budget 3–4 days not 1) The "dual database" issue is really Flask running on SQLite for auth and FastAPI not running at all. Unify everything to PostgreSQL with Alembic. The field name differences between the two schemas will take time — the audit's "one day" estimate is wrong here, budget 3–4 days.
+
+🟡 Week 2 — Make the Core Journey Work
+6. Fix the fake real-time (Day 9) This is a two-line fix. The Socket.IO client already exists and is already wired in Dashboard.js — it's just never imported. Import it and connect it to your FastAPI WebSocket endpoint. Right now users see data refreshing every 10 seconds on what's marketed as a real-time dashboard.
+
+7. Make the core user journey work end-to-end (Days 8–14) Focus on one machine: login → see that machine's metrics → ask AI why CPU is high. That full loop, working reliably, for one machine. Don't touch multi-machine agent (Day 10 in the plan) until this is airtight — the plan is overly optimistic there.
+
+🟢 Week 3–4 — Observability + First Real User
+8. Add observability (Days 15–21) Logging, error boundaries in React, and handling when the Gemini API is down (currently the whole dashboard likely freezes). These make the system debuggable.
+
+9. Handle the Windows-only assumption (before Day 22) The PowerShell install script locks out Linux/Mac servers entirely. If you want a real ops team to use this, they're probably running Linux. This needs a fix before you pitch it to anyone.
+
+10. Get one real user by Day 30 This isn't optional at the end — pick the person now. A classmate's startup, a small company, anyone running actual infrastructure. One week of real usage beats the entire audit in terms of what you'll learn.
+
+What the Audit Got Right vs. Wrong
+Accurate: The security exploit, the two-line WebSocket fix, the JWT restart bug, the Flask/FastAPI ghost situation, the "Day 30 = one human says I'd pay for this" definition.
+
+Overly optimistic: Day 6 (SQLite → PostgreSQL in one day — budget 3–4), Day 10 (multi-machine agent in one day — budget a full week).
+
+What it missed entirely: React component re-renders, state management quality, what happens when Gemini API is unavailable, and whether your anomaly detection actually catches real incidents.
+
+The One-Line Summary
+Start with the security endpoint fix right now (1 hour, live exploit), then JWT secret, then tests, then Alembic migration. Everything else stacks on top of those four. The WebSocket fix is literally two lines and can be done alongside anything.
+
+Want me to help you write the Alembic setup, the first pytest fixtures, or the WebSocket import fix? I can generate any of those in full.
+
+give prompts one by one to fix it using claude code
+
+Mar 30
+
+Orchestrated sequential prompts to systematically resolve identified issues
+Orchestrated sequential prompts to systematically resolve identified issues
+Here are your Claude Code prompts in exact order. Run each one, verify it's done, then move to the next.
+
+Prompt 1 — Security Exploit Fix
+Audit every API endpoint in this codebase and identify any public-facing route 
+that executes system commands, runs scripts, or interacts with the OS (e.g. 
+PowerShell, subprocess, os.system). For each one found:
+1. Show me the exact file and line number
+2. Explain the exploit vector
+3. Add authentication middleware/route guard so it requires a valid JWT before 
+   executing — do not remove the feature, just protect it
+4. Show me the before and after diff
+
+Do not touch anything outside of auth and route protection.
+Prompt 2 — JWT Secret Fix
+Find every place in this codebase where a JWT secret is defined, hardcoded, 
+or has a fallback default value. Then:
+1. Move all secrets to a .env file (create it if it doesn't exist, add it to .gitignore)
+2. Replace all hardcoded values with os.getenv() calls
+3. Add a startup validation function that raises a clear error and refuses to 
+   start if any required secret is missing — no silent fallbacks
+4. Show me every file you changed and what you changed
+
+Use python-dotenv. Do not change any business logic.
+Prompt 3 — Kill Hardcoded Credentials
+Search the entire codebase for hardcoded passwords, API keys, database 
+connection strings, and default credentials. This includes strings that look 
+like passwords in config files, Python files, and JS files.
+
+For each one found:
+1. Move it to .env
+2. Replace it with an environment variable
+3. If it's a default password used in setup, replace it with a random secret 
+   generated at first run and stored in .env
+
+Show me every file changed. Do not touch test files or mock data.
+Prompt 4 — First Tests (Auth Flow)
+Set up a pytest testing environment for this project. Then write exactly 10 
+tests covering the authentication flow:
+1. Successful login returns a valid JWT
+2. Login with wrong password returns 401
+3. Login with missing fields returns 422
+4. Valid JWT grants access to a protected route
+5. Expired JWT is rejected
+6. Missing JWT on a protected route returns 401
+7. Tampered JWT is rejected
+8. Logout invalidates the session
+9. Token refresh works correctly
+10. Concurrent logins from the same user work without conflict
+
+Install: pytest, pytest-asyncio, pytest-cov, httpx
+Create a conftest.py with fixtures for test client and test database.
+Do not use the production database — use a separate SQLite or in-memory DB 
+for tests only.
+Run the tests at the end and show me the output.
+Prompt 5 — Alembic Migration Setup
+Set up Alembic for database migrations in this project. Then:
+1. Install alembic and connect it to the existing PostgreSQL database
+2. Inspect all existing SQLAlchemy models and generate the initial migration 
+   from the current schema
+3. Identify all tables currently in SQLite (used by Flask/auth) and write a 
+   migration to move them to PostgreSQL with equivalent schema
+4. Map any field name differences between the two schemas explicitly — do not 
+   silently rename
+5. Write the migration in a safe order: create tables first, migrate data second, 
+   drop old references last
+6. Show me the exact alembic commands to run and in what order
+
+Do not run the migration yet — just set it up and show me the plan.
+Prompt 6 — Run the Migration
+We set up Alembic in the previous step. Now:
+1. Run alembic upgrade head on the development database
+2. Verify every table exists and has the correct columns
+3. Run a quick sanity check query on each migrated table to confirm row counts 
+   match what was in SQLite
+4. Update all database connection strings in the codebase to point only to 
+   PostgreSQL — remove all SQLite references
+5. If anything fails, stop and tell me exactly what went wrong before proceeding
+
+Show me the output of each step.
+Prompt 7 — WebSocket Fix
+In Dashboard.js (or the main dashboard component), the Socket.IO client is 
+defined but never imported or connected. Fix this:
+1. Find the Socket.IO client code and import it correctly
+2. Connect it to the FastAPI WebSocket endpoint on component mount
+3. Disconnect cleanly on component unmount
+4. Replace any setInterval polling (10-second refresh or similar) with the 
+   WebSocket event listener
+5. If the FastAPI WebSocket endpoint does not exist yet, create it — it should 
+   emit metric update events whenever new data arrives
+6. Test that the connection opens in browser devtools (show me the expected 
+   console output)
+
+Do not change any other component. Only fix the real-time connection.
+Prompt 8 — Gemini API Fallback
+Find every place in the codebase where the Gemini API (or any external AI API) 
+is called. For each call:
+1. Add a try/except around it
+2. If the API is down or times out, return a graceful fallback response instead 
+   of crashing — the dashboard must stay functional
+3. Add a visible indicator in the UI when AI features are unavailable (a simple 
+   banner or disabled state is fine)
+4. Add a timeout of 10 seconds to every external API call so nothing hangs forever
+
+Do not change the AI logic itself — only add error handling around the calls.
+Prompt 9 — Linux/Mac Agent Support
+The current agent install script is PowerShell-only, which means only Windows 
+servers can be monitored. Fix this:
+1. Create a bash install script (install.sh) that does the same thing as the 
+   PowerShell script
+2. The agent should auto-detect the OS at runtime and use the correct commands 
+   for metric collection (Windows: PowerShell/WMI, Linux: /proc and ps, Mac: sysctl)
+3. Update the README and any setup docs to reflect both install paths
+4. Do not break the existing Windows path
+
+Keep the agent lightweight — no new dependencies unless absolutely necessary.
+Prompt 10 — Final Verification
+Run a final audit of everything we fixed in this session:
+1. Run the full test suite and show me coverage percentage
+2. Confirm no hardcoded secrets exist anywhere (grep for common patterns)
+3. Confirm all protected endpoints require a valid JWT
+4. Confirm Alembic migrations are up to date (alembic current)
+5. Confirm the WebSocket connection is wired and the polling fallback is removed
+6. Confirm the Gemini API has error handling on every call
+7. List any remaining issues you find that we have not addressed yet
+
+Give me a pass/fail for each of the 7 items above.
+The rule: Don't move to the next prompt until the current one passes. Prompts 1, 2, and 7 are the fastest wins — each under an hour. Prompt 5 + 6 (Alembic) will take the most time, so block a full day for those.
+
+okay in what order should i move?
+
+Mar 30
+
+Clarified the sequential order of prompts
+Clarified the sequential order of prompts
+Exact order, no skipping:
+
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
+
+But here's how to think about it in blocks:
+
+Do today (2–3 hours) Prompts 1, 2, 3 — these are live security holes. Your repo is vulnerable right now. Nothing else matters until these are done.
+
+Do tomorrow (full day) Prompts 4, 5, 6 — tests first so you have a safety net, then the Alembic migration. Don't do the migration without tests in place or you won't know what you broke.
+
+Day 3 Prompt 7 — WebSocket fix. Two lines of code but do it after the foundation is solid.
+
+Day 4 Prompts 8, 9 — polish and cross-platform support. These are important but not emergencies.
+
+End of Day 4 Prompt 10 — run this last as your checklist to confirm everything actually stuck.
+
+One rule to follow strictly: if a prompt fails or throws errors, do not move forward. Fix it in place first. The prompts are sequenced so each one assumes the previous is clean.
+
+
+all the even numbered issues are to be done by me and the odd ones by my team mate so let us start with this one by one fixing all of it slowly steadilu Mar 30 Let me read the audit report first to get the exact issues in order. Ran 2 commands Ran 2 commands I have all the issues. Let me
+
+pasted
+
+i am the teammate the prompt is refering to reiterate the prompt according to my tasks
+
+Mar 31
+
+Recalibrated task assignment from even to odd-numbered issues
+Recalibrated task assignment from even to odd-numbered issues
+Here's your version. Everything is flipped to odd numbers:
+
+@orchestrator
+
+PROJECT: Resilo — AI-powered IT Operations Dashboard
+AUDIT DOCUMENT: [attach Resilo_Audit_Report.docx]
+
+READ THE AUDIT DOCUMENT FULLY before proceeding.
+
+---
+
+MISSION:
+We are fixing all 54 audit issues from the Resilo project one at a time.
+Issues are split between two developers:
+- I fix ODD numbered issues: #1,3,5,7,9,11,13,15,17,19,21,23,25,
+  27,29,31,33,35,37,39,41,43,45,47,49,51,53
+- My teammate fixes EVEN numbered issues separately
+
+You will orchestrate fixing MY odd-numbered issues only, one at a time,
+using the full Architect → Developer → Reviewer pipeline for each one.
+
+---
+
+ORCHESTRATOR RULES FOR THIS PROJECT:
+
+1. ONE ISSUE PER FULL PIPELINE
+   Each issue goes through all three phases completely before the
+   next issue begins. Never start Issue #N+2 until Issue #N has
+   passed Reviewer phase and I have confirmed it works.
+
+2. PIPELINE FOR EACH ISSUE:
+
+   ARCHITECT phase first:
+   - Identify the exact file(s) and line(s) that need to change
+   - Show the broken code as it currently exists
+   - Explain WHY it is broken in one sentence
+   - Propose the fix approach (NOT the code yet)
+   - Wait for my confirmation before passing to Developer
+
+   DEVELOPER phase second:
+   - Write ONLY the exact lines that change
+   - Show: DELETE these lines (with file + line number)
+   - Show: ADD these lines (with file + line number)
+   - No full file rewrites. No touching unrelated code.
+   - No fixing even-numbered issues while fixing an odd one
+
+   REVIEWER phase third:
+   - Verify the fix is complete and correct
+   - Check for edge cases the Developer missed
+   - Check it does not break any existing functionality
+   - Give one specific terminal command or browser check to
+     verify the fix worked
+   - This verification must be yes/no, not "make sure it works"
+
+3. PROGRESS HEADER
+   Every agent output must start with:
+   ── Issue #[N] · Your task [X/27] · Phase: [Architect/Developer/Reviewer] ──
+
+4. ACTIVE TASK FILE
+   After Architect phase, update active-task.md with:
+   - Task Name: Issue #[N] — [issue text]
+   - Current Phase: Developer
+   - Progress checkboxes updated accordingly
+
+5. AFTER REVIEWER PASSES:
+   Ask me: "Issue #[N] done. Confirm fix worked, then say NEXT
+   to begin Issue #[N+2]."
+   Do not proceed until I say NEXT.
+
+6. IF A FILE IS NEEDED:
+   If any agent needs to see a file to do their job, that agent
+   must say: "I need [filename] to proceed safely. Please paste it."
+   Never guess at what code looks like.
+
+7. NEVER DO THESE THINGS (all agents):
+   - Never fix even-numbered issues
+   - Never rewrite a whole file to fix one line
+   - Never add new features during a fix
+   - Never skip the Architect phase and jump to code
+   - Never mark an issue done without Reviewer sign-off
+   - Never proceed to the next issue without my explicit NEXT
+
+---
+
+START COMMAND:
+Read the audit report. Then output:
+
+"Audit loaded. 54 total issues. I own 27 odd-numbered issues.
+
+Starting pipeline for Issue #1:
+[paste exact issue #1 text from the report]
+
+@architect — please analyze Issue #1 now."
+
+Then hand off to @architect immediately.
+Also update your active-task.md with this before your first session:
+
+# Active Task
+ISSUE: #1
+PHASE: Architect
+DONE: []
+NEXT: #3
+CONSTRAINT: Odd issues only. No rewrites. No features.
+And add this to the bottom of the audit doc:
+
+MY ISSUES (odd #): 1,3,5,7,9,11,13,15,17,19,21,23,25,27,
+29,31,33,35,37,39,41,43,45,47,49,51,53
+
+TEAMMATE ISSUES (even #): 2,4,6,8,10,12,14,16,18,20,22,24,26,
+28,30,32,34,36,38,40,42,44,46,48,50,52,54
+
+CURRENT ISSUE: #1
+COMPLETED: none yet
+To resume after a crash or new session:
+
+@orchestrator — resume from active-task.md. 
+Last completed was Issue #[N]. Start Issue #[N+2] now.
+To compress context when the session gets slow:
+
+COMPRESS
+That's it — paste once, type NEXT to advance, COMPRESS when it slows down.
+
+okay so we work in claude code, you give me my issues to fix , the odd ones, give prompt for them in phases so that i can execute it in claude code
+
+Mar 31
+
+Deliberated on presenting issues sequentially for code execution
+Deliberated on presenting issues sequentially for code execution
+Before I can give you precise, file-specific prompts I need the actual audit report. The chat log you shared described the issues in general terms but didn't include the full list with exact details.
+
+Can you share one of these:
+
+While you decide — from the chat log I already extracted your odd issues. Here's what I have so far:
+
+#1 — Hardcoded admin password (admin123) #3 — No account lockout mechanism #5 — SQL injection vulnerability #7 — Wildcard CORS (*) #9 — WebSocket backend missing (frontend wired, no backend) #11 — TimescaleDB hypertables not set up #13 — No streaming endpoints #15 — No backpressure handling #17 — Manual CREATE TABLE instead of migrations #19 — Schema drift between environments #21 — No database health checks #23 — Zero unit tests #25 — CI deploys without tests passing #27 — No load tests #29 — No rollback strategy #31 — No deployment health checks #33 — No log aggregation #35 — No graceful shutdown #37 — No auto-scaling config #39 — Three parallel API implementations #41 — Global state misuse #43 — Dead code #45 — Inconsistent patterns
+
+If this matches your report, I can start giving you Issue #1 prompts right now. Upload the doc if you want me to be more precise with exact filenames and line numbers — otherwise just say go and I'll start with #1.
+
+Q: How do you want to share the audit report?
+A: Paste the issue list as text
+
+Mar 31
+
+Anticipated user action and prepared welcoming response
+Anticipated user action and prepared welcoming response
+Paste it here — the full list exactly as it appears in the report. The more detail the better (issue number, category, description, affected files if listed).
+
+
+Auth & Security #1 Default admin password admin123 hardcoded in auth_system.py Critical Auth & Security Teammate (odd) #2 Hardcoded JWT secret fallback used when environment variable is missing (auth_api.py:88-94) Critical Auth & Security You (even) #3 No account lockout after repeated f
+
+pasted
+
+Mar 31
+
+Organized sequential issue resolution with phased prompts
+Organized sequential issue resolution with phased prompts
+Got it. Starting with your first issue. Run these three prompts in Claude Code in order — don't run the next phase until the previous one is done.
+
+Issue #1 — Hardcoded admin password in auth_system.py
+Category: Auth & Security · Severity: Critical · Your task: 1/27
+
+Phase 1 — Architect
+Look at auth_system.py and find every place where a default 
+or hardcoded password exists — specifically any hardcoded 
+admin credentials like "admin123" or similar.
+
+Do the following:
+1. Show me the exact lines where the hardcoded password appears
+2. Explain in one sentence why this is dangerous
+3. Propose the fix approach — do NOT write any code yet
+4. Tell me which other files (if any) reference this password 
+   or the admin user it creates
+
+Stop here and wait for me to confirm before touching any code.
+Phase 2 — Developer
+Fix the hardcoded admin password in auth_system.py.
+
+Rules:
+- Move the password to .env as ADMIN_DEFAULT_PASSWORD
+- Replace the hardcode with os.getenv("ADMIN_DEFAULT_PASSWORD")
+- Add a startup check that raises a clear RuntimeError if 
+  ADMIN_DEFAULT_PASSWORD is not set — never fall back silently
+- Add ADMIN_DEFAULT_PASSWORD to .gitignore if .env is not 
+  already there
+- Show only the lines you are deleting and the lines you are 
+  adding, with file name and line number for each
+- Do not touch anything else in the file
+Phase 3 — Reviewer
+Review the fix just made to auth_system.py for Issue #1.
+
+Check:
+1. Is the hardcoded password completely gone — no fallback, 
+   no default string anywhere?
+2. Does the app refuse to start if ADMIN_DEFAULT_PASSWORD 
+   is missing from .env?
+3. Is .env added to .gitignore?
+4. Does the fix break any other part of auth_system.py?
+
+Then give me one command to run that confirms the fix works 
+— it must return a clear pass or fail, not "check manually."
+Once Phase 3 passes, come back here and say next and I'll give you Issue #3.
+
+next
+
+Mar 31
+
+Identified next security issue for presentation
+Identified next security issue for presentation
+Issue #3 — No account lockout after failed login attempts
+Category: Auth & Security · Severity: Critical · Your task: 2/27
+
+Phase 1 — Architect
+Look at auth_system.py and auth_api.py and find the login 
+endpoint — specifically the section that handles failed 
+password attempts.
+
+Do the following:
+1. Show me the exact login handler code as it exists right now
+2. Confirm there is zero lockout or rate limiting on failed attempts
+3. Propose the fix approach — which library or mechanism to use 
+   (e.g. a failed_attempts counter in the DB, Flask-Limiter, 
+   or in-memory tracking), and where exactly it should live
+4. Tell me if the database schema needs a new column for this 
+   (e.g. failed_attempts, locked_until on the users table)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement account lockout in auth_system.py and auth_api.py.
+
+Requirements:
+- Lock the account for 15 minutes after 5 consecutive failed 
+  login attempts
+- Track failed_attempts and locked_until — add these columns 
+  to the users table if they don't exist
+- On each failed login: increment failed_attempts
+- On a locked account login attempt: return 403 with message 
+  "Account locked. Try again in X minutes." — never reveal 
+  the password was wrong
+- On a successful login: reset failed_attempts to 0 and 
+  clear locked_until
+- The lockout duration and attempt limit must be read from 
+  .env as LOCKOUT_DURATION_MINUTES and MAX_FAILED_ATTEMPTS 
+  with sensible defaults (15 and 5)
+
+Show only deleted lines and added lines with file and line 
+number. Do not rewrite the whole file. Do not touch anything 
+outside the login flow.
+Phase 3 — Reviewer
+Review the account lockout fix just applied to auth_system.py 
+and auth_api.py.
+
+Check:
+1. After 5 failed attempts does the account actually lock?
+2. Does a locked account return 403 — not 401?
+3. Does a successful login correctly reset the counter?
+4. Are LOCKOUT_DURATION_MINUTES and MAX_FAILED_ATTEMPTS 
+   pulled from .env?
+5. Is there any code path that bypasses the lockout check 
+   (e.g. a separate admin login route)?
+
+Give me one curl command I can run against the login endpoint 
+that demonstrates the lockout triggering after 5 bad attempts. 
+Output should be a clear 403 response.
+Once Phase 3 passes, come back and say next for Issue #5.
+
+next
+
+Mar 31
+
+Identified security vulnerability in code
+Identified security vulnerability in code
+Issue #5 — SQL Injection in api_server.py:834
+Category: Auth & Security · Severity: Critical · Your task: 3/27
+
+Phase 1 — Architect
+Open api_server.py and look at line 834 and the surrounding 
+query code.
+
+Do the following:
+1. Show me every raw SQL query in api_server.py where user 
+   input is directly concatenated or formatted into the query 
+   string — not just line 834, scan the whole file
+2. For each one found, show the exact line and explain what 
+   a basic SQL injection attack would look like against it
+3. Confirm whether the project uses SQLAlchemy ORM, raw 
+   psycopg2, or both
+4. Propose the fix approach — parameterised queries or ORM 
+   methods — for each vulnerable query found
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Fix every SQL injection vulnerability found in api_server.py.
+
+Rules:
+- Replace every string-concatenated or f-string SQL query 
+  with parameterised queries
+- If using psycopg2: use cursor.execute(query, (params,)) 
+  format — never format strings into SQL
+- If using SQLAlchemy: use ORM methods or text() with 
+  bindparams — never raw string interpolation
+- Do not change what the query does — only change HOW the 
+  values are passed in
+- Show only deleted lines and added lines with file name 
+  and line number for each change
+- Do not touch any other logic in the file
+- If you find more than 5 vulnerabilities, fix them all 
+  but list each one separately
+Phase 3 — Reviewer
+Review the SQL injection fixes just applied to api_server.py.
+
+Check:
+1. Is there any remaining f-string, .format(), or % 
+   interpolation inside a SQL query string anywhere 
+   in the file?
+2. For every fix — does the parameterised version produce 
+   identical results to the original query for valid input?
+3. Does any fix accidentally break the query logic 
+   (e.g. wrong parameter order, missing comma in tuple)?
+4. Run this check and show me the output:
+
+   grep -n "execute(" api_server.py
+
+   Every line returned should show execute(query, params) 
+   format — not execute(f"...") or execute("..." % ...)
+
+Pass = zero raw string interpolation inside any execute() call.
+Fail = any remaining interpolation found.
+Once Phase 3 passes, come back and say next for Issue #7.
+
+next
+
+Mar 31
+
+Identified security vulnerability in CORS configuration
+Identified security vulnerability in CORS configuration
+Issue #7 — Wildcard CORS with credentials enabled
+Category: Auth & Security · Severity: Warning · Your task: 4/27
+
+Phase 1 — Architect
+Search the entire codebase for CORS configuration — check 
+api_server.py, auth_api.py, core_api.py, and any middleware 
+or config files.
+
+Do the following:
+1. Show me every place CORS is configured — exact file and 
+   line number
+2. Confirm whether wildcard (*) is used as the allowed origin
+3. Confirm whether allow_credentials is set to True alongside 
+   the wildcard — this combination is the specific vulnerability
+4. List every domain that actually needs to access this API 
+   (frontend origin, any other services)
+5. Propose the fix — an explicit allowlist of origins instead 
+   of wildcard, with credentials still enabled only for 
+   those specific origins
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Fix the wildcard CORS configuration across the codebase.
+
+Requirements:
+- Remove the wildcard (*) from allowed origins everywhere 
+  it appears
+- Replace it with an explicit list read from .env as 
+  ALLOWED_ORIGINS (comma-separated)
+  Example: ALLOWED_ORIGINS=http://localhost:3000,https://resilo.app
+- Keep allow_credentials=True but only for the explicit 
+  origins — never with wildcard
+- Add a startup check that warns clearly if ALLOWED_ORIGINS 
+  is not set in .env
+- Add ALLOWED_ORIGINS with a safe default to .env.example 
+  so future devs know it is required
+
+Show only deleted lines and added lines with file name and 
+line number. Do not touch any other middleware or config.
+Phase 3 — Reviewer
+Review the CORS fix just applied across the codebase.
+
+Check:
+1. Is the wildcard (*) completely gone from every CORS 
+   config in every file?
+2. Are allowed origins now read from ALLOWED_ORIGINS 
+   in .env — not hardcoded?
+3. Is allow_credentials still True but only paired with 
+   the explicit origins list?
+4. Is ALLOWED_ORIGINS documented in .env.example?
+5. Run this check and show me the output:
+
+   grep -rn "CORS\|allow_origins\|origins=" .
+
+   Every result should show a variable reference or 
+   explicit list — not a bare "*" string.
+
+Then run this curl and confirm it returns a proper 
+Access-Control-Allow-Origin header with the specific 
+origin, not *:
+
+   curl -H "Origin: http://localhost:3000" \
+        -I http://localhost:8000/api/health
+
+Pass = specific origin in response header, no wildcard.
+Fail = * appears anywhere in the response header.
+Once Phase 3 passes, come back and say next for Issue #9.
+
+next
+
+Mar 31
+
+Identified backend infrastructure gap
+Identified backend infrastructure gap
+Issue #9 — No WebSocket server in Python backend
+Category: Real-Time · Severity: Critical · Your task: 5/27
+
+Phase 1 — Architect
+Look at api_server.py and the frontend dashboard component 
+(likely Dashboard.js or similar).
+
+Do the following:
+1. Show me exactly what the frontend expects for WebSocket 
+   connection — the URL it connects to, the events it 
+   listens for, and the data format it expects
+2. Confirm that api_server.py has zero WebSocket or 
+   Socket.IO implementation right now
+3. Check if flask-socketio or any WebSocket library is 
+   in requirements.txt — show me the exact contents 
+   of requirements.txt
+4. Identify which data the WebSocket should push — metrics, 
+   alerts, or both — based on what the frontend is 
+   already wired to receive
+5. Propose the implementation approach — flask-socketio 
+   on the Flask side vs a FastAPI WebSocket endpoint — 
+   and which one fits better given the current codebase
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement a WebSocket server in the Python backend that 
+matches what the frontend already expects.
+
+Requirements:
+- Add flask-socketio to requirements.txt if using Flask, 
+  OR add the FastAPI WebSocket endpoint if using FastAPI
+- Create a /ws endpoint (or Socket.IO namespace) that:
+  - Accepts client connections
+  - Emits metric_update events with the same data 
+    structure the frontend already expects
+  - Emits alert events when a new alert is generated
+  - Handles client disconnections cleanly without crashing
+- Wire it to the existing metric collection logic — 
+  whenever new metrics are collected, emit them over 
+  the WebSocket instead of (or in addition to) storing 
+  them only in the DB
+- Do not remove any existing REST endpoints — add the 
+  WebSocket alongside them
+- Do not touch the frontend — the frontend should work 
+  as-is once the backend endpoint exists
+
+Show only the new code being added and any lines being 
+changed, with file name and line number for each.
+Phase 3 — Reviewer
+Review the WebSocket server implementation just added 
+to the backend.
+
+Check:
+1. Does the WebSocket endpoint exist and accept connections 
+   at the URL the frontend expects?
+2. Does it emit metric_update events in the exact data 
+   format the frontend listens for?
+3. Does it handle a client disconnect without throwing 
+   an unhandled exception?
+4. Is flask-socketio (or equivalent) added to 
+   requirements.txt?
+5. Do the existing REST endpoints still work — nothing 
+   broken by this addition?
+
+Run these two checks and show me the output:
+
+   pip install -r requirements.txt
+
+   Then in a separate terminal:
+   python -c "
+   import socketio
+   sio = socketio.Client()
+   sio.connect('http://localhost:5000')
+   print('Connected:', sio.connected)
+   sio.disconnect()
+   "
+
+Pass = "Connected: True" with no errors.
+Fail = connection refused or import error.
+Once Phase 3 passes, come back and say next for Issue #11.
+
+next
+
+Mar 31
+
+Identified database configuration oversight and task assignment
+Identified database configuration oversight and task assignment
+Issue #11 — TimescaleDB configured but no hypertable queries used
+Category: Real-Time · Severity: Critical · Your task: 6/27
+
+Phase 1 — Architect
+Search the codebase for all database queries that deal with 
+time-series data — metrics, logs, alerts, or any table that 
+has a timestamp column.
+
+Do the following:
+1. Show me the current database schema for every table 
+   that stores time-series data (metrics, alerts, logs etc.)
+2. Confirm whether any of these tables are already set up 
+   as TimescaleDB hypertables — run this query and show 
+   me the output:
+   
+   SELECT hypertable_name FROM timescaledb_information.hypertables;
+
+3. Show me every query in the codebase that reads or writes 
+   to these time-series tables — exact file and line number
+4. Identify which of these queries would benefit most from 
+   TimescaleDB time-series optimisation (range queries, 
+   aggregations, recent data fetches)
+5. Propose which tables to convert to hypertables and 
+   what chunk interval makes sense given the data volume
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Set up TimescaleDB hypertables and optimise time-series 
+queries in the codebase.
+
+Requirements:
+- Convert the metrics table (and any other time-series 
+  tables identified) to TimescaleDB hypertables using:
+  
+  SELECT create_hypertable('metrics', 'timestamp', 
+    if_not_exists => TRUE);
+
+- Set chunk_time_interval appropriate to data volume 
+  (1 day for high-frequency metrics, 1 week for low)
+- Add a compression policy for data older than 7 days:
+
+  SELECT add_compression_policy('metrics', 
+    INTERVAL '7 days');
+
+- Rewrite the top 3 most frequent time-series queries 
+  to use TimescaleDB-optimised patterns:
+  - Use time_bucket() for aggregations instead of 
+    date_trunc()
+  - Add WHERE timestamp > NOW() - INTERVAL '1 hour' 
+    style bounds on all recent-data fetches
+  - Add an index on (timestamp DESC) if not present
+
+- Create a migration file for all schema changes — 
+  do not run raw ALTER TABLE in application code
+
+Show only new code and changed lines with file name 
+and line number. Do not touch any non-time-series tables.
+Phase 3 — Reviewer
+Review the TimescaleDB hypertable setup and query 
+optimisations just applied.
+
+Check:
+1. Run this and confirm the tables are now hypertables:
+
+   SELECT hypertable_name, num_chunks 
+   FROM timescaledb_information.hypertables;
+
+   Pass = metrics table (and others) listed with 
+   at least 1 chunk.
+
+2. Run this and confirm compression policy exists:
+
+   SELECT * FROM timescaledb_information.jobs 
+   WHERE proc_name = 'policy_compression';
+
+   Pass = at least one row returned.
+
+3. Check that time_bucket() is now used in aggregation 
+   queries — not date_trunc():
+
+   grep -rn "date_trunc\|time_bucket" .
+
+   Pass = no remaining date_trunc() on time-series tables.
+
+4. Do the existing REST endpoints that return metrics 
+   still return correct data after the hypertable 
+   conversion?
+
+5. Is the hypertable creation in a migration file — 
+   not hardcoded in application startup code?
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #13.
+
+next
+
+Mar 31
+
+Navigated task progression within development workflow
+Navigated task progression within development workflow
+Issue #13 — No streaming endpoints
+Category: Real-Time · Severity: Critical · Your task: 7/27
+
+Phase 1 — Architect
+Look at api_server.py, core_api.py, and any other API files 
+in the codebase.
+
+Do the following:
+1. List every endpoint that returns data that changes 
+   over time — metrics, alerts, logs, system status etc.
+2. Confirm that all of them are currently request/response 
+   only — no streaming, no chunked transfer, no SSE
+3. Check the frontend for any code that expects a stream 
+   or EventSource connection — show exact file and line
+4. Identify the top 2 endpoints that would benefit most 
+   from streaming based on how frequently their data 
+   changes and how the frontend uses them
+5. Propose the implementation approach — Server-Sent 
+   Events (SSE) via FastAPI StreamingResponse, or 
+   a generator-based response — and why that fits 
+   better than the alternatives given the current stack
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add Server-Sent Events (SSE) streaming endpoints for 
+the top 2 data streams identified — most likely metrics 
+and alerts.
+
+Requirements:
+- Add a GET /stream/metrics endpoint that:
+  - Returns Content-Type: text/event-stream
+  - Pushes a new event every time fresh metrics are 
+    available (do not poll on a fixed timer)
+  - Formats each event as SSE spec: 
+    data: {json payload}\n\n
+  - Sends a heartbeat comment every 30 seconds to 
+    keep the connection alive: ": heartbeat\n\n"
+  - Closes cleanly when the client disconnects
+
+- Add a GET /stream/alerts endpoint with the same 
+  structure but for alert events
+
+- Read the heartbeat interval from .env as 
+  SSE_HEARTBEAT_SECONDS with a default of 30
+
+- Do not remove any existing REST endpoints — 
+  these are additions only
+
+- If the frontend has an EventSource stub or comment 
+  referencing streaming, wire it to these new endpoints
+
+Show only new code and changed lines with file name 
+and line number. Do not touch unrelated files.
+Phase 3 — Reviewer
+Review the SSE streaming endpoints just added to 
+the backend.
+
+Check:
+1. Do both /stream/metrics and /stream/alerts exist 
+   and return Content-Type: text/event-stream?
+
+   Run these and show the output:
+
+   curl -N http://localhost:8000/stream/metrics &
+   sleep 5 && kill %1
+
+   Pass = at least one "data: {...}" line printed 
+   within 5 seconds, no error.
+
+2. Does the heartbeat fire every 30 seconds — 
+   check for ": heartbeat" lines in the stream output
+
+3. Does the server handle a dropped client connection 
+   without throwing an unhandled exception — check 
+   server logs after killing the curl above
+
+4. Are the existing REST endpoints for metrics and 
+   alerts still working:
+
+   curl http://localhost:8000/api/metrics
+   curl http://localhost:8000/api/alerts
+
+   Pass = both return valid JSON with 200 status.
+
+5. Is SSE_HEARTBEAT_SECONDS read from .env — not 
+   hardcoded as 30 in the code:
+
+   grep -n "SSE_HEARTBEAT\|heartbeat" api_server.py
+
+   Pass = shows an os.getenv() call, not a bare integer.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #15.
+
+next
+
+Mar 31
+
+Examined software issue regarding client performance handling
+Examined software issue regarding client performance handling
+Issue #15 — No backpressure handling for slow clients
+Category: Real-Time · Severity: Warning · Your task: 8/27
+
+Phase 1 — Architect
+Look at the WebSocket server added in Issue #9 and the 
+SSE streaming endpoints added in Issue #13.
+
+Do the following:
+1. Show me the current code for both the WebSocket 
+   emit logic and the SSE generator — exact file 
+   and line numbers
+2. Identify what happens right now if a slow client 
+   cannot consume events fast enough — does the 
+   server buffer indefinitely, drop events silently, 
+   or crash?
+3. Check if there is any queue, buffer size limit, 
+   or timeout on client send operations anywhere 
+   in the codebase
+4. Estimate the realistic event rate — how many 
+   metric_update or alert events per second could 
+   the backend emit under load?
+5. Propose the fix approach:
+   - A bounded asyncio.Queue per client with a 
+     max size (drop oldest when full)
+   - A send timeout so a slow client cannot block 
+     the server
+   - A max connected clients limit from .env
+   Confirm which of these apply to both WebSocket 
+   and SSE or just one of them
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add backpressure handling to both the WebSocket server 
+and the SSE streaming endpoints.
+
+Requirements for WebSocket:
+- Give each connected client its own asyncio.Queue 
+  with a max size read from .env as WS_QUEUE_MAX_SIZE 
+  (default 100)
+- When the queue is full, drop the oldest event and 
+  add the new one — never block the producer
+- Add a per-client send timeout of 5 seconds — if 
+  a client cannot receive within 5 seconds, 
+  disconnect it cleanly and log a warning
+- On disconnect, clean up the client's queue 
+  immediately — no memory leak
+
+Requirements for SSE:
+- Wrap the SSE generator in a try/except 
+  GeneratorExit to detect client disconnects
+- Add a yield timeout — if no event is sent within 
+  SSE_HEARTBEAT_SECONDS the heartbeat fires (already 
+  done in #13 — confirm it is wired correctly here)
+- If the client buffer (asyncio queue or equivalent) 
+  exceeds WS_QUEUE_MAX_SIZE, skip the event and 
+  log "slow client — event dropped" at WARNING level
+
+Global limit:
+- Read MAX_CONNECTED_CLIENTS from .env (default 50)
+- Reject new connections beyond this limit with 
+  503 Service Unavailable and a clear message
+
+Show only new code and changed lines with file name 
+and line number. Do not change any business logic.
+Phase 3 — Reviewer
+Review the backpressure handling just added to the 
+WebSocket and SSE endpoints.
+
+Check:
+1. Does each WebSocket client have its own bounded 
+   queue — confirm with:
+
+   grep -n "asyncio.Queue\|Queue()" api_server.py
+
+   Pass = Queue() call with a maxsize parameter, 
+   not an unbounded Queue().
+
+2. Is WS_QUEUE_MAX_SIZE read from .env — not 
+   hardcoded:
+
+   grep -n "WS_QUEUE_MAX_SIZE\|queue_max" api_server.py
+
+   Pass = os.getenv() call present.
+
+3. Does the SSE generator handle GeneratorExit 
+   cleanly:
+
+   grep -n "GeneratorExit" api_server.py
+
+   Pass = at least one except GeneratorExit block.
+
+4. Is MAX_CONNECTED_CLIENTS enforced — test by 
+   opening more connections than the limit and 
+   confirming a 503 is returned on the extra one:
+
+   for i in {1..3}; do 
+     curl -N http://localhost:8000/stream/metrics &
+   done
+   curl -I http://localhost:8000/stream/metrics
+
+   Pass = last curl returns 503 if limit is set 
+   to 2 or lower in .env for testing.
+
+5. Is there a "slow client — event dropped" WARNING 
+   log entry in the logging config — not a print():
+
+   grep -n "slow client\|event dropped" api_server.py
+
+   Pass = uses logging.warning(), not print().
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #17.
+
+next
+
+Mar 31
+
+Identified critical database issue in authentication code
+Identified critical database issue in authentication code
+Issue #17 — Manual CREATE TABLE in auth_system.py
+Category: Database · Severity: Critical · Your task: 9/27
+
+Phase 1 — Architect
+Open auth_system.py and look at lines 141-210.
+
+Do the following:
+1. Show me every CREATE TABLE, CREATE INDEX, and any 
+   other raw DDL statement in that block exactly 
+   as they appear
+2. Show me where this code is called — is it run 
+   on every startup, on first run only, or manually?
+3. Check the entire codebase for any other files 
+   that contain raw CREATE TABLE or ALTER TABLE 
+   statements outside of a migration system:
+
+   grep -rn "CREATE TABLE\|ALTER TABLE\|DROP TABLE" .
+
+   Show me every result
+4. Confirm whether Alembic has been set up yet 
+   (your teammate is doing that in Issue #16 — 
+   ask me if that is done before proceeding)
+5. Propose the fix:
+   - Move all DDL into proper Alembic migration files
+   - Replace the CREATE TABLE block in auth_system.py 
+     with a check that the schema exists rather than 
+     creating it inline
+   - Identify the correct order for table creation 
+     based on foreign key dependencies
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Remove all manual CREATE TABLE statements from 
+auth_system.py and move them into Alembic migrations.
+
+Requirements:
+- Extract every CREATE TABLE and CREATE INDEX 
+  statement from auth_system.py lines 141-210
+- Create a new Alembic migration file that recreates 
+  these tables using SQLAlchemy column definitions — 
+  not raw SQL strings
+- The migration must:
+  - Use op.create_table() not op.execute("CREATE TABLE")
+  - Define every column with its correct type, 
+    nullable, default, and primary key settings
+  - Recreate every index using op.create_index()
+  - Include a proper downgrade() that drops the 
+    tables in reverse order
+- In auth_system.py replace the entire CREATE TABLE 
+  block with a single function:
+
+  def verify_schema_exists():
+      from alembic import command
+      from alembic.config import Config
+      alembic_cfg = Config("alembic.ini")
+      command.upgrade(alembic_cfg, "head")
+
+- Call verify_schema_exists() at startup instead 
+  of the raw DDL block
+- Do not change any other logic in auth_system.py
+
+Show only deleted lines and added lines with file 
+name and line number for each change.
+Phase 3 — Reviewer
+Review the migration of CREATE TABLE statements 
+out of auth_system.py.
+
+Check:
+1. Are all raw DDL statements completely gone 
+   from auth_system.py:
+
+   grep -n "CREATE TABLE\|CREATE INDEX\|CREATE SEQUENCE" \
+   auth_system.py
+
+   Pass = zero results.
+
+2. Does the new Alembic migration file exist and 
+   contain all the tables that were previously 
+   created inline — confirm by running:
+
+   alembic history
+
+   Pass = new migration appears in the list.
+
+3. Does the migration run cleanly from scratch:
+
+   alembic downgrade base && alembic upgrade head
+
+   Pass = no errors, all tables created.
+
+4. Does auth_system.py still function correctly 
+   after the change — can a user still register 
+   and log in without errors?
+
+5. Does the downgrade() in the migration correctly 
+   drop all tables it created — in the right order 
+   to avoid foreign key constraint errors:
+
+   alembic downgrade -1
+
+   Pass = clean downgrade with no constraint errors.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #19.
+
+PostToolUse:Bash hook error
+  ⎿  PreToolUse:Glob hook error
+  ⎿  PreToolUse:Glob hook error
+  ⎿  PreToolUse:Grep hook error
+
+what this means
+
+Mar 31
+
+Identified Claude Code hook configuration errors
+Identified Claude Code hook configuration errors
+These are Claude Code hook errors — not errors in your code. They mean Claude Code has custom hooks configured that are failing when it tries to run Glob or Grep commands.
+
+Three likely causes:
+
+1. Hook scripts are missing or broken Claude Code looks for hook scripts (usually in .claude/hooks/) that run before/after tool calls. If those scripts don't exist or have a syntax error, you get this.
+
+2. Python/shell environment issue The hook script exists but the environment it runs in can't find the right Python version or a dependency.
+
+3. Permissions issue The hook script exists but isn't executable.
+
+Fix — run these one by one in your terminal
+Check if hooks exist:
+
+bash
+ls .claude/hooks/
+If they exist, check permissions:
+
+bash
+chmod +x .claude/hooks/*.py
+chmod +x .claude/hooks/*.sh
+If the folder is empty or missing:
+
+bash
+mkdir -p .claude/hooks
+Check Claude Code's settings file for hook references:
+
+bash
+cat .claude/settings.json
+Look for any hooks block pointing to files that don't exist — remove or fix those references.
+
+Does it block your work?
+If Claude Code still completed the task despite the errors → ignore it and keep going, it's cosmetic
+If Claude Code stopped mid-task → fix the hooks first then re-run the phase you were on
+Which phase were you on when this appeared — Phase 1, 2, or 3 of Issue #17?
+
+okay next
+
+Mar 31
+
+Interpreted user's request to advance sequentially
+Interpreted user's request to advance sequentially
+Issue #19 — No backup strategy
+Category: Database · Severity: Critical · Your task: 10/27
+
+Phase 1 — Architect
+Search the entire codebase and docker-compose files for 
+any existing backup, restore, or data retention logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "backup\|restore\|pg_dump\|retention" .
+
+   Confirm there is zero backup logic anywhere
+
+2. Show me the current docker-compose.yml — specifically 
+   the PostgreSQL and TimescaleDB service definitions, 
+   including any volume mounts
+3. Identify exactly what data needs to be backed up:
+   - PostgreSQL/TimescaleDB — which databases and schemas
+   - Any file uploads or local storage the app uses
+   - The .env file and any secrets (separately from data)
+4. Identify where the app is deployed — GCP, local, 
+   or both — so the backup destination makes sense
+5. Propose the backup strategy:
+   - A pg_dump based backup script run on a schedule
+   - Retention policy (how many backups to keep)
+   - Where backups are stored (local volume or GCP bucket)
+   - A restore script that can recover from a backup 
+     in one command
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement a backup and restore strategy for the 
+PostgreSQL/TimescaleDB database.
+
+Requirements:
+- Create a scripts/backup.sh that:
+  - Runs pg_dump with connection details read from 
+    .env (POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, 
+    POSTGRES_PASSWORD)
+  - Names the output file: 
+    backup_YYYYMMDD_HHMMSS.sql.gz (compressed)
+  - Saves it to a BACKUP_DIR path read from .env 
+    (default: ./backups)
+  - Deletes backups older than BACKUP_RETENTION_DAYS 
+    days read from .env (default: 7)
+  - Logs success or failure with a timestamp to 
+    ./backups/backup.log
+  - Exits with code 1 on failure so a scheduler 
+    can detect it
+
+- Create a scripts/restore.sh that:
+  - Takes one argument: the backup file path
+  - Confirms with the user before overwriting 
+    the live database
+  - Runs pg_restore or psql to restore cleanly
+  - Logs the restore event with timestamp
+
+- Add a backup service to docker-compose.yml:
+  - Uses the official postgres image
+  - Runs backup.sh on a cron schedule (daily at 2am)
+  - Mounts the backups directory as a volume
+
+- Add these to .env.example:
+  BACKUP_DIR=./backups
+  BACKUP_RETENTION_DAYS=7
+
+Show only new files and changed lines with file 
+name. Do not touch application code.
+Phase 3 — Reviewer
+Review the backup and restore implementation just added.
+
+Check:
+1. Does backup.sh exist and run without errors:
+
+   chmod +x scripts/backup.sh
+   bash scripts/backup.sh
+
+   Pass = a compressed .sql.gz file appears in 
+   BACKUP_DIR with today's timestamp in the name.
+
+2. Does the backup file contain valid SQL — 
+   confirm it is not empty or corrupt:
+
+   gunzip -c backups/backup_*.sql.gz | head -20
+
+   Pass = first 20 lines show PostgreSQL dump 
+   header comments.
+
+3. Does retention work — create a dummy old file 
+   and confirm it gets cleaned up:
+
+   touch -d "10 days ago" backups/backup_old.sql.gz
+   bash scripts/backup.sh
+   ls backups/
+
+   Pass = backup_old.sql.gz is gone.
+
+4. Does restore.sh exist and handle a missing 
+   argument gracefully:
+
+   bash scripts/restore.sh
+
+   Pass = prints usage instructions and exits 
+   with code 1 — does not crash or touch the DB.
+
+5. Is the backup service present in docker-compose.yml:
+
+   grep -A 10 "backup" docker-compose.yml
+
+   Pass = service block with cron schedule and 
+   volume mount visible.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #21.
+
+next
+
+Mar 31
+
+Catalogued database monitoring deficiency
+Catalogued database monitoring deficiency
+Issue #21 — No database health checks
+Category: Database · Severity: Warning · Your task: 11/27
+
+Phase 1 — Architect
+Search the codebase for any existing database health 
+check or connection validation logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "health\|ping\|db_check\|connection" \
+   api_server.py auth_system.py core_api.py
+
+   Confirm there is no proactive DB health check anywhere
+
+2. Show me the current /health or /status endpoint 
+   if one exists — exact file and line number
+3. Check docker-compose.yml for any healthcheck 
+   block on the PostgreSQL or TimescaleDB service:
+
+   grep -A 5 "healthcheck" docker-compose.yml
+
+   Confirm whether it exists or not
+4. Identify all the places in the codebase where 
+   a database connection is opened — how many 
+   distinct connection points are there?
+5. Propose the fix:
+   - A /health endpoint that actively checks DB 
+     connectivity and returns structured JSON
+   - A docker-compose healthcheck on the DB service
+   - A connection retry mechanism on startup so 
+     the app waits for the DB instead of crashing
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add database health checks at three levels: API 
+endpoint, docker-compose, and startup retry.
+
+Requirements:
+
+Level 1 — Health endpoint:
+- Add GET /health endpoint that returns:
+  {
+    "status": "healthy" | "degraded" | "unhealthy",
+    "database": "connected" | "unreachable",
+    "latency_ms": <integer>,
+    "timestamp": "<ISO 8601>"
+  }
+- Check DB by running SELECT 1 and measuring 
+  response time
+- Return 200 if healthy, 503 if database 
+  is unreachable
+- Never expose connection strings, passwords, 
+  or internal error details in the response
+
+Level 2 — docker-compose healthcheck:
+- Add a healthcheck block to the PostgreSQL/
+  TimescaleDB service in docker-compose.yml:
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 30s
+- Add depends_on with condition: service_healthy 
+  to every app service that needs the database
+
+Level 3 — Startup retry:
+- On application startup, retry the DB connection 
+  up to DB_CONNECT_RETRIES times (read from .env, 
+  default 5) with DB_CONNECT_RETRY_DELAY seconds 
+  between attempts (default 3)
+- Log each retry attempt clearly:
+  "DB not ready, retrying in 3s (attempt 2/5)"
+- If all retries fail, log a clear error and 
+  exit with code 1 — never start with no DB
+
+Add to .env.example:
+  DB_CONNECT_RETRIES=5
+  DB_CONNECT_RETRY_DELAY=3
+
+Show only new code and changed lines with file 
+name and line number. Do not change any query logic.
+Phase 3 — Reviewer
+Review the database health check implementation 
+just added.
+
+Check:
+1. Does the /health endpoint return correct JSON 
+   when the DB is up:
+
+   curl http://localhost:8000/health | python3 -m json.tool
+
+   Pass = valid JSON with status, database, 
+   latency_ms, and timestamp fields. Status 200.
+
+2. Does /health return 503 when the DB is down — 
+   test by temporarily stopping the DB container:
+
+   docker compose stop db
+   curl -o /dev/null -s -w "%{http_code}" \
+   http://localhost:8000/health
+   docker compose start db
+
+   Pass = 503 returned while DB is stopped.
+
+3. Does the docker-compose healthcheck exist 
+   on the DB service:
+
+   grep -A 8 "healthcheck" docker-compose.yml
+
+   Pass = test, interval, timeout, retries, 
+   and start_period all present.
+
+4. Does the app service have depends_on with 
+   service_healthy condition:
+
+   grep -A 5 "depends_on" docker-compose.yml
+
+   Pass = condition: service_healthy present 
+   under the DB dependency.
+
+5. Does startup retry work — stop the DB, start 
+   the app, confirm it retries and logs correctly:
+
+   docker compose stop db
+   python api_server.py
+
+   Pass = "DB not ready, retrying" log lines 
+   appear, app exits cleanly after max retries 
+   with exit code 1.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #23.
+
+next
+
+Mar 31
+
+Navigated to next issue in task sequence
+Navigated to next issue in task sequence
+Issue #23 — Zero unit tests
+Category: Testing · Severity: Critical · Your task: 12/27
+
+Phase 1 — Architect
+Search the entire codebase for any existing test files 
+or test functions.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "def test_\|unittest\|pytest" .
+   find . -name "test_*.py" -o -name "*_test.py"
+
+   Confirm there are zero test functions anywhere
+
+2. Show me the current project structure — specifically 
+   which modules contain the most critical business logic:
+   - Authentication functions
+   - Metric collection and processing
+   - Alert generation logic
+   - WebSocket event emission
+
+3. For each of those modules show me the top 3 functions 
+   that are most likely to break silently if changed — 
+   these are the first ones we write tests for
+
+4. Check if pytest is in requirements.txt yet — your 
+   teammate adds the test framework in Issue #24, confirm 
+   whether that is done before proceeding
+
+5. Propose the test file structure:
+   - Where test files should live (tests/ folder)
+   - How to organize them by module
+   - What fixtures are needed (test DB, test client, 
+     mock metric data)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Write the first unit tests for the most critical 
+business logic in the codebase.
+
+Requirements:
+
+Test file structure:
+- Create a tests/ folder at the project root
+- Create tests/conftest.py with shared fixtures:
+  - test_client fixture using TestClient or httpx
+  - test_db fixture using a separate in-memory 
+    SQLite or test PostgreSQL schema — never the 
+    production DB
+  - sample_metric fixture with realistic fake data
+  - sample_alert fixture with realistic fake data
+
+Write tests/test_auth.py — 5 tests:
+- test_valid_login_returns_token
+- test_invalid_password_returns_401
+- test_locked_account_returns_403
+- test_valid_token_accesses_protected_route
+- test_expired_token_is_rejected
+
+Write tests/test_metrics.py — 5 tests:
+- test_metric_stored_correctly
+- test_metric_retrieval_returns_correct_format
+- test_metric_with_missing_fields_is_rejected
+- test_metric_timestamp_is_set_automatically
+- test_metric_query_returns_latest_first
+
+Write tests/test_alerts.py — 3 tests:
+- test_alert_generated_when_threshold_exceeded
+- test_alert_not_generated_below_threshold
+- test_alert_contains_required_fields
+
+Rules:
+- Every test must be independent — no test 
+  depends on another test's state
+- Use monkeypatch or unittest.mock for any 
+  external API calls (Gemini, etc.)
+- No test should touch the production database
+- Each test must have a docstring explaining 
+  what it verifies
+
+Show new files in full. Show changed lines 
+with file name and line number.
+Phase 3 — Reviewer
+Review the unit tests just written.
+
+Check:
+1. Do all 13 tests pass cleanly:
+
+   pytest tests/ -v
+
+   Pass = 13 passed, 0 failed, 0 errors.
+   Show me the full pytest output.
+
+2. Does any test touch the production database — 
+   confirm by checking conftest.py:
+
+   grep -n "POSTGRES_URL\|production\|DATABASE_URL" \
+   tests/conftest.py
+
+   Pass = zero production DB references in 
+   test config.
+
+3. Are all external API calls mocked — no test 
+   should make a real HTTP request:
+
+   grep -rn "monkeypatch\|MagicMock\|patch" tests/
+
+   Pass = at least one mock per test file that 
+   calls an external service.
+
+4. Is every test independent — run them in 
+   reverse order to confirm no ordering dependency:
+
+   pytest tests/ -v --reversed
+
+   Pass = same 13 passed, same results.
+
+5. Does coverage show the critical modules are 
+   being hit:
+
+   pytest tests/ --cov=. --cov-report=term-missing
+
+   Pass = auth, metrics, and alerts modules 
+   show at least 40% coverage from these 
+   13 tests alone.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #25.
+
+next
+
+Mar 31
+
+Identified critical deployment pipeline vulnerability
+Identified critical deployment pipeline vulnerability
+Issue #25 — CI deploys to production without running tests
+Category: Testing · Severity: Critical · Your task: 13/27
+
+Phase 1 — Architect
+Find the CI/CD pipeline configuration files in 
+the codebase.
+
+Do the following:
+1. Run these and show me every result:
+
+   find . -name "*.yml" -path "*github*"
+   find . -name "*.yml" -path "*gitlab*"
+   find . -name "Jenkinsfile"
+   find . -name "cloudbuild.yaml"
+
+   Show me the full contents of every file found
+
+2. Identify exactly where in the pipeline the 
+   deploy step happens — show the exact lines
+3. Confirm there is zero test step before the 
+   deploy — no pytest, no npm test, nothing
+4. Identify which branch triggers a production 
+   deploy right now — is it main, master, or 
+   every push?
+5. Propose the fix:
+   - Add a test stage that runs before deploy
+   - Make deploy conditional on tests passing
+   - Block merges to main if tests fail
+   - Identify if a staging deploy should happen 
+     before production (your teammate handles 
+     staging environment in Issue #32 — note 
+     this dependency)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add a mandatory test stage to the CI/CD pipeline 
+that blocks deployment if tests fail.
+
+Requirements:
+- Edit the existing pipeline config file to add 
+  a test stage before the deploy stage
+- The test stage must:
+  - Install dependencies from requirements.txt
+  - Run pytest tests/ -v --tb=short
+  - Run pytest --cov=. --cov-fail-under=40 so 
+    the pipeline fails if coverage drops below 40%
+  - Upload the coverage report as a pipeline 
+    artifact so it is visible in CI
+  - Fail the entire pipeline if any test fails — 
+    never continue to deploy on test failure
+
+- The deploy stage must:
+  - Have an explicit needs: [test] or depends_on 
+    the test stage
+  - Only run on pushes to main branch — not on 
+    every branch or every PR
+  - Never run if the test stage failed or was 
+    skipped
+
+- Add a separate lint stage that runs in parallel 
+  with the test stage:
+  - pip install flake8 && flake8 . --max-line-length=100
+  - This should warn but not block deploy — 
+    set allow_failure: true or continue-on-error: true
+    for now since linting is fixed in Issue #52
+
+- Add a pipeline status badge to README.md
+
+Show only changed lines and new additions with 
+file name. Do not touch application code.
+Phase 3 — Reviewer
+Review the CI/CD pipeline changes just made.
+
+Check:
+1. Does the test stage exist and run before deploy:
+
+   grep -n "pytest\|test stage\|run tests" \
+   .github/workflows/*.yml
+
+   Pass = pytest command present in a stage 
+   that precedes the deploy stage.
+
+2. Is the deploy stage blocked when tests fail — 
+   confirm the dependency is explicit:
+
+   grep -n "needs\|depends_on\|after_script" \
+   .github/workflows/*.yml
+
+   Pass = deploy stage has explicit dependency 
+   on test stage passing.
+
+3. Does the coverage threshold exist:
+
+   grep -n "cov-fail-under" .github/workflows/*.yml
+
+   Pass = --cov-fail-under=40 present in the 
+   pytest command.
+
+4. Is the deploy restricted to main branch only:
+
+   grep -n "branches\|only.*main\|push.*main" \
+   .github/workflows/*.yml
+
+   Pass = deploy step has a branch condition 
+   limiting it to main.
+
+5. Simulate a test failure locally and confirm 
+   the pipeline would block:
+
+   pytest tests/ -v --tb=short
+   echo "Exit code: $?"
+
+   Pass = if any test fails, exit code is 
+   non-zero — confirm the pipeline treats 
+   non-zero as a failure and stops.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #27.
+
+next
+
+Mar 31
+
+Clarified task ownership and assigned issue accordingly
+Clarified task ownership and assigned issue accordingly
+Issue #27 — No load or performance tests
+Category: Testing · Severity: Critical · Your task: 14/27
+
+Phase 1 — Architect
+Search the codebase for any existing load test, 
+performance test, or benchmarking setup.
+
+Do the following:
+1. Run these and show me every result:
+
+   find . -name "*.js" -path "*k6*"
+   find . -name "locustfile*"
+   grep -rn "locust\|k6\|artillery\|wrk" .
+
+   Confirm there is zero load testing anywhere
+
+2. Show me the current API endpoints that would 
+   be under the most stress in production — 
+   specifically:
+   - The metric ingestion endpoint
+   - The WebSocket connection endpoint
+   - The authentication endpoint
+   - The streaming SSE endpoints added in Issue #13
+
+3. For each endpoint identify:
+   - Expected requests per second under normal load
+   - Expected requests per second under peak load
+   - What failure looks like (timeout, 500, dropped 
+     WebSocket connection)
+
+4. Confirm whether k6 or Locust is preferred — 
+   check if Node.js or Python is more available 
+   in the dev environment:
+
+   node --version
+   python3 --version
+
+5. Propose the load test structure:
+   - Which tool to use and why
+   - Which 3 scenarios to test first
+   - What the pass/fail thresholds should be 
+     (e.g. p95 response time under 500ms)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement load tests using Locust (Python-based, 
+fits the existing stack).
+
+Requirements:
+
+Install and setup:
+- Add locust to requirements.txt
+- Create a tests/load/ folder
+- Create tests/load/locustfile.py
+
+Write 3 load test scenarios in locustfile.py:
+
+Scenario 1 — AuthLoadTest:
+- POST /auth/login with valid credentials
+- POST /auth/login with invalid credentials 
+  (10% of requests)
+- Measure: p95 response time must be under 500ms
+- Target: 50 concurrent users
+
+Scenario 2 — MetricIngestionTest:
+- POST to the metric ingestion endpoint with 
+  realistic fake metric payloads
+- Simulate 10 agents sending metrics every 5 seconds
+- Measure: p95 response time under 200ms
+- Target: 100 concurrent users
+
+Scenario 3 — DashboardLoadTest:
+- GET /api/metrics (recent data)
+- GET /api/alerts
+- GET /health
+- Simulate a user refreshing the dashboard 
+  every 10 seconds
+- Measure: p95 response time under 300ms
+- Target: 30 concurrent users
+
+Create tests/load/thresholds.json:
+{
+  "auth_p95_ms": 500,
+  "ingest_p95_ms": 200,
+  "dashboard_p95_ms": 300,
+  "error_rate_max_percent": 1
+}
+
+Create tests/load/run_load_tests.sh:
+- Runs each scenario for 60 seconds
+- Saves results to tests/load/results/
+- Exits with code 1 if any threshold is breached
+- Prints a clear PASS or FAIL summary at the end
+
+Add to CI pipeline as a manual trigger only — 
+not on every push:
+  workflow_dispatch or when: manual
+
+Show new files in full. Show changed lines 
+with file name and line number.
+Phase 3 — Reviewer
+Review the load test implementation just added.
+
+Check:
+1. Does locust install and the locustfile parse 
+   without errors:
+
+   pip install locust
+   locust --help
+   locust -f tests/load/locustfile.py --list
+
+   Pass = three task classes listed with no 
+   import errors.
+
+2. Does a short smoke run complete without 
+   crashing — run for 10 seconds with 5 users:
+
+   locust -f tests/load/locustfile.py \
+     --headless -u 5 -r 1 -t 10s \
+     --host http://localhost:8000
+
+   Pass = run completes, stats printed, 
+   no unhandled exceptions.
+
+3. Does the error rate stay under 1% during 
+   the smoke run — check the output:
+
+   Pass = "Failures" column shows 0 or <1% 
+   in the locust summary table.
+
+4. Does run_load_tests.sh exist and is 
+   it executable:
+
+   chmod +x tests/load/run_load_tests.sh
+   bash tests/load/run_load_tests.sh --dry-run
+
+   Pass = script runs without syntax errors 
+   and shows which tests it would execute.
+
+5. Is the load test job in CI configured as 
+   manual trigger only — not automatic:
+
+   grep -n "workflow_dispatch\|when.*manual" \
+   .github/workflows/*.yml
+
+   Pass = load test job has a manual trigger 
+   condition, not triggered on every push.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #29.
+
+next
+
+Mar 31
+
+Identified deployment vulnerability requiring mitigation strategy
+Identified deployment vulnerability requiring mitigation strategy
+Issue #29 — No rollback strategy
+Category: CI/CD · Severity: Critical · Your task: 15/27
+
+Phase 1 — Architect
+Search the codebase for any existing rollback, 
+revert, or deployment recovery logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "rollback\|revert\|previous.*deploy" .
+   grep -rn "rollback" .github/workflows/*.yml
+
+   Confirm there is zero rollback logic anywhere
+
+2. Show me the full current deploy stage in the 
+   CI/CD pipeline — exact file and every line 
+   of the deploy step
+3. Identify exactly how the app is deployed right 
+   now — Docker containers on GCP, direct GCP 
+   Cloud Run, or something else — so the rollback 
+   mechanism fits the deployment method
+4. Identify what a failed deployment looks like 
+   right now:
+   - Does the old version stay up or go down?
+   - Is there any health check after deploy?
+   - How long before someone notices it failed?
+5. Propose the rollback strategy:
+   - Tag every Docker image with the git commit 
+     SHA so previous versions are always available
+   - Add a post-deploy health check that triggers 
+     automatic rollback if it fails
+   - Add a manual rollback command for cases 
+     where automatic rollback is not enough
+   - Define what "failed deployment" means 
+     in measurable terms (health check returns 
+     503 for more than 60 seconds)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement a rollback strategy for the CI/CD pipeline.
+
+Requirements:
+
+Image tagging:
+- Edit the build step in the CI pipeline to tag 
+  every Docker image with both:
+  - The git commit SHA: image:$GITHUB_SHA
+  - latest: image:latest
+- Store the previous image tag before deploying:
+  PREVIOUS_IMAGE=$(docker inspect --format 
+  '{{.Config.Image}}' <container_name>)
+
+Post-deploy health check with auto rollback:
+- After every deploy add a health check step:
+  - Poll GET /health every 10 seconds
+  - Wait up to 120 seconds for a healthy response
+  - If healthy within 120 seconds: pass, continue
+  - If not healthy after 120 seconds: trigger 
+    automatic rollback to PREVIOUS_IMAGE and 
+    exit pipeline with code 1
+- Log clearly: "Deploy failed health check — 
+  rolling back to $PREVIOUS_IMAGE"
+
+Create scripts/rollback.sh:
+- Takes one argument: image tag to roll back to
+  Usage: bash scripts/rollback.sh abc123
+- If no argument given: rolls back to the 
+  last known good image tag stored in 
+  .last_good_deploy file
+- After successful rollback runs /health check 
+  to confirm the old version is up
+- Logs the rollback event with timestamp to 
+  deployments.log
+
+Create .last_good_deploy tracking:
+- After every successful deploy write the 
+  current commit SHA to .last_good_deploy
+- Add .last_good_deploy to .gitignore — it 
+  is a runtime file not a source file
+
+Add a manual rollback job to the CI pipeline:
+- Triggered by workflow_dispatch only
+- Takes a git SHA as input parameter
+- Runs scripts/rollback.sh with that SHA
+
+Show only new files and changed lines with 
+file name and line number. Do not touch 
+application code.
+Phase 3 — Reviewer
+Review the rollback strategy implementation 
+just added.
+
+Check:
+1. Is every Docker image tagged with the 
+   git commit SHA in the build step:
+
+   grep -n "GITHUB_SHA\|GIT_SHA\|commit.*tag" \
+   .github/workflows/*.yml
+
+   Pass = image tagged with commit SHA 
+   in the build stage.
+
+2. Does the post-deploy health check exist 
+   and have a timeout:
+
+   grep -n "health\|rollback\|120\|timeout" \
+   .github/workflows/*.yml
+
+   Pass = health check loop with timeout 
+   and rollback trigger visible.
+
+3. Does scripts/rollback.sh exist and handle 
+   a missing argument gracefully:
+
+   chmod +x scripts/rollback.sh
+   bash scripts/rollback.sh
+
+   Pass = prints usage instructions and 
+   exits with code 1 — does not attempt 
+   a rollback with no target.
+
+4. Does rollback.sh fall back to 
+   .last_good_deploy when no argument given:
+
+   echo "abc123" > .last_good_deploy
+   bash scripts/rollback.sh
+
+   Pass = script reads .last_good_deploy 
+   and uses abc123 as the rollback target.
+
+5. Is the manual rollback job in CI configured 
+   as workflow_dispatch with a SHA input:
+
+   grep -A 10 "workflow_dispatch" \
+   .github/workflows/*.yml
+
+   Pass = input parameter for git SHA 
+   visible under workflow_dispatch trigger.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #31.
+
+nexr
+
+12:42 AM
+
+Anticipated progression to next issue
+Anticipated progression to next issue
+Issue #31 — No test stage in CI pipeline
+Category: CI/CD · Severity: Critical · Your task: 16/27
+
+Phase 1 — Architect
+Open every CI/CD pipeline configuration file 
+in the codebase.
+
+Do the following:
+1. Show me the full contents of every pipeline 
+   file found:
+
+   find . -name "*.yml" -path "*github*"
+   find . -name "cloudbuild.yaml"
+   find . -name "Jenkinsfile"
+
+2. Map the exact sequence of stages as they 
+   exist right now — draw it like this:
+   push → [stage 1] → [stage 2] → deploy
+   Show what is currently between push and deploy
+
+3. Confirm there is no stage that runs tests, 
+   linting, or any validation before deploy — 
+   not even a placeholder
+
+4. Cross-check with Issue #25 which added a 
+   test stage to the pipeline — confirm whether 
+   that work is already merged or if this is 
+   a separate pipeline file that was missed
+
+5. If Issue #25 already added tests to this 
+   pipeline: show me exactly what is still 
+   missing — a separate environment, a 
+   separate pipeline, or a gap in coverage
+   If Issue #25 did NOT cover this file: 
+   propose the full stage sequence:
+   push → lint → test → build → deploy
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add a complete test stage to the CI pipeline 
+that was not covered in Issue #25.
+
+Requirements — only do the work not already 
+done in Issue #25:
+
+If this is a separate pipeline file:
+- Add these stages in order before deploy:
+  
+  Stage 1 — lint:
+  - pip install flake8 black
+  - flake8 . --max-line-length=100 --exit-zero
+  - black --check . --line-length=100
+  - continue-on-error: true (linting fixed in #52)
+
+  Stage 2 — test:
+  - pip install -r requirements.txt
+  - pytest tests/ -v --tb=short
+  - pytest tests/ --cov=. \
+      --cov-report=xml:coverage.xml \
+      --cov-fail-under=40
+  - Upload coverage.xml as pipeline artifact
+
+  Stage 3 — build:
+  - Only runs if test stage passed
+  - Builds Docker image tagged with commit SHA
+
+  Stage 4 — deploy:
+  - Only runs if build stage passed
+  - Only runs on main branch
+
+- Add pipeline status badge to README.md 
+  if not already there
+
+If this pipeline file already has a test 
+stage from Issue #25 but it has gaps:
+- Show me exactly which gaps exist and 
+  fill only those gaps
+- Do not duplicate what is already there
+
+Show only changed lines and new additions 
+with file name. Do not touch application code.
+Phase 3 — Reviewer
+Review the test stage addition to the CI pipeline.
+
+Check:
+1. Does the full pipeline now follow this sequence 
+   with no gaps:
+
+   grep -n "lint\|test\|build\|deploy" \
+   .github/workflows/*.yml
+
+   Pass = all four stages present in correct 
+   order in the pipeline file.
+
+2. Is the test stage explicitly blocking deploy — 
+   deploy cannot run if tests fail:
+
+   grep -n "needs\|depends_on\|if.*success" \
+   .github/workflows/*.yml
+
+   Pass = deploy stage has a hard dependency 
+   on test stage.
+
+3. Is coverage threshold enforced:
+
+   grep -n "cov-fail-under" \
+   .github/workflows/*.yml
+
+   Pass = --cov-fail-under=40 present.
+
+4. Is the coverage report uploaded as an artifact:
+
+   grep -n "upload-artifact\|coverage.xml" \
+   .github/workflows/*.yml
+
+   Pass = artifact upload step present 
+   after pytest runs.
+
+5. Validate the full pipeline syntax is correct 
+   by running the GitHub Actions validator 
+   or checking locally:
+
+   python3 -c "
+   import yaml
+   with open('.github/workflows/main.yml') as f:
+       data = yaml.safe_load(f)
+   print('Pipeline stages:', list(data['jobs'].keys()))
+   "
+
+   Pass = all job names print cleanly with 
+   no YAML parse errors.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #33.
+
+next
+
+1:46 AM
+
+Reconciled labeling discrepancies and prepared next issue
+Reconciled labeling discrepancies and prepared next issue
+Issue #33 — No rollback strategy
+Category: CI/CD · Severity: Critical · Your task: 17/27
+
+⚠️ Quick check before starting: Earlier in our session I mislabeled Issue #29 as "No rollback strategy" — that was actually wrong. Issue #29 is "No code coverage tracking." Run this first:
+
+bash
+grep -rn "rollback\|PREVIOUS_IMAGE\|last_good_deploy" \
+.github/workflows/*.yml scripts/
+```
+
+If `scripts/rollback.sh` already exists from that earlier session → skip to Phase 3 and just verify it. If nothing exists → run all three phases below.
+
+---
+
+### Phase 1 — Architect
+```
+Search the codebase for any existing rollback, 
+revert, or deployment recovery logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "rollback\|revert\|previous.*deploy" .
+   grep -rn "rollback" .github/workflows/*.yml
+
+   Confirm whether rollback logic exists or not
+
+2. Show me the full deploy stage in the CI/CD 
+   pipeline — every line of the deploy step
+3. Identify exactly how the app is deployed:
+   - Docker containers on GCP Cloud Run?
+   - GCP Compute Engine?
+   - Direct container deployment?
+   This determines what rollback mechanism fits
+
+4. Identify what a failed deployment looks like 
+   right now:
+   - Does the old version stay up or go down 
+     the moment a new deploy starts?
+   - Is there any health check after deploy?
+   - How long before someone notices a failure?
+
+5. Propose the rollback strategy:
+   - Tag every Docker image with git commit SHA 
+     so previous versions are always retrievable
+   - Post-deploy health check that auto-rolls 
+     back if the app is unhealthy after 120 seconds
+   - Manual rollback script for human-triggered 
+     recovery
+   - .last_good_deploy file to track the last 
+     known good commit SHA
+
+Do NOT write any code yet. Wait for my confirmation.
+```
+
+---
+
+### Phase 2 — Developer
+```
+Implement a complete rollback strategy for 
+the CI/CD pipeline.
+
+Requirements:
+
+Image tagging in the build step:
+- Tag every Docker image with both:
+  - Git commit SHA: image:$GITHUB_SHA
+  - latest: image:latest
+- Before deploying, capture the current 
+  running image tag:
+  PREVIOUS_IMAGE=$(docker inspect --format \
+  '{{.Config.Image}}' <container_name>)
+
+Post-deploy health check with auto rollback:
+- After every deploy add a health check loop:
+  - Poll GET /health every 10 seconds
+  - Wait up to 120 seconds for healthy response
+  - If healthy: write commit SHA to 
+    .last_good_deploy and continue
+  - If not healthy after 120 seconds:
+    - Log: "Deploy failed — rolling back 
+      to $PREVIOUS_IMAGE"
+    - Re-deploy PREVIOUS_IMAGE immediately
+    - Run /health again to confirm rollback 
+      succeeded
+    - Exit pipeline with code 1
+
+Create scripts/rollback.sh:
+- Takes one optional argument: image tag 
+  or commit SHA to roll back to
+- If no argument: reads from .last_good_deploy
+- If .last_good_deploy missing: exits with 
+  clear error message and code 1
+- After rolling back: polls /health for 
+  60 seconds to confirm old version is up
+- Logs every rollback event with timestamp 
+  to deployments.log:
+  "[2024-01-15 03:22:11] ROLLBACK to abc123 
+  — triggered by: manual"
+
+Add .last_good_deploy to .gitignore
+
+Add a manual rollback job to CI pipeline:
+- Triggered by workflow_dispatch only
+- Input parameter: git_sha (optional)
+- Runs scripts/rollback.sh with that input
+
+Show only new files and changed lines with 
+file name and line number. Do not touch 
+application code.
+```
+
+---
+
+### Phase 3 — Reviewer
+```
+Review the rollback strategy implementation.
+
+Check:
+1. Is every Docker image tagged with commit 
+   SHA in the build step:
+
+   grep -n "GITHUB_SHA\|GIT_SHA\|commit.*tag" \
+   .github/workflows/*.yml
+
+   Pass = image tagged with commit SHA 
+   in the build stage.
+
+2. Does the post-deploy health check loop 
+   exist with a 120 second timeout:
+
+   grep -n "health\|120\|timeout\|rollback" \
+   .github/workflows/*.yml
+
+   Pass = health check loop with timeout 
+   and rollback trigger visible.
+
+3. Does scripts/rollback.sh handle a missing 
+   argument by falling back to .last_good_deploy:
+
+   echo "testsha123" > .last_good_deploy
+   bash scripts/rollback.sh
+   echo "Exit: $?"
+
+   Pass = script reads .last_good_deploy 
+   and uses testsha123 as rollback target, 
+   exit code 0.
+
+4. Does scripts/rollback.sh fail cleanly 
+   when both argument and .last_good_deploy 
+   are missing:
+
+   rm -f .last_good_deploy
+   bash scripts/rollback.sh
+   echo "Exit: $?"
+
+   Pass = prints clear error message, 
+   exit code 1, does not touch anything.
+
+5. Is the manual rollback job in CI a 
+   workflow_dispatch with SHA input:
+
+   grep -A 10 "workflow_dispatch" \
+   .github/workflows/*.yml
+
+   Pass = input parameter for git_sha 
+   visible under workflow_dispatch trigger.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #35.
+
+/compact
+
+1:47 AM
+
+Recognized unexecutable command and prepared clarification
+Recognized unexecutable command and prepared clarification
+/compact is a Claude Code CLI command — it doesn't work here in the chat. But here's a quick summary so you can keep going without losing context:
+
+Resilo Audit — Your Odd Issues Progress
+
+#	Issue	Status
+#1	Hardcoded admin password	✅ Done
+#3	No account lockout	✅ Done
+#5	SQL injection in api_server.py	✅ Done
+#7	Wildcard CORS with credentials	✅ Done
+#9	No WebSocket backend	✅ Done
+#11	No TimescaleDB hypertables	✅ Done
+#13	No streaming endpoints	✅ Done
+#15	No backpressure handling	✅ Done
+#17	Manual CREATE TABLE in auth_system.py	✅ Done
+#19	No backup strategy	✅ Done
+#21	No DB health checks	✅ Done
+#23	Zero unit tests	✅ Done
+#25	CI deploys without tests	✅ Done
+#27	No load tests	✅ Done
+#29	No code coverage tracking	✅ Done
+#31	No test stage in CI	✅ Done
+#33	No rollback strategy	✅ Done
+#35	No deployment health checks	⬅️ Next
+#37	Missing env vars cause runtime failures	
+#39	No log aggregation	
+#41	No graceful shutdown	
+#43	No auto-scaling	
+#45	OpenTelemetry not configured	
+#47	Three parallel API implementations	
+#49	Global state everywhere	
+#51	Dead code	
+#53	Loose version constraints	
+17 done · 10 remaining
+
+Say next and I'll give you Issue #35.
+
+next
+
+1:51 AM
+
+Identified deployment health check deficiency
+Identified deployment health check deficiency
+Issue #35 — No deployment health checks
+Category: CI/CD · Severity: Warning · Your task: 18/27
+
+Phase 1 — Architect
+Search the codebase for any post-deployment 
+verification or service health confirmation logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "health.*deploy\|deploy.*health\|
+   post.*deploy\|verify.*deploy" .
+   grep -rn "health" .github/workflows/*.yml
+
+   Confirm whether any post-deploy health 
+   verification exists beyond what was added 
+   in Issue #33
+
+2. Show me the full deploy stage in the CI 
+   pipeline as it exists right now — every 
+   line after the deployment command
+
+3. Identify exactly what happens after the 
+   deploy command runs today:
+   - Does the pipeline immediately mark 
+     success after the deploy command exits?
+   - Is there any wait period before the 
+     next step?
+   - Is there any notification on failure?
+
+4. Identify all services that need health 
+   verification after a deploy:
+   - The main API server
+   - The WebSocket server
+   - The database connection
+   - Any background workers or agents
+
+5. Propose the health check strategy:
+   - A dedicated post-deploy verification 
+     script that checks every service
+   - Differentiate between a deploy that 
+     started vs a deploy that is actually 
+     serving traffic correctly
+   - Notification on failure (log, Slack 
+     webhook, or email)
+   - A maximum wait time before declaring 
+     the deploy failed
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add post-deployment health checks for every 
+service in the CI/CD pipeline.
+
+Requirements:
+
+Create scripts/verify_deploy.sh:
+- Checks every critical service in sequence:
+
+  Service 1 — API server:
+  - GET /health must return 200 with 
+    status: "healthy" within 60 seconds
+  - Poll every 5 seconds, timeout at 60
+
+  Service 2 — Database connectivity:
+  - GET /health response must show 
+    database: "connected"
+  - If database: "unreachable" appears 
+    trigger immediate alert
+
+  Service 3 — WebSocket server:
+  - Attempt a WebSocket connection to /ws
+  - Confirm it accepts the handshake 
+    within 30 seconds
+  - Use Python:
+    python3 -c "
+    import websocket
+    ws = websocket.create_connection(
+      'ws://localhost:8000/ws')
+    print('WS OK:', ws.connected)
+    ws.close()
+    "
+
+  Service 4 — Streaming endpoints:
+  - curl -s --max-time 10 -N 
+    http://localhost:8000/stream/metrics
+  - Confirm at least one data: line 
+    is received within 10 seconds
+
+- Exit code 0 if all services healthy
+- Exit code 1 if any service fails
+- Log each check result with timestamp:
+  "[OK] API /health responded in 340ms"
+  "[FAIL] WebSocket did not accept 
+  connection after 30s"
+
+- Read the target host from DEPLOY_HOST 
+  env variable — never hardcode localhost 
+  for production checks
+
+Add verify_deploy.sh to CI pipeline:
+- Runs immediately after the deploy step
+- If it exits with code 1:
+  - Trigger scripts/rollback.sh automatically
+  - Send a notification if SLACK_WEBHOOK_URL 
+    is set in .env:
+    curl -X POST $SLACK_WEBHOOK_URL \
+    -d '{"text":"Deploy failed health check 
+    — rollback triggered for $GITHUB_SHA"}'
+  - Exit pipeline with code 1
+
+Add to .env.example:
+  DEPLOY_HOST=https://your-app-domain.com
+  SLACK_WEBHOOK_URL=
+
+Show only new files and changed lines with 
+file name and line number. Do not touch 
+application code.
+Phase 3 — Reviewer
+Review the deployment health check implementation 
+just added.
+
+Check:
+1. Does scripts/verify_deploy.sh exist and 
+   check all 4 services:
+
+   grep -n "health\|websocket\|stream\|database" \
+   scripts/verify_deploy.sh
+
+   Pass = all 4 service checks present 
+   in the script.
+
+2. Does the script exit with code 1 on 
+   any failure — test by pointing it at 
+   a stopped service:
+
+   docker compose stop api
+   DEPLOY_HOST=http://localhost:8000 \
+   bash scripts/verify_deploy.sh
+   echo "Exit: $?"
+   docker compose start api
+
+   Pass = exit code 1 with a clear 
+   [FAIL] log line for the API service.
+
+3. Is verify_deploy.sh called in the CI 
+   pipeline after the deploy step:
+
+   grep -n "verify_deploy\|post.*deploy" \
+   .github/workflows/*.yml
+
+   Pass = verify_deploy.sh called 
+   immediately after deploy step.
+
+4. Does pipeline failure trigger rollback:
+
+   grep -n "rollback\|on.*failure" \
+   .github/workflows/*.yml
+
+   Pass = rollback.sh called when 
+   verify_deploy.sh exits with code 1.
+
+5. Is DEPLOY_HOST read from env — 
+   not hardcoded as localhost:
+
+   grep -n "DEPLOY_HOST\|localhost" \
+   scripts/verify_deploy.sh
+
+   Pass = DEPLOY_HOST variable used, 
+   no hardcoded localhost in production 
+   check commands.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #37.
+
+next
+
+1:58 AM
+
+Examined runtime environment variable issue severity
+Examined runtime environment variable issue severity
+Issue #37 — Missing env vars cause runtime failures not startup failures
+Category: CI/CD · Severity: Warning · Your task: 19/27
+
+Phase 1 — Architect
+Search the entire codebase for every os.getenv() 
+and os.environ call.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "os.getenv\|os.environ" .
+   grep -rn "process.env" . --include="*.js"
+
+   List every environment variable the app 
+   reads and where it reads it
+
+2. For each variable found identify:
+   - Does it have a fallback default or not?
+   - Is it read at startup or deep inside 
+     a function called at request time?
+   - What breaks if it is missing — silent 
+     wrong behaviour, a crash, or nothing?
+
+3. Identify the most dangerous ones — variables 
+   that are read lazily at request time meaning 
+   the app starts fine but crashes on first use:
+   Example: a database URL read inside a 
+   request handler rather than at module load
+
+4. Check if there is any startup validation 
+   that checks all required vars exist before 
+   the app begins serving traffic:
+
+   grep -rn "startup\|on_startup\|check_env\|
+   required.*env" .
+
+   Confirm whether any such check exists
+
+5. Propose the fix:
+   - A single validate_environment() function 
+     called before the app starts
+   - A REQUIRED_ENV_VARS list that is the 
+     single source of truth
+   - Clear error messages that name the 
+     missing variable and explain what it is for
+   - App must exit with code 1 if any 
+     required variable is missing
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add a startup environment validation that makes 
+the app fail immediately on launch if any 
+required variable is missing.
+
+Requirements:
+
+Create a new file config/env_validator.py:
+
+REQUIRED_ENV_VARS = [
+    ("POSTGRES_URL",        "PostgreSQL connection string"),
+    ("JWT_SECRET",          "Secret key for signing JWT tokens"),
+    ("ADMIN_DEFAULT_PASSWORD", "Initial admin account password"),
+    ("ALLOWED_ORIGINS",     "Comma-separated list of allowed CORS origins"),
+    ("BACKUP_DIR",          "Directory path for database backups"),
+    ("DEPLOY_HOST",         "Production hostname for health checks"),
+]
+
+OPTIONAL_ENV_VARS_WITH_DEFAULTS = [
+    ("LOCKOUT_DURATION_MINUTES", "15"),
+    ("MAX_FAILED_ATTEMPTS",      "5"),
+    ("WS_QUEUE_MAX_SIZE",        "100"),
+    ("MAX_CONNECTED_CLIENTS",    "50"),
+    ("SSE_HEARTBEAT_SECONDS",    "30"),
+    ("DB_CONNECT_RETRIES",       "5"),
+    ("DB_CONNECT_RETRY_DELAY",   "3"),
+    ("BACKUP_RETENTION_DAYS",    "7"),
+]
+
+def validate_environment():
+    missing = []
+    for var, description in REQUIRED_ENV_VARS:
+        if not os.getenv(var):
+            missing.append(f"  {var}: {description}")
+    
+    if missing:
+        print("ERROR: Missing required environment variables:")
+        for m in missing:
+            print(m)
+        print("\nAdd these to your .env file and restart.")
+        sys.exit(1)
+
+    for var, default in OPTIONAL_ENV_VARS_WITH_DEFAULTS:
+        if not os.getenv(var):
+            os.environ[var] = default
+
+    print("Environment validated. All required vars present.")
+
+- Call validate_environment() as the very 
+  first thing in every app entry point:
+  - api_server.py (top of file before app creation)
+  - auth_api.py (top of file before app creation)
+  - core_api.py (top of file before app creation)
+
+- Remove every silent fallback default from 
+  os.getenv() calls for REQUIRED_ENV_VARS:
+  Change: os.getenv("JWT_SECRET", "default-secret")
+  To:     os.getenv("JWT_SECRET")
+  The validator already ensures it exists
+
+- Update .env.example to include every variable 
+  in REQUIRED_ENV_VARS with a clear placeholder:
+  JWT_SECRET=set-in-env-file
+
+Show only new files and changed lines with 
+file name and line number.
+Phase 3 — Reviewer
+Review the environment validation implementation 
+just added.
+
+Check:
+1. Does validate_environment() exist and get 
+   called at the top of every entry point:
+
+   grep -n "validate_environment" \
+   api_server.py auth_api.py core_api.py
+
+   Pass = import and call present in all 
+   three files.
+
+2. Does the app refuse to start with a clear 
+   error if a required variable is missing — 
+   test by temporarily unsetting one:
+
+   unset JWT_SECRET
+   python api_server.py
+   echo "Exit: $?"
+
+   Pass = prints "Missing required environment 
+   variables: JWT_SECRET" and exits with 
+   code 1 before serving any traffic.
+
+3. Are all silent fallback defaults removed 
+   for required variables:
+
+   grep -rn "getenv.*default.*secret\|
+   getenv.*default.*password\|
+   getenv.*default.*postgres" .
+
+   Pass = zero results — no required variable 
+   has a hardcoded fallback.
+
+4. Do optional variables get their defaults 
+   applied automatically — confirm one:
+
+   unset DB_CONNECT_RETRIES
+   python3 -c "
+   from config.env_validator import validate_environment
+   import os
+   validate_environment()
+   print(os.getenv('DB_CONNECT_RETRIES'))
+   "
+
+   Pass = prints 5 without error.
+
+5. Is .env.example updated with all required 
+   variables listed with placeholders:
+
+   grep -c "replace-with\|your-" .env.example
+
+   Pass = at least 6 placeholder values 
+   present — one per required variable.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #39.
+
+next
+
+2:26 AM
+
+Navigated to next task in workflow sequence
+Navigated to next task in workflow sequence
+Issue #39 — No log aggregation
+Category: Production · Severity: Critical · Your task: 20/27
+
+Phase 1 — Architect
+Search the entire codebase for all logging 
+and print statements.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "print(\|logging\.\|logger\." .
+   grep -rn "LOG_LEVEL\|log_level" .
+
+   Show how many of each exist and which 
+   files they are spread across
+
+2. Show me the current docker-compose.yml 
+   logging configuration — specifically:
+   - Is there a logging driver configured?
+   - Are there any log volume mounts?
+   - Is there a centralized log collector 
+     service (ELK, Loki, Fluentd)?
+
+3. Identify what happens to logs right now:
+   - Where do they go (stdout, files, nowhere)?
+   - Are logs from different containers 
+     visible together anywhere?
+   - Is there any way to search logs across 
+     services today?
+
+4. Check if any observability tooling is 
+   already in docker-compose but unwired — 
+   Prometheus, Grafana, Loki, or similar:
+
+   grep -n "loki\|fluentd\|elasticsearch\|
+   kibana\|promtail" docker-compose.yml
+
+5. Propose the log aggregation approach:
+   - Loki + Promtail is the lightest option 
+     and fits the existing Grafana setup
+   - Structured JSON logging from all services
+   - A single docker-compose log stack that 
+     collects from all containers
+   - Log retention policy
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Implement centralized log aggregation using 
+Loki and Promtail alongside the existing 
+Grafana instance.
+
+Requirements:
+
+Structured logging in application code:
+- Create config/logger.py:
+
+  import logging
+  import json
+  import sys
+  from datetime import datetime, timezone
+
+  class JSONFormatter(logging.Formatter):
+      def format(self, record):
+          return json.dumps({
+              "timestamp": datetime.now(
+                timezone.utc).isoformat(),
+              "level":     record.levelname,
+              "service":   record.name,
+              "message":   record.getMessage(),
+              "file":      record.filename,
+              "line":      record.lineno,
+          })
+
+  def get_logger(name: str) -> logging.Logger:
+      logger = logging.getLogger(name)
+      handler = logging.StreamHandler(sys.stdout)
+      handler.setFormatter(JSONFormatter())
+      logger.addHandler(handler)
+      logger.setLevel(
+          os.getenv("LOG_LEVEL", "INFO").upper())
+      return logger
+
+- Replace every print() call in the codebase 
+  with the appropriate logger call:
+  print("User logged in") →
+  logger.info("User logged in", 
+    extra={"user_id": user_id})
+
+- Replace bare logging.basicConfig() calls 
+  with get_logger() from config/logger.py
+
+- Import and use get_logger in every module 
+  that currently uses print() or bare logging
+
+Add Loki and Promtail to docker-compose.yml:
+
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+      - ./config/loki.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/promtail.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+
+Create config/loki.yml:
+  auth_enabled: false
+  server:
+    http_listen_port: 3100
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: /loki/index
+      cache_location: /loki/cache
+    filesystem:
+      directory: /loki/chunks
+  limits_config:
+    retention_period: 7d
+  compactor:
+    retention_enabled: true
+
+Create config/promtail.yml:
+  server:
+    http_listen_port: 9080
+  clients:
+    - url: http://loki:3100/loki/api/v1/push
+  scrape_configs:
+    - job_name: resilo
+      docker_sd_configs:
+        - host: unix:///var/run/docker.sock
+          refresh_interval: 5s
+      relabel_configs:
+        - source_labels: [__meta_docker_container_name]
+          target_label: container
+
+Wire Loki as a Grafana datasource:
+- Add to config/grafana/provisioning/
+  datasources/loki.yml:
+  apiVersion: 1
+  datasources:
+    - name: Loki
+      type: loki
+      url: http://loki:3100
+      isDefault: false
+
+Add LOG_LEVEL=INFO to .env.example
+
+Show new files in full. Show changed lines 
+with file name and line number.
+Phase 3 — Reviewer
+Review the log aggregation implementation 
+just added.
+
+Check:
+1. Is structured JSON logging working — 
+   start the app and confirm logs are JSON:
+
+   python api_server.py 2>&1 | head -5 | \
+   python3 -m json.tool
+
+   Pass = valid JSON with timestamp, level, 
+   service, message fields on every line.
+
+2. Are all print() calls replaced — confirm 
+   none remain in application code:
+
+   grep -rn "^[^#]*print(" \
+   api_server.py auth_system.py core_api.py
+
+   Pass = zero results (excluding comments 
+   and test files).
+
+3. Do Loki and Promtail start cleanly:
+
+   docker compose up loki promtail -d
+   docker compose ps
+
+   Pass = both containers show "healthy" 
+   or "running" status.
+
+4. Are logs flowing into Loki — query it 
+   directly:
+
+   curl -s "http://localhost:3100/loki/api/\
+v1/query?query={container=~\".+\"}" | \
+   python3 -m json.tool | head -30
+
+   Pass = at least one log entry returned 
+   with container label and message field.
+
+5. Is Loki wired as a Grafana datasource — 
+   confirm the provisioning file exists:
+
+   cat config/grafana/provisioning/\
+datasources/loki.yml
+
+   Pass = file exists with correct Loki 
+   URL and datasource type.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #41.
+
+next
+
+2:41 AM
+
+Navigated software issue and task progression sequentially
+Navigated software issue and task progression sequentially
+Issue #41 — No graceful shutdown
+Category: Production · Severity: Critical · Your task: 21/27
+
+Phase 1 — Architect
+Search the entire codebase for any SIGTERM, 
+SIGINT, or shutdown handling logic.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "SIGTERM\|SIGINT\|signal\|shutdown\|
+   atexit\|on_shutdown" .
+
+   Confirm there is zero graceful shutdown 
+   handling anywhere
+
+2. Show me how each service is started — 
+   the exact startup command in docker-compose.yml 
+   and any Dockerfile CMD or ENTRYPOINT lines
+
+3. Identify what is in flight when a shutdown 
+   signal arrives that would be lost or corrupted:
+   - Active WebSocket connections
+   - In-progress database writes
+   - Pending metric ingestion requests
+   - Active SSE streams
+   - Any background worker threads
+
+4. Check if uvicorn or gunicorn is used as 
+   the ASGI/WSGI server — they have built-in 
+   graceful shutdown that may need to be 
+   configured:
+
+   grep -rn "uvicorn\|gunicorn" \
+   docker-compose.yml requirements.txt
+
+5. Propose the shutdown sequence:
+   - Stop accepting new connections first
+   - Complete in-flight requests up to a 
+     timeout (SHUTDOWN_TIMEOUT_SECONDS)
+   - Close WebSocket connections cleanly 
+     with a close frame
+   - Flush any pending writes to the database
+   - Close database connection pool
+   - Exit with code 0
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add graceful shutdown handling to every 
+service in the codebase.
+
+Requirements:
+
+Create config/shutdown.py:
+
+  import signal
+  import sys
+  import asyncio
+  import logging
+
+  logger = logging.getLogger(__name__)
+
+  _shutdown_event = asyncio.Event()
+  _active_connections = set()
+
+  def register_connection(conn):
+      _active_connections.add(conn)
+
+  def unregister_connection(conn):
+      _active_connections.discard(conn)
+
+  async def shutdown_handler(signal_name: str):
+      logger.info(
+        f"Received {signal_name} — starting 
+        graceful shutdown")
+      _shutdown_event.set()
+
+      timeout = int(os.getenv(
+        "SHUTDOWN_TIMEOUT_SECONDS", "30"))
+
+      # Close all active WebSocket connections
+      for conn in list(_active_connections):
+          try:
+              await conn.close(
+                code=1001, 
+                reason="Server shutting down")
+          except Exception:
+              pass
+
+      # Wait for in-flight requests to complete
+      logger.info(
+        f"Waiting up to {timeout}s for 
+        in-flight requests to complete")
+      await asyncio.sleep(timeout)
+      logger.info("Shutdown complete")
+      sys.exit(0)
+
+  def register_signal_handlers(app):
+      loop = asyncio.get_event_loop()
+      for sig in (signal.SIGTERM, signal.SIGINT):
+          loop.add_signal_handler(
+              sig,
+              lambda s=sig: asyncio.create_task(
+                shutdown_handler(s.name)))
+
+- Call register_signal_handlers(app) in 
+  every app entry point after the app 
+  is created:
+  - api_server.py
+  - auth_api.py  
+  - core_api.py
+
+- Register every WebSocket connection 
+  on connect and unregister on disconnect:
+  On connect:  shutdown.register_connection(ws)
+  On disconnect: shutdown.unregister_connection(ws)
+
+- Add SHUTDOWN_TIMEOUT_SECONDS=30 to .env.example
+
+Docker-level graceful shutdown:
+- Add stop_grace_period to every service 
+  in docker-compose.yml:
+  stop_grace_period: 35s
+  (5 seconds more than SHUTDOWN_TIMEOUT_SECONDS 
+  so Docker waits for the app to finish)
+
+- Ensure every service uses exec form in 
+  Dockerfile CMD — not shell form:
+  Correct:   CMD ["python", "api_server.py"]
+  Wrong:     CMD python api_server.py
+  Shell form prevents SIGTERM from reaching 
+  the Python process
+
+Show only new files and changed lines with 
+file name and line number. Do not change 
+any business logic.
+Phase 3 — Reviewer
+Review the graceful shutdown implementation 
+just added.
+
+Check:
+1. Are signal handlers registered in all 
+   three entry points:
+
+   grep -n "register_signal_handlers" \
+   api_server.py auth_api.py core_api.py
+
+   Pass = import and call present in 
+   all three files.
+
+2. Does the app handle SIGTERM cleanly — 
+   test by sending it while a request 
+   is in flight:
+
+   python api_server.py &
+   APP_PID=$!
+   sleep 2
+   kill -SIGTERM $APP_PID
+   wait $APP_PID
+   echo "Exit: $?"
+
+   Pass = "Graceful shutdown" log line 
+   appears, exit code 0.
+
+3. Does the Docker stop_grace_period exist 
+   for every service:
+
+   grep -n "stop_grace_period" docker-compose.yml
+
+   Pass = stop_grace_period: 35s present 
+   for every app service.
+
+4. Are all Dockerfile CMD entries using 
+   exec form — not shell form:
+
+   grep -rn "^CMD" */Dockerfile Dockerfile
+
+   Pass = every CMD line uses 
+   ["python", "..."] bracket form — 
+   no bare string CMD.
+
+5. Is SHUTDOWN_TIMEOUT_SECONDS in .env.example:
+
+   grep "SHUTDOWN_TIMEOUT_SECONDS" .env.example
+
+   Pass = present with value 30.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #43.
+
+next
+
+2:47 AM
+
+Catalogued critical production issue and task progress
+Catalogued critical production issue and task progress
+Issue #43 — No auto-scaling
+Category: Production · Severity: Critical · Your task: 22/27
+
+Phase 1 — Architect
+Search the codebase for any auto-scaling, 
+resource limits, or container scaling config.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "scale\|replicas\|autoscal\|
+   cpu.*limit\|memory.*limit" docker-compose.yml
+   grep -rn "HPA\|horizontal.*pod\|
+   autoscal" .
+
+   Confirm there is zero scaling config anywhere
+
+2. Show me the full docker-compose.yml — 
+   specifically every service definition 
+   including any deploy blocks
+
+3. Identify how the app is deployed in 
+   production right now:
+   - Pure docker-compose on a single VM?
+   - GCP Cloud Run?
+   - GCP GKE (Kubernetes)?
+   - Something else?
+   This determines which scaling mechanism 
+   is appropriate
+
+4. Identify which services are the bottleneck 
+   under load based on the load tests from 
+   Issue #27 — which service hits its limit 
+   first under 100 concurrent users?
+
+5. Propose the scaling strategy appropriate 
+   for the deployment method:
+   - If docker-compose: add resource limits 
+     and document manual scaling steps — 
+     docker-compose does not support auto-scaling
+   - If Cloud Run: add min/max instances 
+     and concurrency config
+   - If GKE: add HorizontalPodAutoscaler
+   - In all cases: add resource limits 
+     (CPU and memory) as a minimum
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Add resource limits and auto-scaling 
+configuration appropriate for the deployment.
+
+Requirements:
+
+For docker-compose (development + single VM):
+- Add deploy blocks with resource limits 
+  to every service in docker-compose.yml:
+
+  api:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  Use these limits per service:
+  - api_server:    cpu 1.0,  memory 512M
+  - auth_api:      cpu 0.5,  memory 256M
+  - core_api:      cpu 0.5,  memory 256M
+  - websocket:     cpu 0.5,  memory 256M
+  - postgres:      cpu 2.0,  memory 1G
+  - loki:          cpu 0.5,  memory 256M
+  - promtail:      cpu 0.25, memory 128M
+  - grafana:       cpu 0.5,  memory 256M
+  - prometheus:    cpu 0.5,  memory 256M
+
+Create config/cloudrun.yml for GCP Cloud Run:
+  apiVersion: serving.knative.dev/v1
+  kind: Service
+  metadata:
+    name: resilo-api
+  spec:
+    template:
+      metadata:
+        annotations:
+          autoscaling.knative.dev/minScale: "1"
+          autoscaling.knative.dev/maxScale: "10"
+          autoscaling.knative.dev/target: "80"
+      spec:
+        containerConcurrency: 80
+        timeoutSeconds: 300
+        containers:
+          - image: gcr.io/PROJECT_ID/resilo-api
+            resources:
+              limits:
+                cpu: "2"
+                memory: 512Mi
+
+Create scripts/scale.sh for manual scaling 
+on docker-compose deployments:
+- Takes two arguments: service name and 
+  replica count
+  Usage: bash scripts/scale.sh api_server 3
+- Runs: docker compose up -d --scale 
+  $SERVICE=$REPLICAS
+- Verifies all replicas are healthy after 
+  scaling using /health endpoint
+- Logs the scale event with timestamp 
+  to deployments.log
+
+Add to .env.example:
+  MIN_INSTANCES=1
+  MAX_INSTANCES=10
+  TARGET_CONCURRENCY=80
+
+Show only new files and changed lines with 
+file name and line number. Do not touch 
+application code.
+Phase 3 — Reviewer
+Review the auto-scaling and resource limits 
+implementation just added.
+
+Check:
+1. Do all services in docker-compose.yml 
+   have resource limits defined:
+
+   grep -A 8 "deploy:" docker-compose.yml
+
+   Pass = every app service has a deploy 
+   block with cpus and memory limits.
+
+2. Do the resource limits apply correctly — 
+   start the stack and confirm limits are 
+   enforced:
+
+   docker compose up -d
+   docker stats --no-stream
+
+   Pass = every container shows a memory 
+   limit in the LIMIT column — not 0B 
+   or unlimited.
+
+3. Does scripts/scale.sh exist and handle 
+   a missing argument gracefully:
+
+   chmod +x scripts/scale.sh
+   bash scripts/scale.sh
+   echo "Exit: $?"
+
+   Pass = prints usage instructions and 
+   exits with code 1.
+
+4. Does scale.sh correctly scale a service 
+   and verify health:
+
+   bash scripts/scale.sh api_server 2
+   docker compose ps api_server
+
+   Pass = 2 running instances of api_server 
+   visible with healthy status.
+
+5. Does config/cloudrun.yml exist with 
+   min/max instances and concurrency config:
+
+   grep -n "minScale\|maxScale\|
+   containerConcurrency" config/cloudrun.yml
+
+   Pass = all three annotations present 
+   with numeric values.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #45.
+
+next
+
+2:54 AM
+
+Identified configuration issue and progressed through task sequence
+Identified configuration issue and progressed through task sequence
+Issue #45 — OpenTelemetry imported but not configured properly
+Category: Production · Severity: Warning · Your task: 23/27
+
+Phase 1 — Architect
+Search the codebase for all OpenTelemetry 
+imports and configuration.
+
+Do the following:
+1. Run these and show me every result:
+
+   grep -rn "opentelemetry\|from opentelemetry\|
+   import opentelemetry" .
+   grep -rn "tracer\|TracerProvider\|
+   MeterProvider\|OTEL_" .
+
+   Show every file that references OpenTelemetry
+
+2. For each file found show:
+   - What is imported
+   - What is actually used vs just imported 
+     and never called
+   - Whether a TracerProvider or MeterProvider 
+     is ever initialized
+
+3. Check if any OTEL environment variables 
+   are set in .env or .env.example:
+
+   grep -rn "OTEL_\|OTLP_" .env .env.example
+
+   Confirm whether the exporter endpoint 
+   is configured anywhere
+
+4. Check docker-compose.yml for any 
+   OpenTelemetry collector service:
+
+   grep -rn "otel\|opentelemetry\|collector" \
+   docker-compose.yml
+
+5. Propose the fix:
+   - A single otel_setup() function that 
+     initializes tracing and metrics properly
+   - An OTLP exporter pointed at a collector 
+     or directly at Grafana Tempo
+   - Auto-instrumentation for FastAPI/Flask 
+     HTTP requests
+   - Propagation of trace IDs into log output 
+     so logs and traces are correlated
+   - Fallback to no-op if OTEL is not 
+     configured (so dev environments work 
+     without a collector)
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Properly configure OpenTelemetry tracing 
+and metrics across the codebase.
+
+Requirements:
+
+Create config/otel.py:
+
+  from opentelemetry import trace, metrics
+  from opentelemetry.sdk.trace import TracerProvider
+  from opentelemetry.sdk.trace.export import (
+      BatchSpanProcessor,
+      ConsoleSpanExporter,
+  )
+  from opentelemetry.sdk.metrics import MeterProvider
+  from opentelemetry.sdk.metrics.export import (
+      PeriodicExportingMetricReader,
+  )
+  from opentelemetry.exporter.otlp.proto.grpc.trace_exporter\
+      import OTLPSpanExporter
+  from opentelemetry.exporter.otlp.proto.grpc\
+      .metric_exporter import OTLPMetricExporter
+  from opentelemetry.sdk.resources import Resource
+  import os
+
+  def setup_otel(service_name: str):
+      resource = Resource.create({
+          "service.name": service_name,
+          "service.version": os.getenv(
+            "APP_VERSION", "0.0.1"),
+          "deployment.environment": os.getenv(
+            "ENVIRONMENT", "development"),
+      })
+
+      otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+
+      # Tracing
+      if otlp_endpoint:
+          span_exporter = OTLPSpanExporter(
+            endpoint=otlp_endpoint)
+      else:
+          span_exporter = ConsoleSpanExporter()
+
+      tracer_provider = TracerProvider(resource=resource)
+      tracer_provider.add_span_processor(
+          BatchSpanProcessor(span_exporter))
+      trace.set_tracer_provider(tracer_provider)
+
+      # Metrics
+      if otlp_endpoint:
+          metric_exporter = OTLPMetricExporter(
+            endpoint=otlp_endpoint)
+          reader = PeriodicExportingMetricReader(
+            metric_exporter,
+            export_interval_millis=int(os.getenv(
+              "OTEL_METRIC_EXPORT_INTERVAL_MS", "30000")))
+          meter_provider = MeterProvider(
+            resource=resource, 
+            metric_readers=[reader])
+          metrics.set_meter_provider(meter_provider)
+
+      return trace.get_tracer(service_name)
+
+Add auto-instrumentation to every entry point:
+- api_server.py — add after app creation:
+  from opentelemetry.instrumentation.flask \
+      import FlaskInstrumentor
+  from config.otel import setup_otel
+  tracer = setup_otel("resilo-api")
+  FlaskInstrumentor().instrument_app(app)
+
+- core_api.py — add after app creation:
+  from opentelemetry.instrumentation.fastapi \
+      import FastAPIInstrumentor
+  from config.otel import setup_otel
+  tracer = setup_otel("resilo-core")
+  FastAPIInstrumentor.instrument_app(app)
+
+- auth_api.py — add after app creation:
+  from config.otel import setup_otel
+  tracer = setup_otel("resilo-auth")
+  FastAPIInstrumentor.instrument_app(app)
+
+Correlate trace IDs with logs in config/logger.py:
+- Update JSONFormatter.format() to include 
+  the current trace ID if one exists:
+
+  from opentelemetry import trace as otel_trace
+  span = otel_trace.get_current_span()
+  ctx = span.get_span_context()
+  log_entry["trace_id"] = format(
+    ctx.trace_id, "032x") if ctx.is_valid else None
+
+Add to requirements.txt:
+  opentelemetry-api
+  opentelemetry-sdk
+  opentelemetry-exporter-otlp-proto-grpc
+  opentelemetry-instrumentation-flask
+  opentelemetry-instrumentation-fastapi
+
+Add to .env.example:
+  OTEL_EXPORTER_OTLP_ENDPOINT=
+  OTEL_METRIC_EXPORT_INTERVAL_MS=30000
+  APP_VERSION=0.0.1
+  ENVIRONMENT=development
+
+Show only new files and changed lines with 
+file name and line number.
+Phase 3 — Reviewer
+Review the OpenTelemetry configuration 
+just added.
+
+Check:
+1. Does setup_otel() get called in all 
+   three entry points:
+
+   grep -n "setup_otel\|FlaskInstrumentor\|
+   FastAPIInstrumentor" \
+   api_server.py auth_api.py core_api.py
+
+   Pass = setup_otel() call and instrumentor 
+   present in all three files.
+
+2. Does the app start cleanly without an 
+   OTEL endpoint configured — fallback to 
+   console exporter:
+
+   unset OTEL_EXPORTER_OTLP_ENDPOINT
+   python api_server.py &
+   sleep 3
+   curl http://localhost:5000/health
+   kill %1
+
+   Pass = app starts, health returns 200, 
+   span output appears in console stdout 
+   with no errors.
+
+3. Do JSON logs include trace_id field 
+   when a request is in flight:
+
+   python api_server.py 2>&1 &
+   curl http://localhost:5000/health
+   kill %1
+
+   Pass = log output contains 
+   "trace_id": "..." field — not null — 
+   for the request log line.
+
+4. Are all new OpenTelemetry packages 
+   in requirements.txt:
+
+   grep -n "opentelemetry" requirements.txt
+
+   Pass = all 5 packages listed.
+
+5. Does the app work correctly with 
+   OTEL fully disabled — set endpoint 
+   to empty and confirm no crash:
+
+   OTEL_EXPORTER_OTLP_ENDPOINT="" \
+   python3 -c "
+   from config.otel import setup_otel
+   tracer = setup_otel('test')
+   print('OTEL init OK:', tracer is not None)
+   "
+
+   Pass = prints "OTEL init OK: True" 
+   with no import errors or exceptions.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #47.
+
+next
+
+11:07 AM
+
+Synthesized multiple API framework architectures
+Synthesized multiple API framework architectures
+Issue #47 — Three parallel API implementations
+Category: Code Quality · Severity: Critical · Your task: 24/27
+
+Phase 1 — Architect
+Map every API implementation in the codebase 
+completely before touching anything.
+
+Do the following:
+1. Run these and show me every result:
+
+   find . -name "*.py" | xargs grep -l \
+   "Flask\|FastAPI\|@app.route\|@router" 
+   grep -rn "app = Flask\|app = FastAPI\|
+   APIRouter" .
+
+   List every file that creates an API 
+   application or router
+
+2. For each API file found show:
+   - Which framework it uses
+   - How many endpoints it defines
+   - Which endpoints overlap with another 
+     API file (same path, same method)
+   - Whether it is actually running in 
+     production or is dead code
+
+3. Draw the full overlap map — for every 
+   endpoint that exists in more than one 
+   file show:
+   - Which file is the authoritative version
+   - Which file is the duplicate
+   - Whether they have diverged (different 
+     logic for the same route)
+
+4. Confirm which API is actually serving 
+   production traffic right now — check 
+   docker-compose.yml for which files 
+   are actually started:
+
+   grep -n "command\|entrypoint" \
+   docker-compose.yml
+
+5. Propose the consolidation plan:
+   - Identify the one API framework to keep 
+     (FastAPI preferred — async, typed, 
+     better for the WebSocket/SSE work 
+     already done)
+   - List which endpoints need to be migrated 
+     from Flask to FastAPI
+   - Identify any Flask-specific features 
+     that need a FastAPI equivalent
+   - Propose the order of migration to 
+     avoid breaking production
+
+Do NOT write any code yet. Wait for my confirmation.
+Phase 2 — Developer
+Consolidate all API implementations into 
+a single FastAPI application.
+
+Requirements:
+
+Step 1 — Create the unified router structure:
+- Create api/ folder with this structure:
+  api/__init__.py
+  api/auth.py      ← auth endpoints
+  api/metrics.py   ← metric endpoints  
+  api/alerts.py    ← alert endpoints
+  api/agents.py    ← agent endpoints
+  api/health.py    ← health endpoint
+  api/websocket.py ← WebSocket endpoint
+  api/stream.py    ← SSE stream endpoints
+
+- Each file uses APIRouter:
+  from fastapi import APIRouter
+  router = APIRouter(prefix="/api/v1")
+
+Step 2 — Migrate every Flask endpoint 
+to the appropriate FastAPI router:
+- Convert @app.route to @router.get/@router.post
+- Convert Flask request.json to 
+  Pydantic request body models
+- Convert Flask jsonify() to direct 
+  return of dict or Pydantic response model
+- Convert Flask abort(404) to:
+  raise HTTPException(status_code=404)
+- Keep the exact same URL paths so 
+  the frontend does not break
+
+Step 3 — Create the unified entry point:
+- Create main.py as the single entry point:
+  from fastapi import FastAPI
+  from api import auth, metrics, alerts, 
+    agents, health, websocket, stream
+  from config.otel import setup_otel
+  from config.shutdown import register_signal_handlers
+  from config.env_validator import validate_environment
+  from config.logger import get_logger
+
+  validate_environment()
+  logger = get_logger("resilo")
+  app = FastAPI(title="Resilo", version="1.0.0")
+
+  app.include_router(auth.router)
+  app.include_router(metrics.router)
+  app.include_router(alerts.router)
+  app.include_router(agents.router)
+  app.include_router(health.router)
+  app.include_router(websocket.router)
+  app.include_router(stream.router)
+
+  setup_otel("resilo-api")
+  register_signal_handlers(app)
+
+Step 4 — Update docker-compose.yml:
+- Point every service that ran Flask or 
+  legacy FastAPI to main.py instead:
+  command: uvicorn main:app --host 0.0.0.0 
+    --port 8000 --workers 4
+
+Step 5 — Mark old files as deprecated:
+- Do NOT delete api_server.py, auth_api.py, 
+  core_api.py yet — rename them:
+  api_server.py  → _deprecated_api_server.py
+  auth_api.py    → _deprecated_auth_api.py
+  core_api.py    → _deprecated_core_api.py
+- Add a comment at the top of each:
+  # DEPRECATED — replaced by main.py + api/
+  # Do not add new endpoints here
+  # Remove after 2 weeks of stable production
+
+Show new files in full. Show changed lines 
+with file name and line number.
+Phase 3 — Reviewer
+Review the API consolidation just completed.
+
+Check:
+1. Does main.py exist and include all routers:
+
+   grep -n "include_router\|APIRouter" main.py
+
+   Pass = at least 6 include_router() calls 
+   present covering auth, metrics, alerts, 
+   agents, health, and websocket.
+
+2. Does the unified app start cleanly and 
+   serve all endpoints:
+
+   uvicorn main:app --host 0.0.0.0 --port 8000 &
+   sleep 3
+   curl http://localhost:8000/api/v1/health
+   curl http://localhost:8000/docs
+   kill %1
+
+   Pass = health returns 200, /docs shows 
+   all routes in the OpenAPI UI.
+
+3. Are all previous endpoints still reachable 
+   at the same paths — no 404s for existing 
+   frontend routes:
+
+   grep -rn "fetch\|axios\|api/" \
+   --include="*.js" --include="*.jsx" .
+
+   For each URL found in the frontend run:
+   curl -o /dev/null -s -w "%{http_code}" \
+   http://localhost:8000<path>
+
+   Pass = every frontend API call returns 
+   200 or 401 — not 404.
+
+4. Are the old files renamed with _deprecated_ 
+   prefix — not deleted and not still running:
+
+   ls _deprecated_*.py
+
+   Pass = all three deprecated files present.
+
+   grep -n "_deprecated_\|api_server\|
+   auth_api\|core_api" docker-compose.yml
+
+   Pass = docker-compose points to main.py 
+   only — no deprecated files referenced.
+
+5. Does the OpenAPI schema show correctly 
+   organised routes — not a flat unstructured 
+   list:
+
+   curl http://localhost:8000/openapi.json | \
+   python3 -c "
+   import json,sys
+   spec = json.load(sys.stdin)
+   paths = list(spec['paths'].keys())
+   print(f'Total endpoints: {len(paths)}')
+   [print(p) for p in sorted(paths)]
+   "
+
+   Pass = all endpoints listed cleanly 
+   with /api/v1 prefix, total count matches 
+   what was in the old files combined.
+
+Pass = all 5 checks green.
+Fail = stop and fix before moving on.
+Once Phase 3 passes, come back and say next for Issue #49.
+
+
+
+Usage limit reached ∙ Resets 4:30 PM ∙ limits shared with Claude Code
+Keep working
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+
+
+
+
+
