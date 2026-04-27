@@ -547,8 +547,8 @@ export const systemApi = {
 
 // Authentication endpoints Ã¢â‚¬â€ all routed to FastAPI auth service (port 5001)
 export const authApi = {
-  registerOrg: async ({ org_name, email, username, password, full_name }) =>
-    (await authAxios.post('/auth/register', { org_name, email, username, password, full_name })).data,
+  registerOrg: async ({ email, username, password, full_name }) =>
+    (await authAxios.post('/auth/register', { email, username, password, full_name })).data,
   login: async ({ email, password }) => {
     const res = (await authAxios.post('/auth/login', { email, password })).data;
     if (res?.token) setAuthTokenOnClient(res.token);
