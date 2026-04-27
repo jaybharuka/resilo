@@ -137,7 +137,7 @@ export default function Login() {
   const emailRef = useRef(null);
 
   const [si, setSi]     = useState({ email: '', password: '' });
-  const [su, setSu]     = useState({ name: '', email: '', password: '', org: '' });
+  const [su, setSu]     = useState({ name: '', email: '', password: '' });
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
@@ -181,7 +181,6 @@ export default function Login() {
     try {
       const username = su.email.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
       await authApi.registerOrg({
-        org_name: su.org,
         full_name: su.name,
         email: su.email,
         username,
@@ -189,7 +188,7 @@ export default function Login() {
       });
       setSuccess('Account created. Signing you in…');
       const created = su.email;
-      setSu({ name: '', email: '', password: '', org: '' });
+      setSu({ name: '', email: '', password: '' });
       setTimeout(() => {
         switchMode('signin');
         setSi(p => ({ ...p, email: created }));
@@ -295,8 +294,6 @@ export default function Login() {
                   placeholder="you@company.com" autoComplete="email" disabled={busy} />
                 <Input label="PASSWORD" type="password" value={su.password} onChange={v => setSu(p => ({...p, password: v}))}
                   placeholder="Min. 8 characters" autoComplete="new-password" disabled={busy} />
-                <Input label="ORGANIZATION NAME" value={su.org} onChange={v => setSu(p => ({...p, org: v}))}
-                  placeholder="Acme Corp" autoComplete="organization" disabled={busy} />
                 <div style={{ marginTop: '2px' }}>
                   <PrimaryButton busy={busy} label="CREATING ACCOUNT…">CREATE ACCOUNT</PrimaryButton>
                 </div>
