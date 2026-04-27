@@ -54,7 +54,7 @@ function Field({ label, type = 'text', value, onChange, placeholder, autoComplet
 // ── Create Organization (Admin) ───────────────────────────────────────────────
 function CreateOrgForm({ onBack }) {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ org_name: '', full_name: '', email: '', username: '', password: '' });
+  const [form, setForm] = useState({ full_name: '', email: '', username: '', password: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -76,9 +76,9 @@ function CreateOrgForm({ onBack }) {
   if (done) return (
     <div style={{ textAlign: 'center', padding: '12px 0' }}>
       <div style={{ fontSize: 40, marginBottom: 16, color: '#34D399' }}>✓</div>
-      <h2 style={{ ...UI, fontSize: 20, fontWeight: 700, color: '#34D399', margin: '0 0 10px' }}>Organization created!</h2>
+      <h2 style={{ ...UI, fontSize: 20, fontWeight: 700, color: '#34D399', margin: '0 0 10px' }}>Account created!</h2>
       <p style={{ ...UI, fontSize: 14, color: '#9CA3AF', marginBottom: 24, lineHeight: 1.6 }}>
-        Your workspace is ready. Sign in with your credentials.
+        Your account is ready. Sign in with your credentials.
       </p>
       <button onClick={() => navigate('/login')}
         style={{ padding: '11px 28px', borderRadius: 8, background: 'linear-gradient(135deg, #F59E0B, #D97706)', color: '#0C0B09', border: 'none', cursor: 'pointer', ...MONO, fontSize: 12, letterSpacing: '0.1em', boxShadow: '0 4px 20px rgba(245,158,11,0.3)' }}>
@@ -98,8 +98,8 @@ function CreateOrgForm({ onBack }) {
           <Building2 size={17} color="#F59E0B" />
         </div>
         <div>
-          <p style={{ ...UI, fontSize: 15, fontWeight: 700, color: '#F5F0E8', margin: 0 }}>Create an Organization</p>
-          <p style={{ ...MONO, fontSize: 9, color: '#6B6357', margin: 0, letterSpacing: '0.1em' }}>YOU BECOME THE ADMIN</p>
+          <p style={{ ...UI, fontSize: 15, fontWeight: 700, color: '#F5F0E8', margin: 0 }}>Create Account</p>
+          <p style={{ ...MONO, fontSize: 9, color: '#6B6357', margin: 0, letterSpacing: '0.1em' }}>FREE ACCOUNT</p>
         </div>
       </div>
 
@@ -109,7 +109,6 @@ function CreateOrgForm({ onBack }) {
         </div>
       )}
 
-      <Field label="ORGANIZATION NAME" value={form.org_name} onChange={v => set('org_name', v)} placeholder="Acme Corp" />
       <Field label="YOUR FULL NAME" value={form.full_name} onChange={v => set('full_name', v)} placeholder="Jane Smith" />
       <Field label="EMAIL" type="email" value={form.email} onChange={v => set('email', v)} placeholder="jane@acme.com" autoComplete="email" />
       <Field label="USERNAME" value={form.username} onChange={v => set('username', v)} placeholder="janesmith" autoComplete="username" />
@@ -117,7 +116,7 @@ function CreateOrgForm({ onBack }) {
 
       <button type="submit" disabled={busy}
         style={{ width: '100%', borderRadius: 8, padding: '12px 16px', marginTop: 4, ...MONO, fontSize: 12, letterSpacing: '0.14em', color: busy ? 'rgba(12,11,9,0.5)' : '#0C0B09', background: busy ? 'rgba(245,158,11,0.3)' : 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)', border: 'none', cursor: busy ? 'not-allowed' : 'pointer', boxShadow: busy ? 'none' : '0 4px 20px rgba(245,158,11,0.3)', transition: 'all 0.15s' }}>
-        {busy ? 'CREATING…' : 'CREATE ORGANIZATION'}
+        {busy ? 'CREATING…' : 'CREATE ACCOUNT'}
       </button>
     </form>
   );
