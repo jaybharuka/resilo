@@ -28,6 +28,13 @@ _PUBLIC_PATH_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/ingest/heartbeat",
+    "/agent/command",
+    "/agent/command/result",
+    "/integrations/datadog/webhook",
+    "/integrations/prometheus/webhook",
+    "/integrations/zabbix/webhook",
+    "/integrations/pagerduty/webhook",
+    "/agents/register",
 )
 
 

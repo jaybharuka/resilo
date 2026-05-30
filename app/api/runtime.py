@@ -1012,26 +1012,26 @@ async def _dispatch_action(action: str, target: str, params: dict | None = None)
 
 
 async def _call_llm(system_prompt: str, user_message: str) -> str:
-    """Gemini 2.0 Flash via google-generativeai SDK (sync SDK run in thread pool)."""
-    import google.generativeai as genai
-
+    """Gemini via direct REST API (httpx) — avoids google-generativeai SDK version conflicts."""
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set")
 
-    genai.configure(api_key=api_key)
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=system_prompt,
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}"
+        f":generateContent?key={api_key}"
     )
-
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: model.generate_content(user_message),
-    )
-    return response.text
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024},
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _lc_analyze_cooldown_ok(agent_id: str) -> bool:
@@ -1421,6 +1421,7 @@ async def _lc_analyze(
                     alert.agent_id, action, target,
                     cpu, memory, metrics.get("disk", 0.0),
                     alert_context, exec_mode,
+                    org_id=alert.org_id,
                 ))
             except HTTPException as _he:
                 disp_status = "blocked"
@@ -1559,6 +1560,7 @@ async def _schedule_feedback_check(
     cpu_before: float, memory_before: float, disk_before: float = 0.0,
     context: str = "", exec_mode: str = "dry_run",
     retry_count: int = 0, retry_of: str = "",
+    org_id: str = "",
 ) -> None:
     """Wait 30 s then measure whether the action improved metrics. Retries on failure (max 2)."""
     _MAX_RETRIES = 2
@@ -1646,7 +1648,7 @@ async def _schedule_feedback_check(
                         from app.core.remediation_dispatch import safe_enqueue_command
                         await safe_enqueue_command(
                             db=None,
-                            org_id="",
+                            org_id=org_id,
                             agent_id=agent_id,
                             command=next_action,
                             target=target,
@@ -1684,6 +1686,7 @@ async def _schedule_feedback_check(
                         cpu_after, memory_after, disk_after,
                         context, exec_mode,
                         retry_count + 1, action,
+                        org_id=org_id,
                     ))
                 else:
                     logging.warning("[RETRY] agent=%s no eligible action after %s failed",
@@ -2775,8 +2778,17 @@ def build_agents_router() -> APIRouter:
             .limit(20)
         )
         alerts = alerts_result.scalars().all()
+        last_cmd_result = await db.execute(
+            select(AgentActionLog.created_at)
+            .where(AgentActionLog.agent_id == agent_id)
+            .order_by(desc(AgentActionLog.created_at))
+            .limit(1)
+        )
+        last_cmd_row = last_cmd_result.scalar_one_or_none()
+        last_command_at = last_cmd_row.isoformat() if last_cmd_row else None
         return {
             **_serialize_agent(agent),
+            "last_command_at": last_command_at,
             "metrics": _serialize_metric(latest) if latest else {},
             "info": {
                 **{k: v for k, v in (agent.platform_info or {}).items()
