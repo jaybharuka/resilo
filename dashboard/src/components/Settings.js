@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { integrationsApi, authApi, apiService, realTimeService } from '../services/api';
+import { orgApi } from '../services/resiloApi';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Link } from 'react-router-dom';
@@ -259,6 +260,11 @@ export default function Settings() {
   const [thresh, setThresh]     = useState(getThresholds());
   const [threshDirty, setThreshDirty] = useState(false);
 
+  /* ── AI confidence threshold ── */
+  const [aiThreshold, setAiThreshold] = useState(0.72);
+  const [aiThreshSaved, setAiThreshSaved] = useState(false);
+  const aiDebounce = useRef(null);
+
   /* ── Remediation (admin) ── */
   const [remSettings, setRemSettings] = useState({ autonomous: false, dryRun: true, loading: true });
 
@@ -283,6 +289,13 @@ export default function Settings() {
       apiService.getAutonomousMode()
         .then(d => setRemSettings(p => ({ ...p, autonomous: d?.autonomous_mode ?? false, loading: false })))
         .catch(() => setRemSettings(p => ({ ...p, loading: false })));
+    }
+
+    /* AI confidence threshold from org settings */
+    if (user?.org_id) {
+      orgApi.get(user.org_id)
+        .then(org => { if (org?.ai_confidence_threshold != null) setAiThreshold(org.ai_confidence_threshold); })
+        .catch(() => {});
     }
 
     /* SSE listener */
@@ -362,6 +375,20 @@ export default function Settings() {
     setThresh({ ...THRESHOLD_DEFAULTS });
     setThreshDirty(true);
   };
+
+  /* AI confidence threshold — debounced save */
+  const handleAiThreshChange = useCallback((val) => {
+    const v = parseFloat(val);
+    setAiThreshold(v);
+    clearTimeout(aiDebounce.current);
+    aiDebounce.current = setTimeout(async () => {
+      try {
+        await orgApi.updateSettings(user?.org_id, { ai_confidence_threshold: v });
+        setAiThreshSaved(true);
+        setTimeout(() => setAiThreshSaved(false), 2000);
+      } catch {}
+    }, 600);
+  }, [user?.org_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Remediation */
   const handleAutonomousToggle = useCallback(async (val) => {
@@ -737,7 +764,39 @@ export default function Settings() {
         </Section>
       </div>
 
-      {/* ══ 5. REMEDIATION (admin) ══ */}
+      {/* ══ 5. AI SETTINGS (admin) ══ */}
+      {role === 'admin' && (
+        <div className="s-section" style={{ animationDelay: '150ms' }}>
+          <Section icon={<SlidersHorizontal size={14} />} title="AI Automation" badge="admin">
+            <Row
+              label="Auto-Execute Confidence Threshold"
+              hint="Minimum confidence the AI must have before automatically executing a remediation action in AUTO SAFE mode. Higher = more conservative."
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                <input
+                  type="range" min="0.50" max="1.00" step="0.01"
+                  value={aiThreshold}
+                  onChange={e => handleAiThreshChange(e.target.value)}
+                  style={{ width: '140px', accentColor: amber, cursor: 'pointer' }}
+                />
+                <span style={{
+                  ...MONO, fontSize: '13px', fontWeight: 700, minWidth: '38px', textAlign: 'right',
+                  color: aiThreshold <= 0.75 ? teal : aiThreshold <= 0.89 ? amber : red,
+                }}>
+                  {Math.round(aiThreshold * 100)}%
+                </span>
+                {aiThreshSaved && (
+                  <span style={{ ...MONO, fontSize: '10px', color: teal, letterSpacing: '0.06em' }}>
+                    ✓ Saved
+                  </span>
+                )}
+              </div>
+            </Row>
+          </Section>
+        </div>
+      )}
+
+      {/* ══ 6. REMEDIATION (admin) ══ */}
       {role === 'admin' && (
         <div className="s-section" style={{ animationDelay: '160ms' }}>
           <Section icon={<Wrench size={14} />} title="Remediation" badge="admin">

@@ -19,15 +19,16 @@ from urllib.parse import urlencode
 
 import httpx
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import (Agent, AgentActionLog, AlertRecord, MetricSnapshot,
-                               OnboardingToken, Organization, RemediationJob,
+from app.core.database import (Agent, AgentActionLog, AlertRecord, AlertRule, MetricSnapshot,
+                               NotificationChannel, NotificationLog, OnboardingToken,
+                               Organization, RemediationJob,
                                SessionLocal, User, UserSession, get_db)
 from app.core.pricing import PricingService
 
@@ -540,6 +541,7 @@ def _compute_agent_status(agent: "Agent") -> str:
 
 
 def _serialize_agent(agent: Agent) -> dict[str, Any]:
+    pinfo = agent.platform_info or {}
     return {
         "id": agent.id,
         "org_id": agent.org_id,
@@ -548,9 +550,37 @@ def _serialize_agent(agent: Agent) -> dict[str, Any]:
         "is_active": agent.is_active,
         "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
         "created_at": agent.created_at.isoformat() if agent.created_at else None,
-        "platform_info": agent.platform_info or {},
+        "platform_info": pinfo,
+        "cpu": pinfo.get("last_cpu"),
+        "memory": pinfo.get("last_memory"),
+        "disk": pinfo.get("last_disk"),
+        "hostname": pinfo.get("hostname"),
         "ai_history": _AI_HISTORY.get(agent.id, []),
         "execution_mode": _AGENT_EXEC_MODE.get(agent.id, "dry_run"),
+    }
+
+
+def _serialize_agent_action_log(entry: AgentActionLog) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "org_id": entry.org_id,
+        "agent_id": entry.agent_id,
+        "remediation_job_id": entry.remediation_job_id,
+        "action": entry.action,
+        "target": entry.target,
+        "initiated_by": entry.initiated_by,
+        "execution_mode": entry.execution_mode,
+        "decision_source": entry.decision_source,
+        "llm_raw_response": entry.llm_raw_response,
+        "policy_evaluation": entry.policy_evaluation,
+        "status": entry.status,
+        "success": entry.success,
+        "exit_code": entry.exit_code,
+        "stdout": entry.stdout,
+        "stderr": entry.stderr,
+        "correlation_id": entry.correlation_id,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        "completed_at": entry.completed_at.isoformat() if entry.completed_at else None,
     }
 
 
@@ -592,7 +622,11 @@ def _get_realtime_hub(request: Request) -> RealtimeHub:
     return get_realtime_hub_from_app(request.app)
 
 
-async def _stream_realtime_events(event_type: str, org_id: str, request: Request):
+async def _stream_realtime_events(
+    event_types: str | set[str], org_id: str, request: Request
+):
+    """SSE generator. event_types can be a single string or a set for multi-type streams."""
+    allowed: set[str] = {event_types} if isinstance(event_types, str) else set(event_types)
     hub = _get_realtime_hub(request)
     queue = hub.subscribe(org_id)
     try:
@@ -604,9 +638,10 @@ async def _stream_realtime_events(event_type: str, org_id: str, request: Request
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"
                 continue
-            if event.get("type") != event_type:
+            etype = event.get("type")
+            if etype not in allowed:
                 continue
-            yield f"event: {event_type}\ndata: {json.dumps(event['data'])}\n\n"
+            yield f"event: {etype}\ndata: {json.dumps(event['data'])}\n\n"
     finally:
         hub.unsubscribe(org_id, queue)
 
@@ -630,38 +665,174 @@ _ALERT_RULES = [
 ]
 
 
+async def _send_alert_rule_to_channel(
+    org_id: str,
+    alert_id: str,
+    channel: NotificationChannel,
+    alert_data: dict,
+) -> None:
+    """Dispatch one notification for a fired AlertRule. Always writes a notification_logs row."""
+    cfg = channel.config or {}
+    status: str = "sent"
+    error_msg: str | None = None
+
+    try:
+        if channel.channel_type == "slack":
+            severity = alert_data.get("severity", "high")
+            color = "danger" if severity in ("critical", "high") else "warning"
+            payload = {
+                "text": f":rotating_light: *{severity.upper()}* — {alert_data.get('title', 'Alert')}",
+                "attachments": [{
+                    "color": color,
+                    "fields": [
+                        {"title": "Category",     "value": alert_data.get("category", "—"),         "short": True},
+                        {"title": "Metric Value", "value": f"{alert_data.get('metric_value', 0):.1f}%", "short": True},
+                        {"title": "Detail",       "value": alert_data.get("detail", "—"),            "short": False},
+                    ],
+                }],
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(cfg["webhook_url"], json=payload)
+                r.raise_for_status()
+
+        elif channel.channel_type == "email":
+            # Delegate to existing notification_service which has full SMTP support
+            try:
+                from app.integrations.notification_service import dispatch_alert_notification
+                async with SessionLocal() as _db:
+                    await dispatch_alert_notification(_db, org_id, None, agent_label="")
+            except Exception as _e:
+                status = "pending"
+                error_msg = f"Email deferred (service error): {_e}"
+
+        else:
+            status = "unsupported"
+            error_msg = f"Channel type '{channel.channel_type}' not supported for alert rules"
+
+    except Exception as exc:
+        status = "failed"
+        error_msg = str(exc)
+        logging.warning("[NOTIFY] Channel %s (%s) failed: %s",
+                        channel.id[:8], channel.channel_type, exc)
+
+    # Always write a notification_logs audit row
+    try:
+        async with SessionLocal() as _log_db:
+            _log_db.add(NotificationLog(
+                id=str(uuid.uuid4()),
+                org_id=org_id,
+                alert_id=alert_id,
+                channel_id=channel.id,
+                channel_type=channel.channel_type,
+                notification_type="alert",
+                status=status,
+                error=error_msg,
+            ))
+            await _log_db.commit()
+    except Exception as _log_exc:
+        logging.warning("[NOTIFY] Could not write notification_log: %s", _log_exc)
+
+
+async def _notify_alert_rule(
+    alert_id: str,
+    org_id: str,
+    channel_ids: list[str],
+    alert_data: dict,
+) -> None:
+    """Background task: send notifications for a fired DB alert rule to its configured channels."""
+    if not channel_ids:
+        return
+    async with SessionLocal() as db:
+        for channel_id in channel_ids:
+            result = await db.execute(
+                select(NotificationChannel)
+                .where(NotificationChannel.id == channel_id)
+                .where(NotificationChannel.org_id == org_id)
+                .where(NotificationChannel.enabled.is_(True))
+            )
+            channel = result.scalar_one_or_none()
+            if not channel:
+                continue
+            await _send_alert_rule_to_channel(org_id, alert_id, channel, alert_data)
+
+
+async def _alert_already_open(db: AsyncSession, agent_id: str, category: str) -> bool:
+    """True if an open or acknowledged alert of this category already exists for this agent."""
+    result = await db.execute(
+        select(AlertRecord)
+        .where(AlertRecord.agent_id == agent_id)
+        .where(AlertRecord.category == category)
+        .where(AlertRecord.status.in_(["open", "acknowledged"]))
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def _check_anomalies(
-    db: AsyncSession, org_id: str, agent_id: str, cpu: float, memory: float
-) -> tuple[list[AlertRecord], list[str]]:
-    """Return (newly_created, resolved_ids). Recovery thresholds per spec: cpu<80, memory<85."""
-    values = {"cpu": cpu, "memory": memory}
+    db: AsyncSession, org_id: str, agent_id: str, cpu: float, memory: float, disk: float = 0.0,
+) -> tuple[list[AlertRecord], list[str], list[tuple[str, list[str], dict]]]:
+    """Return (newly_created, resolved_ids, notify_pairs).
+    notify_pairs = [(alert_id, channel_ids, alert_data)] for DB-rule alerts needing notifications."""
+    values = {"cpu": cpu, "memory": memory, "disk": disk}
     created: list[AlertRecord] = []
     resolved_ids: list[str] = []
+    notify_pairs: list[tuple[str, list[str], dict]] = []
+
+    # ── Hardcoded rules ───────────────────────────────────────────────────────
     for rule in _ALERT_RULES:
         value = values.get(rule["field"], 0.0)
 
         if value >= rule["threshold"]:
-            existing = await db.execute(
-                select(AlertRecord).where(
-                    AlertRecord.agent_id == agent_id,
-                    AlertRecord.category == rule["category"],
-                    AlertRecord.status == "open",
+            if await _alert_already_open(db, agent_id, rule["category"]):
+                continue
+            alert = AlertRecord(
+                org_id=org_id,
+                agent_id=agent_id,
+                severity=rule["severity"],
+                category=rule["category"],
+                title=rule["title"],
+                detail=rule["detail"].format(value=value, threshold=rule["threshold"]),
+                metric_value=value,
+                threshold=rule["threshold"],
+                status="open",
+            )
+            db.add(alert)
+            created.append(alert)
+
+            existing_job = await db.execute(
+                select(RemediationJob).where(
+                    RemediationJob.org_id == org_id,
+                    RemediationJob.alert_id == alert.id,
+                    RemediationJob.status == "pending",
                 )
             )
-            if existing.scalar_one_or_none() is None:
-                alert = AlertRecord(
-                    org_id=org_id,
-                    agent_id=agent_id,
-                    severity=rule["severity"],
-                    category=rule["category"],
-                    title=rule["title"],
-                    detail=rule["detail"].format(value=value, threshold=rule["threshold"]),
-                    metric_value=value,
-                    threshold=rule["threshold"],
-                    status="open",
+            if existing_job.scalar_one_or_none() is None:
+                db.add(
+                    RemediationJob(
+                        org_id=org_id,
+                        alert_id=alert.id,
+                        playbook_type="restart_service",
+                        status="pending",
+                        attempts=0,
+                        max_retries=1,
+                        payload={"action": "restart_service", "target": agent_id, "agent_id": agent_id},
+                        execution_mode="manual_approval",
+                        decision_source="rule_fallback",
+                        llm_raw_response=json.dumps({
+                            "root_cause": f"{rule['category']} threshold exceeded",
+                            "confidence": 0.91,
+                            "impact": "high" if rule["severity"] == "high" else "critical",
+                            "summary": f"Queued restart_service after {rule['category']} alert",
+                            "recommended_action": "restart_service",
+                            "safe_to_auto_fix": False,
+                        }),
+                        policy_evaluation={
+                            "risk_level": "high",
+                            "allowed": True,
+                            "reason": "auto-queued from alert threshold",
+                        },
+                    )
                 )
-                db.add(alert)
-                created.append(alert)
 
         elif value <= rule["recover"]:
             open_alerts = await db.execute(
@@ -678,112 +849,64 @@ async def _check_anomalies(
                 resolved_ids.append(alert.id)
                 logging.info("[auto-resolve] %s alert resolved for agent %s", rule["category"], agent_id)
 
-    return created, resolved_ids
-
-
-_AI_SYSTEM_PROMPT = """You are an expert SRE analyzing a system alert.
-Respond ONLY with a valid JSON object — no markdown, no prose.
-Schema:
-{
-  "root_cause": "<concise technical root cause>",
-  "confidence": <0.0-1.0>,
-  "impact": "low|medium|high|critical",
-  "summary": "<1-2 sentence human-readable summary>",
-  "recommended_action": "<single best action to take>",
-  "safe_to_auto_fix": <true|false>
-}"""
-
-
-async def _ai_analyze(alert: AlertRecord, cpu: float, memory: float) -> None:
-    """Call NVIDIA NIM to analyze a new alert. Runs as a background task — never raises."""
-    api_key = os.getenv("NVIDIA_API_KEY", "")
-    exec_mode = _AGENT_EXEC_MODE.get(alert.agent_id, "dry_run")
-
-    payload = {
-        "alert_name": alert.category,
-        "severity": alert.severity,
-        "title": alert.title,
-        "detail": alert.detail,
-        "metrics": {"cpu": cpu, "memory": memory},
-    }
-    logging.info("[EXEC MODE] agent=%s mode=%s", alert.agent_id, exec_mode)
-
-    if not api_key:
-        logging.warning("[AI] NVIDIA_API_KEY not set — skipping LLM analysis")
-        return
-
+    # ── User-defined AlertRules from DB ───────────────────────────────────────
     try:
-        nim_payload = {
-            "model": os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct"),
-            "messages": [
-                {"role": "system", "content": _AI_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Alert data:\n{json.dumps(payload, indent=2)}"},
-            ],
-            "temperature": 0.2,
-            "max_tokens": 512,
-            "stream": False,
-        }
-        async with httpx.AsyncClient(timeout=45) as client:
-            r = await client.post(
-                f"{os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=nim_payload,
+        db_rules_result = await db.execute(
+            select(AlertRule).where(
+                AlertRule.org_id == org_id,
+                AlertRule.enabled.is_(True),
+            ).where(
+                (AlertRule.agent_id == agent_id) | (AlertRule.agent_id.is_(None))
             )
-            r.raise_for_status()
-        raw = r.json()["choices"][0]["message"]["content"].strip()
-        start = raw.find("{"); end = raw.rfind("}") + 1
-        plan = json.loads(raw[start:end]) if start != -1 else {}
-        logging.info("[AI PLAN] %s", json.dumps(plan))
+        )
+        db_rules = db_rules_result.scalars().all()
+        for db_rule in db_rules:
+            value = values.get(db_rule.metric, 0.0)
+            if value < db_rule.threshold:
+                continue
+            # Dedup: skip if an open/acknowledged alert of this category already exists
+            if await _alert_already_open(db, agent_id, db_rule.metric):
+                continue
+            # Cooldown: skip if an alert (even resolved) was created within cooldown_minutes
+            cooldown_cutoff = _now() - timedelta(minutes=db_rule.cooldown_minutes)
+            existing = await db.execute(
+                select(AlertRecord).where(
+                    AlertRecord.agent_id == agent_id,
+                    AlertRecord.category == db_rule.metric,
+                    AlertRecord.status == "open",
+                    AlertRecord.created_at >= cooldown_cutoff,
+                )
+            )
+            if existing.scalar_one_or_none() is not None:
+                continue
+            alert = AlertRecord(
+                org_id=org_id,
+                agent_id=agent_id,
+                severity=db_rule.severity,
+                category=db_rule.metric,
+                title=db_rule.name,
+                detail=f"{db_rule.metric} at {value:.1f}% exceeded user-defined threshold {db_rule.threshold:.0f}%",
+                metric_value=value,
+                threshold=db_rule.threshold,
+                status="open",
+            )
+            db.add(alert)
+            created.append(alert)
+            # Collect notify pair: alert_id is not yet assigned (pre-flush), stored by object ref
+            if db_rule.notify_channels:
+                notify_pairs.append((alert, list(db_rule.notify_channels), {
+                    "severity":     db_rule.severity,
+                    "title":        db_rule.name,
+                    "category":     db_rule.metric,
+                    "metric_value": value,
+                    "detail":       f"{db_rule.metric} at {value:.1f}% exceeded threshold {db_rule.threshold:.0f}%",
+                }))
+            logging.info("[alert-rule] DB rule '%s' fired for agent %s (%s=%.1f%%)",
+                         db_rule.name, agent_id, db_rule.metric, value)
+    except Exception as _exc:
+        logging.warning("[alert-rule] Failed to evaluate DB alert rules: %s", _exc)
 
-        action = plan.get("recommended_action", "")
-        target = plan.get("target", alert.category)
-
-        if exec_mode == "dry_run":
-            disp_status = "dry_run"
-            logging.info("[AI RESULT] DRY RUN — no action executed. Recommended: %s", action)
-        elif exec_mode == "manual_approval":
-            approval = {
-                "id": str(uuid.uuid4()),
-                "action": action,
-                "target": target,
-                "alert_category": alert.category,
-                "created_at": _now().isoformat(),
-            }
-            _PENDING_APPROVALS.setdefault(alert.agent_id, []).append(approval)
-            disp_status = "needs_approval"
-            logging.info("[APPROVAL] Waiting for approval: %s → %s", action, target)
-        elif exec_mode == "auto_safe":
-            if action in _SAFE_ACTIONS:
-                _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
-                disp_status = "queued"
-                logging.info("[EXECUTED] Auto-queued safe action: %s → %s", action, target)
-            else:
-                disp_status = "needs_review"
-                logging.info("[BLOCKED] Unsafe action blocked in auto_safe mode: %s", action)
-        else:
-            disp_status = "dry_run"
-
-        decision = {
-            "timestamp": _now().isoformat(),
-            "alert_category": alert.category,
-            "severity": alert.severity,
-            "root_cause": plan.get("root_cause", ""),
-            "confidence": plan.get("confidence", 0.0),
-            "impact": plan.get("impact", ""),
-            "summary": plan.get("summary", ""),
-            "recommended_action": action,
-            "safe_to_auto_fix": plan.get("safe_to_auto_fix", False),
-            "status": disp_status,
-        }
-        hist = _AI_HISTORY.setdefault(alert.agent_id, [])
-        hist.insert(0, decision)
-        if len(hist) > 10:
-            hist.pop()
-
-    except Exception as exc:
-        global _LAST_AI_ERROR
-        _LAST_AI_ERROR = str(exc)
-        logging.warning("[AI] Analysis failed for alert %s: %s", alert.category, exc)
+    return created, resolved_ids, notify_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -888,77 +1011,373 @@ async def _dispatch_action(action: str, target: str, params: dict | None = None)
 # ---------------------------------------------------------------------------
 
 
+async def _call_llm(system_prompt: str, user_message: str) -> str:
+    """Gemini 2.0 Flash via google-generativeai SDK (sync SDK run in thread pool)."""
+    import google.generativeai as genai
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set")
+
+    genai.configure(api_key=api_key)
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=system_prompt,
+    )
+
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: model.generate_content(user_message),
+    )
+    return response.text
+
+
+def _lc_analyze_cooldown_ok(agent_id: str) -> bool:
+    """Return True if enough time has elapsed since the last LLM call for this agent."""
+    return (time.time() - _LC_ANALYZE_LAST_RUN.get(agent_id, 0.0)) >= LC_ANALYZE_COOLDOWN_SECS
+
+
+def _lc_analyze_mark_ran(agent_id: str) -> None:
+    _LC_ANALYZE_LAST_RUN[agent_id] = time.time()
+
+
+async def _get_confidence_threshold(org_id: str) -> float:
+    """Return per-org AI confidence threshold, falling back to the global default."""
+    try:
+        async with SessionLocal() as _db:
+            result = await _db.execute(
+                select(Organization.ai_confidence_threshold).where(Organization.id == org_id)
+            )
+            val = result.scalar_one_or_none()
+            return float(val) if val is not None else AUTO_EXEC_CONFIDENCE_THRESHOLD
+    except Exception:
+        return AUTO_EXEC_CONFIDENCE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# THE single AI analysis path. All new AI logic goes here.
+# _ai_analyze (NVIDIA NIM direct path) was removed — it was never called.
+# ---------------------------------------------------------------------------
+
+AUTO_EXEC_CONFIDENCE_THRESHOLD: float = 0.72
+
+_LC_ALLOWED_ACTIONS: frozenset[str] = frozenset({
+    "free_memory", "disk_cleanup", "clear_cache", "run_gc",
+    "kill_process", "restart_service", "notify_only",
+})
+
+_LC_SYSTEM_PROMPT = """\
+You are an AIOps remediation agent. You monitor remote machines and decide
+what action to take when an anomaly is detected.
+
+You will be given:
+- Current system metrics
+- Recent alert history for this machine
+- Past actions taken and whether they succeeded
+- Action success rates from historical data
+
+Your job is to reason step by step and return a single JSON object.
+
+Rules:
+- Only recommend actions from the allowed action list
+- Never recommend an action that failed twice in a row on this machine
+- If success rate for an action is below 30%, prefer an alternative
+- If you are not confident (< 0.6), recommend notify_only
+- Always explain your reasoning before the JSON
+
+Allowed actions: free_memory, disk_cleanup, clear_cache, run_gc,
+kill_process, restart_service, notify_only
+
+Respond with your reasoning first, then end with exactly this JSON block:
+```json
+{
+  "action": "<action_name>",
+  "confidence": <0.0-1.0>,
+  "root_cause": "<one sentence>",
+  "summary": "<two sentences max>",
+  "safe_to_auto_fix": <true|false>,
+  "reasoning_steps": ["step1", "step2", "step3"]
+}
+```\
+"""
+
+
+def _top_process(metrics: dict) -> str:
+    """Return the top CPU process label from top_processes, or 'unknown'."""
+    tp = metrics.get("top_processes") or {}
+    by_cpu = tp.get("by_cpu") or []
+    if by_cpu:
+        p = by_cpu[0]
+        return f"{p.get('name', '?')} ({p.get('cpu_percent', 0):.1f}% cpu)"
+    return "unknown"
+
+
+def _fmt_history(history: list) -> str:
+    """Format last 5 AI decisions for the prompt context block."""
+    if not history:
+        return "  (none)"
+    lines = []
+    for h in history[:5]:
+        ts = (h.get("timestamp") or "")[:19]
+        lines.append(
+            f"  [{ts}] {h.get('alert_category','?')} → "
+            f"{h.get('recommended_action','?')} "
+            f"(conf={h.get('confidence',0):.2f}, status={h.get('status','?')})"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_feedback(feedback: list) -> str:
+    """Format last 10 action outcomes for the prompt context block."""
+    if not feedback:
+        return "  (none)"
+    lines = []
+    for f in feedback[:10]:
+        ok = "✓" if f.get("success") else "✗"
+        lines.append(
+            f"  {ok} {f.get('action','?')} → "
+            f"cpu {f.get('cpu_before','?')}%→{f.get('cpu_after','?')}%  "
+            f"mem {f.get('memory_before','?')}%→{f.get('memory_after','?')}%"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_success_rates(rates: dict) -> str:
+    """Format per-action success rates for the prompt context block."""
+    lines = [
+        f"  {act}: {round(rate * 100)}%" if rate is not None else f"  {act}: no data"
+        for act, rate in rates.items()
+    ]
+    return "\n".join(lines) if lines else "  (no history)"
+
+
+def _build_context(
+    agent_id: str,
+    metrics: dict,
+    alert: dict,
+    ai_history: list,
+    feedback: list,
+    success_rates: dict,
+) -> str:
+    """Build the per-call user message injected into the LLM prompt."""
+    return (
+        f"MACHINE STATE:\n"
+        f"  CPU:    {metrics.get('cpu', 0):.1f}%\n"
+        f"  Memory: {metrics.get('memory', 0):.1f}%\n"
+        f"  Disk:   {metrics.get('disk', 0):.1f}%\n"
+        f"  Top process: {_top_process(metrics)}\n\n"
+        f"ALERT:\n"
+        f"  Category: {alert.get('category')}\n"
+        f"  Severity: {alert.get('severity')}\n"
+        f"  Detail:   {alert.get('detail', '')}\n\n"
+        f"RECENT AI DECISIONS (last 5):\n"
+        f"{_fmt_history(ai_history)}\n\n"
+        f"PAST ACTION OUTCOMES (last 10):\n"
+        f"{_fmt_feedback(feedback)}\n\n"
+        f"ACTION SUCCESS RATES:\n"
+        f"{_fmt_success_rates(success_rates)}"
+    )
+
+
+def _rule_fallback(metrics: dict, alert: dict) -> dict:
+    """Deterministic fallback used when LLM times out or parse fails."""
+    cpu  = float(metrics.get("cpu",    0) or 0)
+    mem  = float(metrics.get("memory", 0) or 0)
+    disk = float(metrics.get("disk",   0) or 0)
+    if mem >= 85:
+        return {"action": "free_memory", "confidence": 0.75,
+                "root_cause": "Memory above critical threshold",
+                "summary": "Rule-based: memory critical, freeing caches.",
+                "safe_to_auto_fix": True,
+                "reasoning_steps": ["Memory >= 85%", "Rule: free_memory"],
+                "decision_source": "rule_fallback"}
+    if cpu >= 90:
+        return {"action": "free_memory", "confidence": 0.65,
+                "root_cause": "CPU above critical threshold",
+                "summary": "Rule-based: CPU critical, attempting cache clear.",
+                "safe_to_auto_fix": True,
+                "reasoning_steps": ["CPU >= 90%", "Rule: free_memory"],
+                "decision_source": "rule_fallback"}
+    if disk >= 90:
+        return {"action": "disk_cleanup", "confidence": 0.80,
+                "root_cause": "Disk above critical threshold",
+                "summary": "Rule-based: disk critical, running cleanup.",
+                "safe_to_auto_fix": True,
+                "reasoning_steps": ["Disk >= 90%", "Rule: disk_cleanup"],
+                "decision_source": "rule_fallback"}
+    return {"action": "notify_only", "confidence": 0.5,
+            "root_cause": "Anomaly detected, cause unclear",
+            "summary": "Rule-based: no clear action, notifying only.",
+            "safe_to_auto_fix": False,
+            "reasoning_steps": ["No threshold matched", "Rule: notify_only"],
+            "decision_source": "rule_fallback"}
+
+
 async def _lc_analyze(
     alert: AlertRecord,
     cpu: float,
     memory: float,
+    org_id: str = "",
     top_processes: dict | None = None,
     load_avg_1m: float | None = None,
     load_avg_5m: float | None = None,
     load_avg_15m: float | None = None,
 ) -> None:
-    """LangChain agent analysis — background task, never raises."""
-    from app.agents.langchain_agent import analyze_alert as _lc_agent, can_auto_execute, get_action_success_rates
+    """Context-rich agentic reasoning loop. Background task — never raises."""
+    from app.agents.langchain_agent import can_auto_execute
 
     exec_mode = _AGENT_EXEC_MODE.get(alert.agent_id, "dry_run")
-    logging.info("[AGENT] Alert received: agent=%s mode=%s", alert.agent_id, exec_mode)
+    logging.info("[AGENT] Alert received: agent=%s mode=%s category=%s",
+                 alert.agent_id, exec_mode, alert.category)
 
-    alert_data = {
-        "category": alert.category,
-        "severity": alert.severity,
-        "title": alert.title,
-        "detail": alert.detail,
-        "top_processes_at_alert": top_processes,
-        "load_avg": {"1m": load_avg_1m, "5m": load_avg_5m, "15m": load_avg_15m},
-    }
+    # ── Fix 1: Rate limit — skip LLM if this agent was analyzed recently ──────
+    if not _lc_analyze_cooldown_ok(alert.agent_id):
+        logging.info("[AGENT] Rate limited agent=%s (cooldown=%ds) — rule fallback",
+                     alert.agent_id, LC_ANALYZE_COOLDOWN_SECS)
+        _rl_decision = _rule_fallback(
+            {"cpu": cpu, "memory": memory, "disk": 0.0},
+            {"category": alert.category, "severity": alert.severity},
+        )
+        _rl_record = {
+            "timestamp":          _now().isoformat(),
+            "alert_category":     alert.category,
+            "severity":           alert.severity,
+            "root_cause":         _rl_decision.get("root_cause", ""),
+            "confidence":         _rl_decision["confidence"],
+            "impact":             alert.severity,
+            "summary":            f"[Rate limited] {_rl_decision.get('summary', '')}",
+            "recommended_action": _rl_decision["action"],
+            "reasoning_steps":    _rl_decision.get("reasoning_steps", []),
+            "safe_to_auto_fix":   _rl_decision.get("safe_to_auto_fix", False),
+            "status":             "rate_limited",
+            "decision_source":    "rate_limited",
+            "block_reason":       f"LLM cooldown active ({LC_ANALYZE_COOLDOWN_SECS}s between calls)",
+        }
+        hist = _AI_HISTORY.setdefault(alert.agent_id, [])
+        hist.insert(0, _rl_record)
+        if len(hist) > 10:
+            hist.pop()
+        return
+
+    _lc_analyze_mark_ran(alert.agent_id)
+
+    # ── 1. GATHER CONTEXT ─────────────────────────────────────────────────────
     metrics = {
-        "cpu": cpu, "memory": memory, "disk": 0.0,
+        "cpu": cpu, "memory": memory, "disk": 0.0, "top_processes": top_processes,
         "load_avg_1m": load_avg_1m, "load_avg_5m": load_avg_5m, "load_avg_15m": load_avg_15m,
     }
-
-    # Query per-agent action success rates from AgentActionLog
-    action_success_rates: dict = {}
-    try:
-        async with SessionLocal() as _db:
-            action_success_rates = await get_action_success_rates(alert.agent_id, _db)
-    except Exception as _exc:
-        logging.warning("[AGENT] Could not query action success rates: %s", _exc)
-
+    alert_dict = {"category": alert.category, "severity": alert.severity, "detail": alert.detail}
+    ai_history = _AI_HISTORY.get(alert.agent_id, [])
+    feedback   = _ACTION_FEEDBACK.get(alert.agent_id, [])
+    success_rates = _compute_success_rates(alert.agent_id)
     alert_context = f"{alert.category}:{alert.severity}"
-    success_rate    = _get_success_rate(alert.agent_id, "restart_service", alert_context)
-    failure_streak  = _get_failure_streak(alert.agent_id, "restart_service", alert_context)
-    action_rankings = _get_action_rankings(alert.agent_id, alert_context)
-    decision = await _lc_agent(
-        alert_data, metrics, success_rate, alert_context, failure_streak, action_rankings,
-        top_processes=top_processes,
-        load_avg_1m=load_avg_1m, load_avg_5m=load_avg_5m, load_avg_15m=load_avg_15m,
-        action_success_rates=action_success_rates,
-        execution_mode=exec_mode,
-    )
-    action  = decision["action"]
-    target  = decision["target"]
-    # Confidence calibration: blend LLM score with historical success rate
-    if success_rate is not None:
-        decision["confidence"] = round(decision["confidence"] * 0.6 + success_rate * 0.4, 2)
-        logging.info("[AGENT] Calibrated confidence=%.2f (blended with success_rate=%.0f%%)",
-                     decision["confidence"], success_rate * 100)
 
-    if exec_mode == "dry_run":
-        disp_status = "dry_run"
-        logging.info("[AGENT EXECUTION] mode=dry_run — no action. Recommended: %s → %s", action, target)
-    elif exec_mode == "manual_approval":
-        approval = {
-            "id": str(uuid.uuid4()),
-            "action": action,
-            "target": target,
-            "alert_category": alert.category,
-            "created_at": _now().isoformat(),
+    # ── 2. CALL THE LLM ───────────────────────────────────────────────────────
+    raw = ""
+    decision: dict = {}
+    try:
+        context_block = _build_context(
+            alert.agent_id, metrics, alert_dict, ai_history, feedback, success_rates
+        )
+        raw = await asyncio.wait_for(
+            _call_llm(_LC_SYSTEM_PROMPT, context_block),
+            timeout=30.0,   # gemini-2.5-flash needs ~15s for full AIOps context
+        )
+
+        # ── 3. PARSE + VALIDATE ───────────────────────────────────────────────
+        # Support both ```json fenced block and bare JSON
+        fence_start = raw.rfind("```json")
+        if fence_start != -1:
+            json_str = raw[fence_start + 7:]
+            fence_end = json_str.find("```")
+            json_str = json_str[:fence_end].strip() if fence_end != -1 else json_str.strip()
+        else:
+            j_start = raw.rfind("{")
+            j_end   = raw.rfind("}") + 1
+            json_str = raw[j_start:j_end] if j_start != -1 else ""
+
+        parsed = json.loads(json_str)
+        action = parsed.get("action", "notify_only")
+        if action not in _LC_ALLOWED_ACTIONS:
+            logging.warning("[AGENT] LLM returned unknown action '%s' — defaulting to notify_only", action)
+            action = "notify_only"
+
+        decision = {
+            "action":          action,
+            "confidence":      float(parsed.get("confidence", 0.5)),
+            "root_cause":      parsed.get("root_cause", ""),
+            "summary":         parsed.get("summary", ""),
+            "safe_to_auto_fix": bool(parsed.get("safe_to_auto_fix", False)),
+            "reasoning_steps": parsed.get("reasoning_steps", []),
+            "decision_source": "llm",
         }
-        _PENDING_APPROVALS.setdefault(alert.agent_id, []).append(approval)
+        logging.info("[AGENT] LLM decision: action=%s conf=%.2f source=llm",
+                     action, decision["confidence"])
+
+    except (asyncio.TimeoutError, Exception) as _llm_exc:
+        logging.warning("[AGENT] LLM failed (%s) — rule fallback", type(_llm_exc).__name__)
+        decision = _rule_fallback(metrics, alert_dict)
+        action   = decision["action"]
+        raw      = ""
+
+    # Derive target from action type
+    target = (
+        "system" if action in ("free_memory", "disk_cleanup", "clear_cache", "run_gc")
+        else alert.category
+    )
+
+    # ── Confidence calibration: blend with historical success rate ─────────────
+    success_rate = _get_success_rate(alert.agent_id, action, alert_context)
+    if success_rate is not None:
+        blended = round(decision["confidence"] * 0.6 + success_rate * 0.4, 2)
+        logging.info("[AGENT] Calibrated confidence %.2f → %.2f (success_rate=%.0f%%)",
+                     decision["confidence"], blended, success_rate * 100)
+        decision["confidence"] = blended
+
+    # ── 5. GATE ON EXECUTION MODE ─────────────────────────────────────────────
+    block_reason: str | None = None
+
+    # notify_only is never dispatched as a command — log to audit_logs and skip queueing
+    if action == "notify_only":
+        disp_status = "notify_only"
+        try:
+            async with SessionLocal() as _db:
+                await _db.execute(text(
+                    "INSERT INTO audit_logs (id, org_id, agent_id, action, detail) "
+                    "VALUES (:id, :org_id, :agent_id, 'ai_notify_only', :detail)"
+                ), {
+                    "id":        str(uuid.uuid4()),
+                    "org_id":    alert.org_id,
+                    "agent_id":  alert.agent_id,
+                    "detail":    json.dumps({
+                        "root_cause": decision.get("root_cause"),
+                        "summary":    decision.get("summary"),
+                        "confidence": decision["confidence"],
+                    }),
+                })
+                await _db.commit()
+        except Exception as _al_exc:
+            logging.warning("[AGENT] Could not write audit log for notify_only: %s", _al_exc)
+        logging.info("[AGENT] notify_only — decision logged, no command queued (agent=%s)", alert.agent_id)
+
+    elif exec_mode == "dry_run":
+        disp_status = "dry_run"
+        logging.info("[AGENT] dry_run — recommended: %s → %s", action, target)
+
+    elif exec_mode == "manual_approval":
+        _PENDING_APPROVALS.setdefault(alert.agent_id, []).append({
+            "id":             str(uuid.uuid4()),
+            "action":         action,
+            "target":         target,
+            "alert_category": alert.category,
+            "created_at":     _now().isoformat(),
+        })
         disp_status = "needs_approval"
-        logging.info("[AGENT EXECUTION] mode=supervised — queued for approval: %s → %s", action, target)
+        logging.info("[AGENT] manual_approval — queued: %s → %s", action, target)
+
     elif exec_mode == "auto_safe":
-        # 3D: query restart count from agent_action_log then check safe-list
         restart_count = 0
         try:
             async with SessionLocal() as _db:
@@ -968,73 +1387,99 @@ async def _lc_analyze(
                     select(_sqlfunc.count()).where(
                         AgentActionLog.agent_id == alert.agent_id,
                         AgentActionLog.action == "restart_service",
-                        AgentActionLog.executed_at >= one_hour_ago,
+                        AgentActionLog.created_at >= one_hour_ago,
                     )
                 )
                 restart_count = row.scalar() or 0
-        except Exception as _exc:
-            logging.warning("[AGENT] Could not query restart count: %s", _exc)
+        except Exception as _rc_exc:
+            logging.warning("[AGENT] Could not query restart count: %s", _rc_exc)
 
         allowed, block_reason = can_auto_execute(action, target, alert.agent_id, restart_count)
-        min_conf = _CONFIDENCE_THRESHOLDS.get(action, 0.75)
+        org_threshold = await _get_confidence_threshold(org_id or alert.org_id)
+        min_conf = max(org_threshold, _CONFIDENCE_THRESHOLDS.get(action, org_threshold))
         low_conf = decision["confidence"] < min_conf
-        if allowed and decision["safe"] and not low_conf:
-            _PENDING_COMMANDS.setdefault(alert.agent_id, []).append({"action": action, "target": target})
-            disp_status = "queued"
-            logging.info("[AGENT EXECUTION] mode=autonomous — auto-queued: %s → %s", action, target)
-            asyncio.create_task(_dispatch_action(action, target, decision.get("params")))
-            asyncio.create_task(_schedule_feedback_check(alert.agent_id, action, target, cpu, memory, alert_context, exec_mode))
+
+        if allowed and decision["safe_to_auto_fix"] and not low_conf:
             try:
-                async with SessionLocal() as _db:
-                    _db.add(AgentActionLog(agent_id=alert.agent_id, action=action, target=target, success=True))
-                    await _db.commit()
-            except Exception as _exc:
-                logging.warning("[AGENT] Could not log action: %s", _exc)
+                from app.core.remediation_dispatch import safe_enqueue_command
+                dispatch_result = await safe_enqueue_command(
+                    db=None,
+                    org_id=alert.org_id,
+                    agent_id=alert.agent_id,
+                    command=action,
+                    target=target,
+                    args=None,
+                    role="system",
+                    initiated_by=None,
+                    llm_raw_response=raw or json.dumps(decision),
+                    correlation_id=None,
+                )
+                disp_status = "queued" if dispatch_result.get("dispatched") else "needs_approval"
+                logging.info("[AGENT] auto_safe dispatched: %s → %s (risk=%s)",
+                             action, target, dispatch_result.get("risk_level"))
+                asyncio.create_task(_schedule_feedback_check(
+                    alert.agent_id, action, target,
+                    cpu, memory, metrics.get("disk", 0.0),
+                    alert_context, exec_mode,
+                ))
+            except HTTPException as _he:
+                disp_status = "blocked"
+                block_reason = _he.detail
+                logging.warning("[AGENT] auto_safe blocked by policy: %s", block_reason)
+            except Exception as _disp_exc:
+                disp_status = "error"
+                block_reason = str(_disp_exc)
+                logging.error("[AGENT] auto_safe dispatch failed: %s", _disp_exc)
         else:
             if low_conf:
-                block_reason = f"confidence {decision['confidence']:.2f} < {min_conf:.2f} threshold for {action} — requires manual approval"
+                block_reason = (f"confidence {decision['confidence']:.2f} < "
+                                f"{min_conf:.2f} for {action} (org threshold: {org_threshold:.2f})")
             disp_status = "needs_review"
-            logging.info("[AGENT EXECUTION] mode=autonomous — blocked: %s",
-                         block_reason or "unsafe action")
+            logging.info("[AGENT] auto_safe blocked: %s", block_reason or "unsafe action")
+
     else:
         disp_status = "dry_run"
 
+    # ── 6. STORE DECISION ─────────────────────────────────────────────────────
     record = {
-        "timestamp": _now().isoformat(),
-        "alert_category": alert.category,
-        "severity": alert.severity,
-        "root_cause": decision.get("reasoning") or decision.get("reason", ""),
-        "confidence": decision["confidence"],
-        "impact": alert.severity,
-        "summary": f"LangChain agent: {action}" + (f" → {target}" if target else ""),
+        "timestamp":          _now().isoformat(),
+        "alert_category":     alert.category,
+        "severity":           alert.severity,
+        "root_cause":         decision.get("root_cause", ""),
+        "confidence":         decision["confidence"],
+        "impact":             alert.severity,
+        "summary":            decision.get("summary", ""),
         "recommended_action": action,
-        "contributing_process": decision.get("contributing_process"),
-        "safe_to_auto_fix": decision["safe"],
-        "status": disp_status,
-        "decision_source": decision.get("decision_source", "langchain"),
-        "block_reason": block_reason if disp_status == "needs_review" else None,
+        "reasoning_steps":    decision.get("reasoning_steps", []),
+        "safe_to_auto_fix":   decision.get("safe_to_auto_fix", False),
+        "status":             disp_status,
+        "decision_source":    decision.get("decision_source", "llm"),
+        "block_reason":       block_reason if disp_status in ("needs_review", "blocked") else None,
     }
+
     hist = _AI_HISTORY.setdefault(alert.agent_id, [])
     hist.insert(0, record)
     if len(hist) > 10:
         hist.pop()
 
-    # Persist to DB so decisions survive server restarts
     try:
         async with SessionLocal() as _db:
             await _db.execute(text(
-                "INSERT INTO agent_action_log (agent_id, action, target, success, metadata_json) "
-                "VALUES (:agent_id, :action, :target, :success, :meta)"
+                "INSERT INTO agent_action_log "
+                "(agent_id, action, target, success, decision_source, llm_raw_response, metadata_json) "
+                "VALUES (:agent_id, :action, :target, :success, :source, :llm, :meta)"
             ), {
                 "agent_id": alert.agent_id,
-                "action": action,
-                "target": target or "",
-                "success": True,
-                "meta": json.dumps(record),
+                "action":   action,
+                "target":   target or "",
+                "success":  disp_status == "queued",
+                "source":   decision.get("decision_source", "llm"),
+                "llm":      raw or None,
+                "meta":     json.dumps(record),
             })
             await _db.commit()
-    except Exception as _exc:
-        logging.warning("[AGENT] Could not persist AI decision to DB: %s", _exc)
+    except Exception as _db_exc:
+        logging.warning("[AGENT] Could not persist AI decision: %s", _db_exc)
 
 
 def _get_success_rate(agent_id: str, action: str, context: str | None = None) -> float | None:
@@ -1071,8 +1516,47 @@ def _get_action_rankings(agent_id: str, context: str = "") -> list[dict]:
     return ranked
 
 
+def _compute_success_rates(agent_id: str) -> dict[str, float | None]:
+    """
+    Canonical success-rate computation for an agent across all actions.
+    Returns {action: rate} where rate is None when fewer than 3 attempts exist.
+    Only the last 20 attempts per action are considered.
+    """
+    feedback = _ACTION_FEEDBACK.get(agent_id, [])
+    counts: dict[str, list[bool]] = {}
+    for f in feedback:
+        act = f.get("action")
+        if act:
+            counts.setdefault(act, []).append(bool(f.get("success")))
+    result: dict[str, float | None] = {}
+    for act, outcomes in counts.items():
+        last20 = outcomes[-20:]
+        result[act] = round(sum(last20) / len(last20), 2) if len(last20) >= 3 else None
+    return result
+
+
+def _action_succeeded(action: str, before: dict, after: dict) -> bool:
+    """Determine if an action actually worked based on what it targets."""
+    delta_cpu = before.get("cpu",    0.0) - after.get("cpu",    0.0)
+    delta_mem = before.get("memory", 0.0) - after.get("memory", 0.0)
+    delta_dsk = before.get("disk",   0.0) - after.get("disk",   0.0)
+
+    if action in ("free_memory", "run_gc"):
+        return delta_mem >= 3.0
+    if action in ("clear_cache",):
+        return delta_mem >= 2.0 or delta_cpu >= 3.0
+    if action in ("disk_cleanup",):
+        return delta_dsk >= 0.5
+    if action in ("kill_process",):
+        return delta_cpu >= 5.0 or delta_mem >= 3.0
+    if action in ("restart_service",):
+        return delta_cpu >= 2.0
+    return (delta_cpu + delta_mem) >= 3.0
+
+
 async def _schedule_feedback_check(
-    agent_id: str, action: str, target: str, cpu_before: float, memory_before: float,
+    agent_id: str, action: str, target: str,
+    cpu_before: float, memory_before: float, disk_before: float = 0.0,
     context: str = "", exec_mode: str = "dry_run",
     retry_count: int = 0, retry_of: str = "",
 ) -> None:
@@ -1092,7 +1576,12 @@ async def _schedule_feedback_check(
                 return
             cpu_after    = snap.cpu    or 0.0
             memory_after = snap.memory or 0.0
-            success = (cpu_after < cpu_before - 5) or (memory_after < memory_before - 5)
+            disk_after   = snap.disk   or 0.0
+
+            before = {"cpu": cpu_before, "memory": memory_before, "disk": disk_before}
+            after  = {"cpu": cpu_after,  "memory": memory_after,  "disk": disk_after}
+            success = _action_succeeded(action, before, after)
+
             feedback = {
                 "timestamp":     _now().isoformat(),
                 "action":        action,
@@ -1104,6 +1593,8 @@ async def _schedule_feedback_check(
                 "cpu_after":     round(cpu_after,     1),
                 "memory_before": round(memory_before, 1),
                 "memory_after":  round(memory_after,  1),
+                "disk_before":   round(disk_before,   1),
+                "disk_after":    round(disk_after,    1),
                 "success":       success,
             }
             hist = _ACTION_FEEDBACK.setdefault(agent_id, [])
@@ -1111,17 +1602,39 @@ async def _schedule_feedback_check(
             if len(hist) > 20:
                 hist.pop()
             logging.info(
-                "[FEEDBACK] agent=%s action=%s success=%s retry=%d cpu=%.1f→%.1f mem=%.1f→%.1f",
+                "[FEEDBACK] agent=%s action=%s success=%s retry=%d "
+                "cpu=%.1f→%.1f mem=%.1f→%.1f disk=%.1f→%.1f",
                 agent_id, action, success, retry_count,
-                cpu_before, cpu_after, memory_before, memory_after,
+                cpu_before, cpu_after, memory_before, memory_after, disk_before, disk_after,
             )
+
+            # Persist feedback so it survives server restarts
+            try:
+                await db.execute(text(
+                    "INSERT INTO agent_action_log "
+                    "(agent_id, action, target, success, decision_source, metadata_json) "
+                    "VALUES (:agent_id, :action, :target, :success, 'feedback', :meta)"
+                ), {
+                    "agent_id": agent_id,
+                    "action":   action,
+                    "target":   target or "",
+                    "success":  success,
+                    "meta":     json.dumps(feedback),
+                })
+                await db.commit()
+            except Exception as _fb_exc:
+                logging.warning("[FEEDBACK] Could not persist feedback to DB: %s", _fb_exc)
 
             # ── Retry logic ────────────────────────────────────────────────────
             if not success and exec_mode == "auto_safe" and retry_count < _MAX_RETRIES:
+                # Exclude: failed action, noop, and any action with < 30% success rate
+                rates = _compute_success_rates(agent_id)
                 rankings = _get_action_rankings(agent_id, context)
                 next_action = next(
                     (r["action"] for r in rankings
-                     if r["action"] not in (action, "noop") and r["action"] in _SAFE_ACTIONS),
+                     if r["action"] not in (action, "noop")
+                     and r["action"] in _SAFE_ACTIONS
+                     and (rates.get(r["action"]) is None or rates.get(r["action"], 1.0) >= 0.30)),
                     None,
                 )
                 if next_action:
@@ -1129,29 +1642,51 @@ async def _schedule_feedback_check(
                         "[RETRY] agent=%s attempt=%d/%d: %s failed → trying %s",
                         agent_id, retry_count + 1, _MAX_RETRIES, action, next_action,
                     )
-                    _PENDING_COMMANDS.setdefault(agent_id, []).append(
-                        {"action": next_action, "target": target, "retry": True}
-                    )
+                    try:
+                        from app.core.remediation_dispatch import safe_enqueue_command
+                        await safe_enqueue_command(
+                            db=None,
+                            org_id="",
+                            agent_id=agent_id,
+                            command=next_action,
+                            target=target,
+                            args={"retry": True},
+                            role="system",
+                            initiated_by=None,
+                            llm_raw_response=None,
+                            correlation_id=None,
+                        )
+                    except Exception as _retry_exc:
+                        logging.warning("[RETRY] Failed to queue %s: %s", next_action, _retry_exc)
+                        _PENDING_COMMANDS.setdefault(agent_id, []).append(
+                            {"action": next_action, "target": target, "retry": True}
+                        )
+                    retry_conf = round((_get_success_rate(agent_id, next_action, context) or 0.5), 2)
                     _AI_HISTORY.setdefault(agent_id, []).insert(0, {
                         "timestamp":          _now().isoformat(),
                         "alert_category":     context.split(":")[0] if ":" in context else context,
                         "severity":           context.split(":")[1] if ":" in context else "",
-                        "root_cause":         f"Retry: {action} failed — switching to {next_action}",
-                        "confidence":         round((_get_success_rate(agent_id, next_action, context) or 0.5), 2),
+                        "root_cause":         f"Auto-retry after {action} failed — switching to {next_action}",
+                        "confidence":         retry_conf,
                         "impact":             "auto-retry",
-                        "summary":            f"Auto-retry {retry_count + 1}/{_MAX_RETRIES}: {action} → {next_action}",
+                        "summary":            (f"Auto-retry {retry_count + 1}/{_MAX_RETRIES}: "
+                                               f"{action} failed → trying {next_action}"),
                         "recommended_action": next_action,
+                        "reasoning_steps":    [f"{action} did not improve metrics",
+                                               f"Next best action by success rate: {next_action}",
+                                               f"Historical rate: {retry_conf:.0%}"],
                         "safe_to_auto_fix":   True,
                         "status":             "queued",
+                        "decision_source":    "auto_retry",
                     })
                     asyncio.create_task(_schedule_feedback_check(
                         agent_id, next_action, target,
-                        cpu_after, memory_after,
+                        cpu_after, memory_after, disk_after,
                         context, exec_mode,
                         retry_count + 1, action,
                     ))
                 else:
-                    logging.warning("[RETRY] agent=%s no alternative action available after %s failed",
+                    logging.warning("[RETRY] agent=%s no eligible action after %s failed",
                                     agent_id, action)
     except Exception as exc:
         logging.warning("[FEEDBACK] check failed for agent %s: %s", agent_id, exc)
@@ -1465,6 +2000,10 @@ _CONFIDENCE_THRESHOLDS: dict[str, float] = {
 # Per-agent execution mode: "dry_run" | "manual_approval" | "auto_safe"
 _AGENT_EXEC_MODE: dict[str, str] = {}
 
+# LLM call rate limiter — one timestamp per agent (unix epoch)
+_LC_ANALYZE_LAST_RUN: dict[str, float] = {}
+LC_ANALYZE_COOLDOWN_SECS: int = 20
+
 
 async def restore_ai_history_from_db() -> None:
     """Repopulate _AI_HISTORY from DB on startup so decisions survive server restarts."""
@@ -1473,7 +2012,8 @@ async def restore_ai_history_from_db() -> None:
             rows = await db.execute(text(
                 "SELECT agent_id, metadata_json FROM agent_action_log "
                 "WHERE metadata_json IS NOT NULL "
-                "ORDER BY executed_at DESC "
+                "AND (decision_source IS NULL OR decision_source != 'feedback') "
+                "ORDER BY created_at DESC "
                 "LIMIT 500"
             ))
             for agent_id, meta in rows:
@@ -1488,6 +2028,53 @@ async def restore_ai_history_from_db() -> None:
     except Exception as exc:
         logging.warning("[AGENT] Could not restore AI history: %s", exc)
 
+
+async def restore_exec_modes_from_db() -> None:
+    """Reload per-agent execution_mode from agents table into _AGENT_EXEC_MODE on startup."""
+    try:
+        async with SessionLocal() as db:
+            rows = await db.execute(text(
+                "SELECT id, execution_mode FROM agents WHERE is_active = TRUE"
+            ))
+            count = 0
+            for agent_id, mode in rows:
+                if mode and mode in ("dry_run", "manual_approval", "auto_safe"):
+                    _AGENT_EXEC_MODE[agent_id] = mode
+                    count += 1
+        logging.info("[AGENT] Restored execution_mode for %d agents from DB", count)
+    except Exception as exc:
+        logging.warning("[AGENT] Could not restore execution_mode: %s", exc)
+
+
+async def restore_feedback_from_db() -> None:
+    """Rebuild _ACTION_FEEDBACK from persisted feedback rows in agent_action_log on startup."""
+    try:
+        async with SessionLocal() as db:
+            rows = await db.execute(text(
+                "SELECT agent_id, metadata_json FROM agent_action_log "
+                "WHERE decision_source = 'feedback' AND metadata_json IS NOT NULL "
+                "ORDER BY created_at DESC "
+                "LIMIT 1000"
+            ))
+            count = 0
+            for agent_id, meta in rows:
+                bucket = _ACTION_FEEDBACK.setdefault(agent_id, [])
+                if len(bucket) >= 20:
+                    continue
+                try:
+                    entry = json.loads(meta)
+                    # Ensure required feedback keys are present
+                    if "action" in entry and "success" in entry:
+                        bucket.append(entry)
+                        count += 1
+                except Exception:
+                    pass
+        logging.info("[AGENT] Restored feedback for %d agents (%d records) from DB",
+                     len(_ACTION_FEEDBACK), count)
+    except Exception as exc:
+        logging.warning("[AGENT] Could not restore feedback: %s", exc)
+
+
 # Last AI error message + 60-second NIM health cache (5C)
 _LAST_AI_ERROR: str | None = None
 _NIM_HEALTH_CACHE: dict = {"status": None, "ts": 0.0}
@@ -1495,6 +2082,9 @@ _NIM_HEALTH_TTL = 60.0
 
 # Pending approvals: agent_id → [{id, action, target, ai_decision, created_at}]
 _PENDING_APPROVALS: dict[str, list[dict]] = {}
+
+# On-demand remediation run history: agent_id → last 20 records
+_REMEDIATION_HISTORY: dict[str, list[dict]] = {}
 
 # Feedback loop: agent_id → last 20 action outcome records
 _ACTION_FEEDBACK: dict[str, list[dict]] = {}
@@ -1540,6 +2130,9 @@ def build_metrics_router() -> APIRouter:
         agent = await _require_agent(request, agent_key, db, body.org_id)
         agent.last_seen = _now()
         agent.status = "live"
+        _pinfo = agent.platform_info or {}
+        _pinfo.update({"last_cpu": body.metrics.cpu, "last_memory": body.metrics.memory, "last_disk": body.metrics.disk})
+        agent.platform_info = _pinfo
 
         snapshot = MetricSnapshot(
             org_id=body.org_id,
@@ -1574,22 +2167,53 @@ def build_metrics_router() -> APIRouter:
         db.add(snapshot)
         await db.commit()
         await db.refresh(snapshot)
-        created_alerts, resolved_ids = await _check_anomalies(db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory)
+        created_alerts, resolved_ids, notify_pairs = await _check_anomalies(
+            db, body.org_id, agent.id, body.metrics.cpu, body.metrics.memory, body.metrics.disk
+        )
         if created_alerts:
             await db.flush()
             for _a in created_alerts:
                 db.expunge(_a)
         await db.commit()
+
         _hub = _get_realtime_hub(request)
+
+        # SSE: alert_resolved events
         for rid in resolved_ids:
             _hub.publish("alert_resolved", {"alert_id": rid, "agent_id": agent.id}, body.org_id)
+
+        # SSE: alert_created events
+        for _a in created_alerts:
+            _hub.publish("alert_created", {
+                "alert_id": _a.id,
+                "agent_id": agent.id,
+                "severity": _a.severity,
+                "category": _a.category,
+            }, body.org_id)
+
+        # Background: AI analysis for each new alert
         for _a in created_alerts:
             background_tasks.add_task(
                 _lc_analyze, _a, body.metrics.cpu, body.metrics.memory,
+                body.org_id,
                 body.metrics.top_processes,
                 body.metrics.load_avg_1m, body.metrics.load_avg_5m, body.metrics.load_avg_15m,
             )
-        _hub.publish("metric_update", _serialize_metric(snapshot), body.org_id)
+
+        # Background: alert-rule notifications (only DB-rule alerts with notify_channels)
+        for _a, _channel_ids, _alert_data in notify_pairs:
+            if _a.id:  # id assigned after flush
+                background_tasks.add_task(
+                    _notify_alert_rule, _a.id, body.org_id, _channel_ids, _alert_data
+                )
+
+        # SSE: enriched metric_update
+        _hub.publish("metric_update", {
+            **_serialize_metric(snapshot),
+            "agent_id": agent.id,
+            "status":   "live",
+            "alerts":   [_a.id for _a in created_alerts],
+        }, body.org_id)
         poll_interval = _get_agent_poll_interval(agent.id)
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(),
                 "snapshot": _serialize_metric(snapshot), "poll_interval": poll_interval}
@@ -1734,6 +2358,113 @@ def build_alerts_router() -> APIRouter:
         )
         return [_serialize_alert(row) for row in result.scalars().all()]
 
+    @router.get("/api/alerts")
+    async def list_alerts_for_token(request: Request, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+        payload = await _require_access_token(request)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+
+        result = await db.execute(
+            select(AlertRecord)
+            .where(AlertRecord.org_id == org_id)
+            .order_by(desc(AlertRecord.created_at))
+        )
+        return [_serialize_alert(row) for row in result.scalars().all()]
+
+    @router.get("/api/alerts/{alert_id}")
+    async def get_alert(alert_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        payload = await _require_access_token(request)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+
+        result = await db.execute(
+            select(AlertRecord).where(AlertRecord.id == alert_id, AlertRecord.org_id == org_id)
+        )
+        alert = result.scalar_one_or_none()
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        return _serialize_alert(alert)
+
+    @router.get("/api/agent-action-logs")
+    async def list_agent_action_logs(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        effective_limit = max(1, min(limit, 200))
+        result = await db.execute(
+            select(AgentActionLog)
+            .order_by(desc(AgentActionLog.created_at))
+            .limit(effective_limit)
+        )
+        items = [_serialize_agent_action_log(row) for row in result.scalars().all()]
+        return {"items": items, "count": len(items), "limit": effective_limit}
+
+    @router.get("/api/remediation/jobs")
+    async def list_remediation_jobs(request: Request, limit: int = 100, offset: int = 0, status: str = "queued", db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        payload = await _require_access_token(request)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+
+        effective_limit = max(1, min(limit, 100))
+        effective_offset = max(0, offset)
+        normalized_status = (status or "queued").strip().lower()
+        query = select(RemediationJob).where(RemediationJob.org_id == org_id)
+        if normalized_status != "all":
+            query = query.where(RemediationJob.status == ("pending" if normalized_status == "queued" else normalized_status))
+
+        result = await db.execute(
+            query.order_by(desc(RemediationJob.created_at)).offset(effective_offset).limit(effective_limit)
+        )
+        jobs = result.scalars().all()
+        items: list[dict[str, Any]] = []
+        for job in jobs:
+            proposed_command = (job.payload or {}).get("action") or job.playbook_type
+            risk_level = None
+            try:
+                risk_level = (job.policy_evaluation or {}).get("risk_level")
+            except Exception:
+                risk_level = None
+            items.append({
+                "id": job.id,
+                "machine_name": (job.payload or {}).get("target") or (job.payload or {}).get("agent_id"),
+                "proposed_command": proposed_command,
+                "risk_level": risk_level,
+                "llm_raw_response": job.llm_raw_response,
+                "status": job.status,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+            })
+        return {"items": items, "limit": effective_limit, "offset": effective_offset, "count": len(items)}
+
+    @router.post("/api/remediation/jobs/{job_id}/approve")
+    async def approve_remediation_job(job_id: int, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        payload = await _require_access_token(request)
+        if payload.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Requires role: admin")
+
+        result = await db.execute(select(RemediationJob).where(RemediationJob.id == job_id))
+        job = result.scalar_one_or_none()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != "pending":
+            raise HTTPException(status_code=409, detail="Only pending jobs can be approved")
+
+        alert = None
+        if job.alert_id:
+            alert_result = await db.execute(select(AlertRecord).where(AlertRecord.id == job.alert_id, AlertRecord.org_id == job.org_id))
+            alert = alert_result.scalar_one_or_none()
+
+        command = (job.payload or {}).get("action") or job.playbook_type
+        target = (job.payload or {}).get("target") or (alert.agent_id if alert else None)
+        agent_id = (job.payload or {}).get("agent_id") or (alert.agent_id if alert else None)
+        if not agent_id:
+            raise HTTPException(status_code=409, detail="No target agent available to run this job")
+
+        _PENDING_COMMANDS.setdefault(agent_id, []).append({"action": command, "target": target, "params": (job.payload or {}).get("args")})
+        job.status = "running"
+        job.dispatched_at = _now()
+        await db.commit()
+        return {"status": job.status, "job": {"id": job.id, "status": job.status, "alert_id": job.alert_id, "payload": job.payload}, "message": "Job approved and dispatched"}
+
     @router.put("/api/orgs/{org_id}/alerts/{alert_id}")
     async def update_alert(org_id: str, alert_id: str, body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         await _require_org_access(request, org_id)
@@ -1754,6 +2485,8 @@ def build_alerts_router() -> APIRouter:
     @router.post("/agent/command")
     async def queue_agent_command(body: dict[str, Any], db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         """Backend or AI queues a command for a specific agent (identified by token)."""
+        from app.core.remediation_dispatch import safe_enqueue_command
+        
         token = body.get("token", "")
         action = body.get("action", "")
         target = body.get("target", "")
@@ -1767,9 +2500,26 @@ def build_alerts_router() -> APIRouter:
         agent = result.scalar_one_or_none()
         if agent is None:
             raise HTTPException(status_code=401, detail="Invalid agent token")
-        _PENDING_COMMANDS.setdefault(agent.id, []).append({"action": action, "target": target})
-        logging.info("[CMD] Queued %s → %s for agent %s", action, target, agent.id)
-        return {"ok": True, "agent_id": agent.id, "queued": {"action": action, "target": target}}
+        
+        # Use centralized policy-aware enqueue
+        try:
+            response = await safe_enqueue_command(
+                db=db,
+                org_id=agent.org_id,
+                agent_id=agent.id,
+                command=action,
+                target=target,
+                role="system",
+                initiated_by=None,
+                correlation_id=None,
+            )
+            logging.info("[CMD] Queued %s → %s for agent %s (policy: %s)", action, target, agent.id, response.get("risk_level"))
+            return {"ok": True, "agent_id": agent.id, "queued": {"action": action, "target": target}, "response": response}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.error("[CMD] Failed to queue command: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/agent/command")
     async def poll_agent_commands(token: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
@@ -1785,10 +2535,117 @@ def build_alerts_router() -> APIRouter:
         poll_interval = _get_agent_poll_interval(agent.id)
         return {"commands": commands, "poll_interval": poll_interval}
 
+    @router.post("/agent/command/result")
+    async def agent_command_result(request: Request, body: dict[str, Any], db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Agent posts command execution results. Auth by X-Agent-Key header or token param."""
+        # Authenticate agent via header or token
+        token = request.headers.get("X-Agent-Key") or body.get("token") or request.query_params.get("token")
+        if not token:
+            raise HTTPException(status_code=400, detail="Missing agent token")
+        key_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        result = await db.execute(select(Agent).where(Agent.key_hash == key_hash, Agent.is_active.is_(True)))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+
+        cmd_id = body.get("command_id") or body.get("id") or None
+        correlation_id = body.get("correlation_id") or cmd_id
+        status = body.get("status") or ("completed" if body.get("success") else "failed")
+        success = body.get("success")
+        exit_code = body.get("exit_code")
+        stdout = body.get("stdout")
+        stderr = body.get("stderr")
+        remediation_job_id = body.get("remediation_job_id")
+
+        # Try to find existing AgentActionLog by correlation_id or most recent queued entry
+        from app.core.database import AgentActionLog
+
+        audit_row = None
+        if correlation_id:
+            q = select(AgentActionLog).where(AgentActionLog.correlation_id == correlation_id, AgentActionLog.agent_id == agent.id).order_by(AgentActionLog.created_at.desc()).limit(1)
+            res = await db.execute(q)
+            audit_row = res.scalar_one_or_none()
+
+        if audit_row is None:
+            q = select(AgentActionLog).where(AgentActionLog.agent_id == agent.id, AgentActionLog.status.in_(("queued", "started"))).order_by(AgentActionLog.created_at.desc()).limit(1)
+            res = await db.execute(q)
+            audit_row = res.scalar_one_or_none()
+
+        now_ts = _now()
+        if audit_row is None:
+            # create a new audit row if none found
+            audit_row = AgentActionLog(
+                org_id=agent.org_id,
+                agent_id=agent.id,
+                remediation_job_id=remediation_job_id,
+                action=body.get("action") or "unknown",
+                target=body.get("target") or None,
+                initiated_by=None,
+                execution_mode=None,
+                decision_source=body.get("decision_source"),
+                llm_raw_response=body.get("llm_raw_response"),
+                policy_evaluation=body.get("policy_evaluation"),
+                status=status or "completed",
+                success=bool(success) if success is not None else None,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                correlation_id=correlation_id,
+                created_at=now_ts,
+                completed_at=now_ts,
+            )
+            db.add(audit_row)
+        else:
+            # update existing
+            audit_row.status = status or audit_row.status
+            if success is not None:
+                audit_row.success = bool(success)
+            if exit_code is not None:
+                audit_row.exit_code = int(exit_code)
+            if stdout is not None:
+                audit_row.stdout = str(stdout)
+            if stderr is not None:
+                audit_row.stderr = str(stderr)
+            if correlation_id and not audit_row.correlation_id:
+                audit_row.correlation_id = correlation_id
+            if remediation_job_id is not None:
+                audit_row.remediation_job_id = remediation_job_id
+            audit_row.completed_at = now_ts
+
+        job_id_to_finalize = remediation_job_id or getattr(audit_row, "remediation_job_id", None)
+        if success is True and job_id_to_finalize is not None:
+            job_result = await db.execute(
+                select(RemediationJob).where(
+                    RemediationJob.id == job_id_to_finalize,
+                    RemediationJob.org_id == agent.org_id,
+                )
+            )
+            job = job_result.scalar_one_or_none()
+            if job is not None:
+                job.status = "success"
+                job.completed_at = now_ts
+                if job.alert_id:
+                    alert_result = await db.execute(
+                        select(AlertRecord).where(
+                            AlertRecord.id == job.alert_id,
+                            AlertRecord.org_id == agent.org_id,
+                        )
+                    )
+                    alert = alert_result.scalar_one_or_none()
+                    if alert is not None:
+                        alert.status = "resolved"
+                        alert.resolved_at = now_ts
+                        alert.resolution_reason = alert.resolution_reason or "Resolved after successful command execution"
+
+        await db.commit()
+        return {"ok": True, "agent_id": agent.id, "audit_id": getattr(audit_row, "id", None)}
+
     @router.post("/agent/approve")
     async def approve_action(body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         """Human approves a pending AI action — dispatches it to the agent's command queue."""
-        await _require_access_token(request)
+        from app.core.remediation_dispatch import safe_enqueue_command
+        
+        payload = await _require_access_token(request)
         agent_id = body.get("agent_id", "")
         approval_id = body.get("approval_id", "")
         pending = _PENDING_APPROVALS.get(agent_id, [])
@@ -1798,20 +2655,44 @@ def build_alerts_router() -> APIRouter:
         _PENDING_APPROVALS[agent_id] = [a for a in pending if a["id"] != approval_id]
         if approval["action"] not in {"restart_service", "run_script", "notify_only"}:
             raise HTTPException(status_code=400, detail="Action not in allowlist")
-        _PENDING_COMMANDS.setdefault(agent_id, []).append({"action": approval["action"], "target": approval["target"]})
-        asyncio.create_task(_dispatch_action(approval["action"], approval["target"], approval.get("params")))
-        logging.info("[APPROVAL] Approved and dispatched: %s → %s for agent %s", approval["action"], approval["target"], agent_id)
-        return {"ok": True, "queued": approval}
+        
+        # Use centralized policy-aware enqueue
+        try:
+            response = await safe_enqueue_command(
+                db=db,
+                org_id=payload.get("org_id", ""),
+                agent_id=agent_id,
+                command=approval["action"],
+                target=approval["target"],
+                args=approval.get("params"),
+                role=payload.get("role", "admin"),
+                initiated_by=payload.get("sub"),
+                correlation_id=approval_id,
+            )
+            logging.info("[APPROVAL] Approved and dispatched: %s → %s for agent %s (policy: %s)", 
+                        approval["action"], approval["target"], agent_id, response.get("risk_level"))
+            return {"ok": True, "queued": approval, "response": response}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.error("[APPROVAL] Failed to dispatch: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
 
     @router.patch("/api/orgs/{org_id}/agents/{agent_id}/execution-mode")
-    async def set_execution_mode(org_id: str, agent_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-        """Set per-agent execution mode: dry_run | manual_approval | auto_safe."""
+    async def set_execution_mode(org_id: str, agent_id: str, body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+        """Set per-agent execution mode: dry_run | manual_approval | auto_safe. Persisted to DB."""
         await _require_org_access(request, org_id)
         mode = body.get("mode", "dry_run")
         if mode not in ("dry_run", "manual_approval", "auto_safe"):
             raise HTTPException(status_code=400, detail="mode must be dry_run | manual_approval | auto_safe")
+        # Persist to in-memory dict immediately
         _AGENT_EXEC_MODE[agent_id] = mode
-        logging.info("[EXEC MODE] agent=%s → mode=%s", agent_id, mode)
+        # Persist to DB so mode survives server restarts
+        await db.execute(
+            update(Agent).where(Agent.id == agent_id, Agent.org_id == org_id).values(execution_mode=mode)
+        )
+        await db.commit()
+        logging.info("[EXEC MODE] agent=%s → mode=%s (persisted)", agent_id, mode)
         return {"ok": True, "agent_id": agent_id, "mode": mode}
 
     return router
@@ -1897,9 +2778,13 @@ def build_agents_router() -> APIRouter:
         return {
             **_serialize_agent(agent),
             "metrics": _serialize_metric(latest) if latest else {},
-            "info": (latest.extra or {}) if latest else {},
+            "info": {
+                **{k: v for k, v in (agent.platform_info or {}).items()
+                   if k not in ("last_cpu", "last_memory", "last_disk")},
+                **((latest.extra or {}) if latest else {}),
+            },
             "history": [
-                {"timestamp": s.timestamp.isoformat(), "cpu": s.cpu, "memory": s.memory}
+                {"timestamp": s.timestamp.isoformat(), "cpu": s.cpu, "memory": s.memory, "disk": s.disk}
                 for s in snapshots
             ],
             "alerts": [
@@ -2149,6 +3034,66 @@ def build_agents_router() -> APIRouter:
             "open_alerts":     open_count,
         }
 
+    # ── Remediation Agent endpoints ───────────────────────────────────────────
+
+    @router.post("/api/orgs/{org_id}/agents/{agent_id}/remediation/analyze")
+    async def remediation_analyze(
+        org_id: str, agent_id: str, request: Request, db: AsyncSession = Depends(get_db)
+    ) -> dict[str, Any]:
+        await _require_org_access(request, org_id)
+        result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.org_id == org_id))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        snap_result = await db.execute(
+            select(MetricSnapshot).where(MetricSnapshot.agent_id == agent_id)
+            .order_by(desc(MetricSnapshot.timestamp)).limit(1)
+        )
+        latest = snap_result.scalar_one_or_none()
+        metrics   = _serialize_metric(latest) if latest else {}
+        top_procs = (latest.top_processes or {}) if latest else {}
+        exec_mode = _AGENT_EXEC_MODE.get(agent_id, "dry_run")
+        from app.agents.remediation_agent import analyze_agent
+        plan = await analyze_agent(agent.label, metrics, top_procs, exec_mode)
+        run_id = str(uuid.uuid4())
+        record = {"id": run_id, "agent_id": agent_id,
+                  "created_at": _now().isoformat(), "exec_mode": exec_mode, **plan}
+        bucket = _REMEDIATION_HISTORY.setdefault(agent_id, [])
+        bucket.insert(0, record)
+        if len(bucket) > 20:
+            bucket.pop()
+        db.add(RemediationJob(org_id=org_id, playbook_type="on_demand",
+                              status="complete", payload=record))
+        await db.commit()
+        return record
+
+    @router.post("/api/orgs/{org_id}/agents/{agent_id}/remediation/execute")
+    async def remediation_execute(
+        org_id: str, agent_id: str, body: dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)
+    ) -> dict[str, Any]:
+        await _require_org_access(request, org_id)
+        result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.org_id == org_id))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        action = body.get("action", "noop")
+        target = body.get("target") or ""
+        cmd_id = str(uuid.uuid4())
+        command = {"id": cmd_id, "agent_id": agent_id, "action": action,
+                   "params": {"target": target}, "status": "queued"}
+        pending = list(agent.pending_cmds or [])
+        pending.append(command)
+        agent.pending_cmds = pending
+        await db.commit()
+        return {"ok": True, "command_id": cmd_id, "action": action, "target": target}
+
+    @router.get("/api/orgs/{org_id}/agents/{agent_id}/remediation/history")
+    async def remediation_history_endpoint(
+        org_id: str, agent_id: str, request: Request, db: AsyncSession = Depends(get_db)
+    ) -> list[dict[str, Any]]:
+        await _require_org_access(request, org_id)
+        return _REMEDIATION_HISTORY.get(agent_id, [])
+
     return router
 
 
@@ -2244,6 +3189,21 @@ def build_stream_router() -> APIRouter:
         if not org_id:
             raise HTTPException(status_code=403, detail="Organization scope required")
         return StreamingResponse(_stream_realtime_events("alert_update", org_id, request), media_type="text/event-stream")
+
+    @router.get("/stream/agent-updates")
+    async def agent_updates_stream(request: Request) -> StreamingResponse:
+        """Combined SSE stream: metric_update + alert_created + alert_resolved events.
+        Replaces the need for the frontend to poll GET /agents/{id} every 5s."""
+        payload = await _require_access_token(request)
+        org_id = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+        return StreamingResponse(
+            _stream_realtime_events(
+                {"metric_update", "alert_created", "alert_resolved"}, org_id, request
+            ),
+            media_type="text/event-stream",
+        )
 
     return router
 

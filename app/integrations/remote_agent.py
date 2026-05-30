@@ -205,6 +205,26 @@ def execute_command(cmd: dict) -> tuple:
 
 # ── Metrics collection ────────────────────────────────────────────────────────
 
+# Background CPU sampler — avoids blocking the heartbeat loop with interval=0.5s
+_cpu_sample: float = 0.0
+_cpu_sampler_started: bool = False
+
+
+def _cpu_sampler() -> None:
+    """Continuously sample CPU in a daemon thread so collect_metrics() never blocks."""
+    global _cpu_sample
+    while True:
+        _cpu_sample = psutil.cpu_percent(interval=1.0)
+
+
+def _start_cpu_sampler() -> None:
+    """Idempotent — safe to call from both run() and __main__."""
+    global _cpu_sampler_started
+    if not _cpu_sampler_started:
+        _cpu_sampler_started = True
+        threading.Thread(target=_cpu_sampler, daemon=True).start()
+
+
 def _get_disk() -> float:
     for path in ('/', 'C:\\'):
         try:
@@ -226,31 +246,119 @@ def _get_temperature():
     return None
 
 
-def _get_load_avg():
+def _collect_top_processes() -> dict:
+    """Return top 10 processes by CPU and by memory. Skips inaccessible procs."""
+    procs = []
+    for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+        try:
+            procs.append({
+                'pid':            p.info['pid'],
+                'name':           p.info['name'],
+                'cpu_percent':    round(p.info['cpu_percent'] or 0.0, 1),
+                'memory_percent': round(p.info['memory_percent'] or 0.0, 1),
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    by_cpu = sorted(procs, key=lambda x: x['cpu_percent'], reverse=True)[:10]
+    by_mem = sorted(procs, key=lambda x: x['memory_percent'], reverse=True)[:10]
+    return {'by_cpu': by_cpu, 'by_mem': by_mem}
+
+
+def _collect_swap() -> float:
+    """Swap usage percent. Returns 0.0 if unavailable (some container environments)."""
+    try:
+        return round(psutil.swap_memory().percent, 1)
+    except Exception:
+        return 0.0
+
+
+def _collect_net_stats() -> dict:
+    """TCP socket state counts. Requires elevated privileges on some platforms.
+    On Windows without admin rights, returns zeros gracefully."""
+    counts: dict = {}
+    try:
+        for conn in psutil.net_connections():
+            counts[conn.status] = counts.get(conn.status, 0) + 1
+    except (psutil.AccessDenied, Exception):
+        pass
+    return {
+        'net_established': counts.get('ESTABLISHED', 0),
+        'net_close_wait':  counts.get('CLOSE_WAIT',  0),
+        'net_time_wait':   counts.get('TIME_WAIT',   0),
+    }
+
+
+def _collect_disk_partitions() -> list:
+    """Per-partition usage. Skips pseudo-filesystems and permission-denied mounts."""
+    partitions = []
+    for part in psutil.disk_partitions(all=False):
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            partitions.append({
+                'device':     part.device,
+                'mountpoint': part.mountpoint,
+                'total':      usage.total,
+                'used':       usage.used,
+                'free':       usage.free,
+                'percent':    round(usage.percent, 1),
+            })
+        except (PermissionError, OSError):
+            pass
+    return partitions
+
+
+def _collect_battery() -> dict:
+    """Battery state. Returns empty dict on desktops/servers with no battery."""
+    try:
+        b = psutil.sensors_battery()
+        if b:
+            return {
+                'battery_percent': round(b.percent, 1),
+                'battery_plugged': b.power_plugged,
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _collect_load_avg() -> dict:
+    """1/5/15-minute load averages as separate numeric fields.
+    On Windows, psutil.getloadavg() is available since psutil 5.9.0 but may
+    raise AttributeError on older installs — returns empty dict in that case."""
     try:
         la = psutil.getloadavg()
-        return f'{la[0]:.2f} {la[1]:.2f} {la[2]:.2f}'
-    except Exception:
-        return None
+        return {
+            'load_avg_1m':  round(la[0], 2),
+            'load_avg_5m':  round(la[1], 2),
+            'load_avg_15m': round(la[2], 2),
+        }
+    except (AttributeError, Exception):
+        return {}
 
 
 def collect_metrics() -> dict:
     net = psutil.net_io_counters()
     vm  = psutil.virtual_memory()
-    return {
-        'cpu':           round(psutil.cpu_percent(interval=0.5), 1),
-        'memory':        round(vm.percent, 1),
-        'memory_used':   vm.used,
-        'memory_total':  vm.total,
-        'disk':          round(_get_disk(), 1),
-        'network_in':    net.bytes_recv,
-        'network_out':   net.bytes_sent,
-        'temperature':   _get_temperature(),
-        'load_avg':      _get_load_avg(),
-        'processes':     len(psutil.pids()),
-        'uptime_secs':   int(time.time() - psutil.boot_time()),
-        'timestamp':     time.time(),
+    metrics = {
+        'cpu':             round(_cpu_sample, 1),       # non-blocking — sampled by background thread
+        'memory':          round(vm.percent, 1),
+        'memory_used':     vm.used,
+        'memory_total':    vm.total,
+        'disk':            round(_get_disk(), 1),
+        'network_in':      net.bytes_recv,
+        'network_out':     net.bytes_sent,
+        'temperature':     _get_temperature(),
+        'processes':       len(psutil.pids()),
+        'uptime_secs':     int(time.time() - psutil.boot_time()),
+        'timestamp':       time.time(),
+        'swap_percent':    _collect_swap(),
+        'top_processes':   _collect_top_processes(),
+        'disk_partitions': _collect_disk_partitions(),
     }
+    metrics.update(_collect_net_stats())    # net_established, net_close_wait, net_time_wait
+    metrics.update(_collect_battery())      # battery_percent, battery_plugged (optional)
+    metrics.update(_collect_load_avg())     # load_avg_1m, load_avg_5m, load_avg_15m (optional)
+    return metrics
 
 
 def collect_info() -> dict:
@@ -275,6 +383,7 @@ def run(server: str, token: str, interval: int = 3,
                   and POST /ingest/heartbeat on the new core_api service.
     Legacy:       falls back to token-in-body POST /agents/heartbeat (old API).
     """
+    _start_cpu_sampler()   # must start before first collect_metrics() call
     use_new_protocol = bool(api_key and org_id)
 
     if use_new_protocol:
@@ -432,4 +541,5 @@ if __name__ == '__main__':
     if not api_key and not args.token:
         parser.error('Provide --token (legacy) or set AIOPS_KEY+AIOPS_ORG env vars (new protocol)')
 
+    _start_cpu_sampler()   # idempotent — run() will also call it, but this starts sampling earlier
     run(args.server, args.token, args.interval, api_key=api_key, org_id=org_id)

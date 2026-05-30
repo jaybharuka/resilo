@@ -1,5 +1,12 @@
 ﻿from __future__ import annotations
 
+import os, pathlib
+try:
+    from dotenv import load_dotenv
+    load_dotenv(pathlib.Path(__file__).parent.parent.parent / ".env", override=False)
+except ImportError:
+    pass
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -87,12 +94,22 @@ async def _startup() -> None:
             await conn.execute(text(
                 "ALTER TABLE agent_action_log ADD COLUMN IF NOT EXISTS metadata_json TEXT"
             ))
+            await conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(20) DEFAULT 'dry_run'"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS ai_confidence_threshold FLOAT"
+            ))
         logging.warning("[startup] schema columns ensured OK")
     except Exception as exc:
         logging.error("[startup] schema ensure FAILED: %s", exc)
 
     try:
-        from app.api.runtime import restore_ai_history_from_db
+        from app.api.runtime import (restore_ai_history_from_db,
+                                     restore_exec_modes_from_db,
+                                     restore_feedback_from_db)
         await restore_ai_history_from_db()
+        await restore_exec_modes_from_db()
+        await restore_feedback_from_db()
     except Exception as exc:
-        logging.warning("[startup] AI history restore failed: %s", exc)
+        logging.warning("[startup] in-memory state restore failed: %s", exc)

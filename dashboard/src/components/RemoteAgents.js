@@ -3,9 +3,42 @@
  * Admin generates a token → user runs one command → live metrics appear here.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { agentApi } from '../services/api';
+import { agentApi, getAccessToken } from '../services/api';
 import { agentsApi } from '../services/resiloApi';
+import { useAuth } from '../context/AuthContext';
+
+// ─── Fetch-based SSE (supports Authorization header, unlike EventSource) ──────
+function createFetchSSE(url, token, onEvent, onFallback) {
+  let active = true;
+  async function connect() {
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let evtType = 'message';
+      while (active) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('event: ')) { evtType = line.slice(7).trim(); }
+          else if (line.startsWith('data: ')) {
+            try { onEvent(evtType, JSON.parse(line.slice(6))); } catch {}
+            evtType = 'message';
+          }
+        }
+      }
+    } catch (_e) { if (active) onFallback(_e); }
+  }
+  connect();
+  return () => { active = false; };
+}
 import OnboardingWizard from './OnboardingWizard';
+import RemediationDrawer from './RemediationDrawer';
 import InfoTip from './InfoTip';
 import {
   Monitor, Plus, RefreshCw, Trash2, Copy, CheckCheck,
@@ -128,7 +161,7 @@ function fmtBytes(bytes) {
 
 function fmtLastSeen(ts) {
   if (!ts) return 'never';
-  const s = Math.round(Date.now() / 1000 - ts);
+  const s = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
   if (s < 5)  return 'just now';
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -825,11 +858,73 @@ function TopProcessesPanel({ processes }) {
   );
 }
 
+// ─── System Health Panel ──────────────────────────────────────────────────────
+function SystemHealthPanel({ agent }) {
+  if (agent.status !== 'live') return null;
+  const m = agent.metrics || {};
+  const checks = [
+    {
+      label: 'Agent heartbeat',
+      ok: agent.status === 'live',
+      detail: `last seen ${fmtLastSeen(agent.last_seen)}`,
+    },
+    {
+      label: 'Metrics ingestion',
+      ok: Object.keys(m).length >= 10,
+      detail: `${Object.keys(m).length} fields received`,
+    },
+    {
+      label: 'AI reasoning',
+      ok: (agent.ai_history || []).length > 0,
+      detail: agent.ai_history?.[0]
+        ? `last decision ${fmtLastSeen(agent.ai_history[0].timestamp)}  [${agent.ai_history[0].decision_source || 'llm'}]`
+        : 'no decisions yet',
+    },
+    {
+      label: 'Feedback loop',
+      ok: (agent.feedback || []).length > 0,
+      detail: (agent.feedback || []).length
+        ? `${agent.feedback.length} outcomes recorded`
+        : 'no outcomes recorded yet',
+    },
+    {
+      label: 'Command channel',
+      ok: true,
+      detail: agent.last_command_at
+        ? `last command ${fmtLastSeen(agent.last_command_at)}`
+        : 'no commands sent yet',
+    },
+  ];
+  return (
+    <div style={{ ...PANEL }}>
+      <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <CheckCircle size={14} color={C.teal} />
+        <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>SYSTEM HEALTH</span>
+      </div>
+      <div style={{ padding: '10px 22px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {checks.map((c, i) => (
+          <div key={c.label} style={{
+            display: 'flex', alignItems: 'center', gap: 12, padding: '9px 0',
+            borderBottom: i < checks.length - 1 ? `1px solid ${C.border}40` : 'none',
+          }}>
+            <span style={{ flexShrink: 0, fontSize: 13 }}>{c.ok ? '✓' : '⚠'}</span>
+            <span style={{ ...UI, fontSize: 12, color: c.ok ? C.teal : C.amber, fontWeight: 600, width: 160, flexShrink: 0 }}>{c.label}</span>
+            <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>{c.detail}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Agent Detail View ────────────────────────────────────────────────────────
 export function AgentDetail({ agentId, onBack }) {
   const [agent, setAgent]       = useState(null);
   const [history, setHistory]   = useState([]);
   const [cmdTick, setCmdTick]   = useState(0);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const { user } = useAuth();
 
   const fetchDetail = useCallback(async () => {
     try {
@@ -847,10 +942,52 @@ export function AgentDetail({ agentId, onBack }) {
   }, [agentId]);
 
   useEffect(() => {
-    fetchDetail();
-    const t = setInterval(fetchDetail, 5000);
-    return () => clearInterval(t);
-  }, [fetchDetail]);
+    fetchDetail(); // initial load
+
+    let cleanup = null;
+    getAccessToken().then(token => {
+      if (!token) {
+        // No token — fall back to polling immediately
+        const t = setInterval(fetchDetail, 5000);
+        cleanup = () => clearInterval(t);
+        return;
+      }
+      const orgId = user?.org_id || '';
+      const url = `/stream/agent-updates${orgId ? `?org_id=${orgId}` : ''}`;
+      cleanup = createFetchSSE(url, token,
+        (evtType, data) => {
+          if (evtType === 'metric_update') {
+            if (data.agent_id !== agentId) return;
+            setAgent(prev => prev ? {
+              ...prev,
+              metrics: { ...(prev.metrics || {}), ...data.metrics },
+              status: data.status || prev.status,
+            } : prev);
+            if (data.alerts?.length) fetchDetail();
+          } else if (evtType === 'alert_created') {
+            if (data.agent_id !== agentId) return;
+            fetchDetail();
+          } else if (evtType === 'alert_resolved') {
+            if (data.agent_id !== agentId) return;
+            setAgent(prev => prev ? {
+              ...prev,
+              alerts: (prev.alerts || []).filter(a => a.id !== data.alert_id),
+            } : prev);
+          }
+        },
+        (_err) => {
+          // SSE dropped — fall back to polling silently
+          const t = setInterval(fetchDetail, 5000);
+          cleanup = () => clearInterval(t);
+        },
+      );
+    }).catch(() => {
+      const t = setInterval(fetchDetail, 5000);
+      cleanup = () => clearInterval(t);
+    });
+
+    return () => { if (cleanup) cleanup(); };
+  }, [agentId, fetchDetail, user?.org_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!agent) {
     return (
@@ -887,6 +1024,7 @@ export function AgentDetail({ agentId, onBack }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <RemediationDrawer agent={agent} open={drawerOpen} onClose={() => setDrawerOpen(false)} />
       {/* Back + header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <button
@@ -903,7 +1041,15 @@ export function AgentDetail({ agentId, onBack }) {
           <span style={{ ...UI, fontSize: 16, fontWeight: 700, color: C.text1 }}>{agent.label}</span>
           <span style={{ ...MONO, fontSize: 10, color: sm.color, background: `${sm.dot}15`, border: `1px solid ${sm.dot}40`, borderRadius: 4, padding: '2px 8px' }}>{sm.label}</span>
         </div>
-        <span style={{ marginLeft: 'auto', ...MONO, fontSize: 10, color: C.text4 }}>
+        <button
+          onClick={() => setDrawerOpen(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 5, cursor: 'pointer', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', color: C.amber, ...MONO, fontSize: 10, letterSpacing: '0.08em', transition: 'all 0.15s' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.15)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.08)'; }}
+        >
+          <Bot size={12} /> REMEDIATION AGENT
+        </button>
+        <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>
           {fmtLastSeen(agent.last_seen)} · {info.hostname} · {info.os}
         </span>
       </div>
@@ -939,7 +1085,10 @@ export function AgentDetail({ agentId, onBack }) {
                 <span style={{ ...DISPLAY, fontSize: '2.8rem', lineHeight: 1, color: C.text1 }}>{t.value}</span>
                 <span style={{ ...MONO, fontSize: 12, color: C.text3 }}>{t.unit}</span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <div style={{ marginTop: 10 }}>
+                <Bar pct={parseFloat(t.value) || 0} alertPct={t.status === 'critical' ? 0 : 90} warnPct={t.status === 'warning' ? 0 : 75} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: col, boxShadow: `0 0 6px ${col}80`, display: 'inline-block' }} />
                 <span style={{ ...MONO, fontSize: 10, color: col, letterSpacing: '0.08em' }}>{t.status.toUpperCase()}</span>
                 {isAnomaly && t.fix && agent.status === 'live' && (
@@ -974,7 +1123,7 @@ export function AgentDetail({ agentId, onBack }) {
           <Circle size={8} color={C.teal} fill={C.teal} style={{ animation: 'pulse 1.5s ease-in-out infinite' }} />
           <span style={{ ...MONO, fontSize: 11, letterSpacing: '0.12em', color: C.text2 }}>LIVE PERFORMANCE</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
-            {[['#F59E0B', 'CPU'], ['#2DD4BF', 'Memory']].map(([c, l]) => (
+            {[['#F59E0B', 'CPU'], ['#2DD4BF', 'Memory'], ['#A78BFA', 'Disk']].map(([c, l]) => (
               <span key={l} style={{ display: 'flex', alignItems: 'center', gap: 5, ...UI, fontSize: 12, color: C.text3 }}>
                 <span style={{ width: 20, height: 2, background: c, display: 'inline-block', borderRadius: 1 }} />{l}
               </span>
@@ -993,6 +1142,7 @@ export function AgentDetail({ agentId, onBack }) {
               />
               <Line type="monotone" dataKey="cpu"    stroke="#F59E0B" strokeWidth={2} dot={false} isAnimationActive={false} />
               <Line type="monotone" dataKey="memory" stroke="#2DD4BF" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="disk"   stroke="#A78BFA" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 2" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -1133,7 +1283,14 @@ export function AgentDetail({ agentId, onBack }) {
                         <Zap size={10} /> {d.recommended_action}
                       </span>
                     )}
-                    <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>confidence {confPct}%</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>{confPct}%</span>
+                      <div style={{ width: 60, height: 4, borderRadius: 2, background: C.surface2, overflow: 'hidden' }}>
+                        <div style={{ width: `${confPct}%`, height: '100%', borderRadius: 2,
+                          background: confPct >= 80 ? C.teal : confPct >= 60 ? C.amber : C.red,
+                          transition: 'width 0.5s' }} />
+                      </div>
+                    </div>
                     {d.impact && <span style={{ ...MONO, fontSize: 10, color: C.text4 }}>impact {d.impact}</span>}
                     {/* Action buttons */}
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -1264,6 +1421,9 @@ export function AgentDetail({ agentId, onBack }) {
           </div>
         );
       })()}
+
+      {/* System Health */}
+      <SystemHealthPanel agent={agent} />
 
       {/* Command Center */}
       <CommandCenter
@@ -1398,6 +1558,7 @@ export default function RemoteAgents() {
   const [showModal, setShowModal] = useState(false);
   const [selected, setSelected]   = useState(null); // agent_id for detail view
   const [filterStatus, setFilterStatus] = useState(null); // null = all
+  const { user } = useAuth();
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -1408,12 +1569,48 @@ export default function RemoteAgents() {
     }
   }, []);
 
-  // Poll every 5s to keep status fresh
+  // SSE: update individual cards in-place on metric_update; fall back to polling
   useEffect(() => {
     fetchAgents();
-    const t = setInterval(fetchAgents, 5000);
-    return () => clearInterval(t);
-  }, [fetchAgents]);
+
+    let cleanup = null;
+    getAccessToken().then(token => {
+      if (!token) {
+        const t = setInterval(fetchAgents, 5000);
+        cleanup = () => clearInterval(t);
+        return;
+      }
+      const orgId = user?.org_id || '';
+      const url = `/stream/agent-updates${orgId ? `?org_id=${orgId}` : ''}`;
+      cleanup = createFetchSSE(url, token,
+        (evtType, data) => {
+          if (evtType === 'metric_update' && data.agent_id) {
+            setAgents(prev => prev.map(a =>
+              a.id === data.agent_id
+                ? { ...a,
+                    status: data.status || a.status,
+                    cpu:    data.metrics?.cpu    ?? a.cpu,
+                    memory: data.metrics?.memory ?? a.memory,
+                    disk:   data.metrics?.disk   ?? a.disk,
+                    last_seen: new Date().toISOString(),
+                  }
+                : a
+            ));
+          }
+        },
+        (_err) => {
+          // SSE dropped — fall back to polling
+          const t = setInterval(fetchAgents, 5000);
+          cleanup = () => clearInterval(t);
+        },
+      );
+    }).catch(() => {
+      const t = setInterval(fetchAgents, 5000);
+      cleanup = () => clearInterval(t);
+    });
+
+    return () => { if (cleanup) cleanup(); };
+  }, [fetchAgents, user?.org_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRemove = async (id) => {
     if (!window.confirm('Revoke this agent token and remove the device? The agent script will stop working.')) return;

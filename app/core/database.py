@@ -78,9 +78,10 @@ class Organization(Base):
     name:       Mapped[str]           = mapped_column(String(255), unique=True, nullable=False)
     slug:       Mapped[str]           = mapped_column(String(100), unique=True, nullable=False, index=True)
     plan:       Mapped[str]           = mapped_column(String(30), default="free", nullable=False)  # free|pro|enterprise
-    is_active:  Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
-    settings:   Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
+    is_active:              Mapped[bool]           = mapped_column(Boolean, default=True, nullable=False)
+    settings:               Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    ai_confidence_threshold:Mapped[Optional[float]]= mapped_column(Float, nullable=True)  # per-org override; NULL → use global default
+    created_at:             Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # â”€â”€ Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -187,6 +188,7 @@ class Agent(Base):
     platform_info: Mapped[Optional[dict]]= mapped_column(JSON, nullable=True)  # hostname, os, cpu_cores, python_version
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # device owner
     pending_cmds:  Mapped[Optional[list]]= mapped_column(JSON, nullable=True, default=list)  # queue of commands to deliver
+    execution_mode:Mapped[str]           = mapped_column(String(20), default="dry_run", nullable=False)  # dry_run|manual_approval|auto_safe
     is_active:     Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
     created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -199,8 +201,9 @@ class Agent(Base):
 
 class RemoteAgent(Base):
     """
-    Legacy model used by api_server.py and the old auth migration path.
-    New code should use Agent. Keep this until the old stack is fully decommissioned.
+    LEGACY — do not use in new code. Use Agent instead.
+    Kept only for backward compatibility with api_server.py and old migration path.
+    Remove once the old Flask stack is fully decommissioned.
     """
     __tablename__ = "remote_agents"
 
@@ -337,6 +340,16 @@ class RemediationJob(Base):
     last_error:    Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     updated_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    # Extended fields for audit and decision tracing
+    initiated_by:   Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    execution_mode: Mapped[Optional[str]]  = mapped_column(String(20), nullable=True)  # dry_run|manual_approval|auto_safe
+    decision_source:Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)  # langchain|rule_fallback
+    llm_raw_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    policy_evaluation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    correlation_id:   Mapped[Optional[str]]  = mapped_column(String(100), nullable=True, index=True)
+    scheduled_at:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatched_at:    Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditLog(Base):
@@ -387,6 +400,29 @@ class NotificationChannel(Base):
     severities:   Mapped[Optional[list]]= mapped_column(JSON, nullable=True)
     created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CommandWhitelist(Base):
+    """
+    Per-organization command whitelist and parameter constraints.
+    category: safe | medium | dangerous
+    allowed_targets: JSON array of allowed target names or patterns (NULL=any)
+    allowed_args_schema: JSON schema or descriptor for allowed args (nullable)
+    """
+    __tablename__ = "command_whitelist"
+    __table_args__ = (
+        Index("ix_cmdwl_org", "org_id"),
+    )
+
+    id:                Mapped[int]           = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id:            Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    command:           Mapped[str]           = mapped_column(String(100), nullable=False)
+    category:          Mapped[str]           = mapped_column(String(20), nullable=False, default="safe")
+    allowed_targets:   Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    allowed_args_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    is_active:         Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
+    created_by:        Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at:        Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # â”€â”€ Alert Rules â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -538,15 +574,32 @@ class AgentActionLog(Base):
     """
     __tablename__ = "agent_action_log"
     __table_args__ = (
-        Index("ix_agentactionlog_agent_executed", "agent_id", "executed_at"),
+        Index("ix_agentactionlog_agent_created", "agent_id", "created_at"),
     )
 
-    id:          Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
-    agent_id:    Mapped[str]            = mapped_column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
-    action:      Mapped[str]            = mapped_column(String(100), nullable=False)
-    target:      Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
-    executed_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
-    success:     Mapped[bool]           = mapped_column(Boolean, default=True, nullable=False)
+    id:                Mapped[int]            = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id:            Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    agent_id:          Mapped[str]            = mapped_column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    remediation_job_id:Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("remediation_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    action:            Mapped[str]            = mapped_column(String(100), nullable=False)
+    target:            Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
+    initiated_by:      Mapped[Optional[str]]  = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    execution_mode:    Mapped[Optional[str]]  = mapped_column(String(20), nullable=True)
+    decision_source:   Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)
+    llm_raw_response:  Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    policy_evaluation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    status:            Mapped[str]            = mapped_column(String(20), default="queued", nullable=False)  # queued|started|completed|failed|rejected
+    success:           Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    exit_code:         Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
+    stdout:            Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    stderr:            Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    correlation_id:    Mapped[Optional[str]]  = mapped_column(String(100), nullable=True, index=True)
+    metadata_json:     Mapped[Optional[str]]  = mapped_column(Text, nullable=True)   # JSON blob for AI decisions and feedback records
+    created_at:        Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    completed_at:      Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationship helper
+    remediation_job:   Mapped[Optional["RemediationJob"]] = relationship("RemediationJob", backref="action_logs")
 
 
 async def wait_for_db() -> None:
