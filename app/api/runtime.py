@@ -558,6 +558,7 @@ def _serialize_agent(agent: Agent) -> dict[str, Any]:
         "hostname": pinfo.get("hostname"),
         "ai_history": _AI_HISTORY.get(agent.id, []),
         "execution_mode": _AGENT_EXEC_MODE.get(agent.id, "dry_run"),
+        "source": agent.source or pinfo.get("source", "agent"),
     }
 
 

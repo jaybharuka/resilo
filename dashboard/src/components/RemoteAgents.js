@@ -6,6 +6,17 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { agentApi, getAccessToken } from '../services/api';
 import { agentsApi } from '../services/resiloApi';
 import { useAuth } from '../context/AuthContext';
+import OnboardingWizard from './OnboardingWizard';
+import RemediationDrawer from './RemediationDrawer';
+import InfoTip from './InfoTip';
+import {
+  Monitor, Plus, RefreshCw, Trash2, Copy, CheckCheck,
+  Cpu, HardDrive, MemoryStick, Wifi, Terminal,
+  ChevronLeft, Circle, Zap, Server, Play,
+  CheckCircle, XCircle, AlertTriangle, Clock, Bot,
+  RotateCcw, Flame, Layers, Brain,
+} from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 // ─── Fetch-based SSE (supports Authorization header, unlike EventSource) ──────
 function createFetchSSE(url, token, onEvent, onFallback) {
@@ -37,17 +48,6 @@ function createFetchSSE(url, token, onEvent, onFallback) {
   connect();
   return () => { active = false; };
 }
-import OnboardingWizard from './OnboardingWizard';
-import RemediationDrawer from './RemediationDrawer';
-import InfoTip from './InfoTip';
-import {
-  Monitor, Plus, RefreshCw, Trash2, Copy, CheckCheck,
-  Cpu, HardDrive, MemoryStick, Wifi, Terminal,
-  ChevronLeft, Circle, Zap, Server, Play,
-  CheckCircle, XCircle, AlertTriangle, Clock, Bot,
-  RotateCcw, Flame, Layers, Brain,
-} from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
@@ -518,6 +518,13 @@ function AgentCard({ agent, onSelect, onRemove }) {
         </span>
       ); })()}
 
+      {/* Source badge — only shown for non-agent sources */}
+      {agent.source && agent.source !== 'agent' && (
+        <span style={{ position: 'absolute', bottom: 12, right: agent.source === 'prometheus' ? 82 : 72, ...MONO, fontSize: 9, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 10, background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.35)', color: '#a855f7' }}>
+          {agent.source === 'prometheus' ? 'PROM' : agent.source.toUpperCase()}
+        </span>
+      )}
+
       {agent.status === 'pending' && (
         <p style={{ ...UI, fontSize: 12, color: C.text4, margin: 0 }}>
           Waiting for agent to connect — run the install command on the target machine.
@@ -573,7 +580,7 @@ function CommandCenter({ agentId, agentStatus, metrics, onCommandSent }) {
     setSending(s => ({ ...s, [action]: true }));
     setSent(s => { const n = { ...s }; delete n[action]; return n; });
     try {
-      await agentApi.sendCommand(agentId, action, params);
+      await agentsApi.sendCommand(null, agentId, action, params);
       setSent(s => ({ ...s, [action]: 'ok' }));
       onCommandSent && onCommandSent();
       setTimeout(() => setSent(s => { const n = { ...s }; delete n[action]; return n; }), 4000);

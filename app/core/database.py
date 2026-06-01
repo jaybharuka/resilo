@@ -189,6 +189,7 @@ class Agent(Base):
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # device owner
     pending_cmds:  Mapped[Optional[list]]= mapped_column(JSON, nullable=True, default=list)  # queue of commands to deliver
     execution_mode:Mapped[str]           = mapped_column(String(20), default="dry_run", nullable=False)  # dry_run|manual_approval|auto_safe
+    source:        Mapped[Optional[str]] = mapped_column(String(20), default="agent", nullable=True)  # agent|prometheus|wmi
     is_active:     Mapped[bool]          = mapped_column(Boolean, default=True, nullable=False)
     created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now())
 
