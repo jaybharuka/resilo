@@ -3079,6 +3079,22 @@ def build_agents_router() -> APIRouter:
         exec_mode = _AGENT_EXEC_MODE.get(agent_id, "dry_run")
         from app.agents.remediation_agent import analyze_agent
         plan = await analyze_agent(agent.label, metrics, top_procs, exec_mode)
+
+        # Auto-execute low-risk actions when mode is auto_safe
+        _AUTO_SAFE_CMDS = {"free_memory", "disk_cleanup", "restart_service"}
+        if exec_mode == "auto_safe":
+            for action in plan.get("actions", []):
+                if action.get("command") in _AUTO_SAFE_CMDS and action.get("risk") == "low":
+                    _PENDING_COMMANDS.setdefault(agent_id, []).append({
+                        "id": str(uuid.uuid4()),
+                        "agent_id": agent_id,
+                        "action": action["command"],
+                        "params": {"target": action.get("target") or ""},
+                        "source": "auto_safe",
+                        "status": "queued",
+                    })
+                    action["auto_queued"] = True
+
         run_id = str(uuid.uuid4())
         record = {"id": run_id, "agent_id": agent_id,
                   "created_at": _now().isoformat(), "exec_mode": exec_mode, **plan}
