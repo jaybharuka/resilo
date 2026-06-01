@@ -23,7 +23,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
@@ -730,5 +730,24 @@ def build_v1_router() -> APIRouter:
             pass
 
         return serialized
+
+    @router.get("/incidents")
+    async def list_incidents(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> list[dict[str, Any]]:
+        """Return recent incidents (active first, then resolved), newest first."""
+        payload = await _require_token(request)
+        org_id  = payload.get("org_id")
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization scope required")
+        result = await db.execute(
+            select(Incident)
+            .where(Incident.org_id == org_id)
+            .order_by(Incident.declared_at.desc())
+            .limit(limit)
+        )
+        return [_serialize_incident(inc) for inc in result.scalars().all()]
 
     return router

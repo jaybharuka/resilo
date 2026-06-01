@@ -26,9 +26,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import (Agent, AgentActionLog, AlertRecord, AlertRule, MetricSnapshot,
-                               NotificationChannel, NotificationLog, OnboardingToken,
-                               Organization, RemediationJob,
+from app.core.database import (Agent, AgentActionLog, AlertRecord, AlertRule, Incident,
+                               MetricSnapshot, NotificationChannel, NotificationLog,
+                               OnboardingToken, Organization, RemediationJob,
                                SessionLocal, User, UserSession, get_db)
 from app.core.pricing import PricingService
 
@@ -150,6 +150,13 @@ DEFAULT_ADMIN_EMAIL = "admin@company.local"
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_ORG = "default"
 SSE_HEARTBEAT_SECONDS = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
+
+# ── Cross-server correlation constants ────────────────────────────────────────
+_CORR_CPU_THRESH   = float(os.getenv("CORR_CPU_THRESH",   "85"))
+_CORR_MEM_THRESH   = float(os.getenv("CORR_MEM_THRESH",   "85"))
+_CORR_DISK_THRESH  = float(os.getenv("CORR_DISK_THRESH",  "90"))
+_CORR_MIN_AGENTS   = int(os.getenv("CORR_MIN_AGENTS",      "3"))
+_CORR_WINDOW_SECS  = int(os.getenv("CORR_WINDOW_SECS",  "120"))  # 2-minute look-back
 WS_QUEUE_MAX_SIZE = int(os.getenv("WS_QUEUE_MAX_SIZE", "100"))
 MAX_CONNECTED_CLIENTS = int(os.getenv("MAX_CONNECTED_CLIENTS", "50"))
 
@@ -909,6 +916,210 @@ async def _check_anomalies(
         logging.warning("[alert-rule] Failed to evaluate DB alert rules: %s", _exc)
 
     return created, resolved_ids, notify_pairs
+
+
+# ── Cross-server correlation ──────────────────────────────────────────────────
+
+async def _detect_correlated_spike(
+    db: AsyncSession,
+    org_id: str,
+    trigger_agent_id: str,
+    cpu: float,
+    memory: float,
+    disk: float,
+    background_tasks: BackgroundTasks,
+    hub: Any = None,
+) -> "Incident | None":
+    """Auto-create a SEV-2 incident when 3+ agents in the same org spike simultaneously.
+
+    Returns the Incident if one was created or updated, else None.
+    Never raises — all errors are logged and swallowed.
+    """
+    try:
+        # 1. Is the current reading actually spiking?
+        if cpu < _CORR_CPU_THRESH and memory < _CORR_MEM_THRESH and disk < _CORR_DISK_THRESH:
+            return None
+
+        # 2. Count agents with recent spikes (2-min window)
+        cutoff = _now() - timedelta(seconds=_CORR_WINDOW_SECS)
+        spike_result = await db.execute(
+            select(MetricSnapshot.agent_id)
+            .distinct()
+            .where(
+                MetricSnapshot.org_id == org_id,
+                MetricSnapshot.timestamp >= cutoff,
+            )
+            .where(
+                (MetricSnapshot.cpu >= _CORR_CPU_THRESH) |
+                (MetricSnapshot.memory >= _CORR_MEM_THRESH) |
+                (MetricSnapshot.disk >= _CORR_DISK_THRESH)
+            )
+        )
+        spiking_ids: set[str] = {row[0] for row in spike_result.all()}
+        # Always include the trigger agent (its snapshot may just have been written)
+        spiking_ids.add(trigger_agent_id)
+
+        if len(spiking_ids) < _CORR_MIN_AGENTS:
+            return None
+
+        # 3. Resolve agent labels for the description
+        labels_result = await db.execute(
+            select(Agent.id, Agent.label).where(Agent.id.in_(list(spiking_ids)))
+        )
+        agent_labels: dict[str, str] = {row[0]: row[1] for row in labels_result.all()}
+
+        n = len(spiking_ids)
+        label_list = ", ".join(agent_labels.get(aid, aid[:8]) for aid in list(spiking_ids)[:5])
+        if n > 5:
+            label_list += f" (+{n - 5} more)"
+
+        # Determine dominant spike category
+        if cpu >= _CORR_CPU_THRESH:
+            spike_type = "CPU"
+        elif memory >= _CORR_MEM_THRESH:
+            spike_type = "Memory"
+        else:
+            spike_type = "Disk"
+
+        now = _now()
+        ts_str = now.isoformat()
+
+        # 4. Check for an already-active incident — update timeline instead of creating duplicate
+        existing_result = await db.execute(
+            select(Incident)
+            .where(Incident.org_id == org_id, Incident.status == "active")
+            .order_by(Incident.declared_at.desc())
+            .limit(1)
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing:
+            timeline = list(existing.timeline or [])
+            note = (f"Correlation update: {n} agents now spiking "
+                    f"({spike_type}) — {label_list}.")
+            timeline.append({"ts": ts_str, "actor": "system", "note": note})
+            existing.timeline = timeline
+            await db.commit()
+            logging.info("[CORRELATION] Updated timeline of existing incident %s (%d agents)", existing.id, n)
+            return existing
+
+        # 5. Create new SEV-2 incident
+        inc_id = f"INC-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+        description = (
+            f"Auto-detected: {n} agents reporting high {spike_type} simultaneously. "
+            f"Affected: {label_list}. Possible fleet-wide event."
+        )
+        timeline_entry = {
+            "ts": ts_str,
+            "actor": "system",
+            "note": f"Auto-created by correlation engine ({n} agents spiking {spike_type}).",
+        }
+
+        incident = Incident(
+            id=inc_id,
+            org_id=org_id,
+            severity="SEV2",
+            service="Fleet-Wide",
+            description=description,
+            status="active",
+            timeline=[timeline_entry],
+        )
+        db.add(incident)
+        await db.flush()
+
+        # Build per-agent context for the LLM call
+        affected: list[dict] = []
+        for aid in spiking_ids:
+            affected.append({
+                "agent_id": aid,
+                "label": agent_labels.get(aid, aid),
+                "cpu": cpu if aid == trigger_agent_id else 0.0,
+                "memory": memory if aid == trigger_agent_id else 0.0,
+                "disk": disk if aid == trigger_agent_id else 0.0,
+            })
+
+        background_tasks.add_task(_lc_analyze_incident, inc_id, org_id, affected)
+        await db.commit()
+
+        if hub is not None:
+            try:
+                hub.publish("incident_update", {
+                    "id": inc_id, "severity": "SEV2", "status": "active",
+                    "service": "Fleet-Wide", "description": description,
+                    "agent_count": n,
+                }, org_id)
+            except Exception:
+                pass
+
+        logging.warning("[CORRELATION] SEV-2 incident %s auto-created: %d agents spiking %s",
+                        inc_id, n, spike_type)
+        return incident
+
+    except Exception as _exc:
+        logging.error("[CORRELATION] _detect_correlated_spike failed: %s", _exc)
+        return None
+
+
+async def _lc_analyze_incident(incident_id: str, org_id: str, affected: list[dict]) -> None:
+    """Single LLM call with all affected machines as context; appends result to incident timeline."""
+    agent_lines = "\n".join(
+        f"  - {a['label']}: cpu={a['cpu']:.1f}%  mem={a['memory']:.1f}%  disk={a['disk']:.1f}%"
+        for a in affected
+    )
+    n = len(affected)
+    system_prompt = (
+        "You are a senior SRE analyzing a cross-server incident. "
+        "Respond with valid JSON only — no markdown fences, no prose outside the object."
+    )
+    user_msg = (
+        f"{n} servers in the same organisation are spiking simultaneously:\n"
+        f"{agent_lines}\n\n"
+        "Respond with this exact JSON schema:\n"
+        '{"likely_cause":"<1-2 sentence root-cause hypothesis>","confidence":<0.0-1.0>,'
+        '"recommended_action":"<single most impactful remediation step>",'
+        '"is_fleet_wide":<true|false>}'
+    )
+
+    data: dict = {}
+    try:
+        raw = await asyncio.wait_for(_call_llm(system_prompt, user_msg), timeout=30.0)
+        # Strip optional fences
+        j_start = raw.find("{")
+        j_end   = raw.rfind("}") + 1
+        data = json.loads(raw[j_start:j_end]) if j_start != -1 else {}
+    except Exception as _exc:
+        logging.warning("[CORRELATION] LLM incident analysis failed: %s", _exc)
+        data = {
+            "likely_cause": (
+                "Multiple servers spiking concurrently — possible shared dependency, "
+                "bad deployment, or upstream infrastructure event."
+            ),
+            "confidence": 0.4,
+            "recommended_action": "Check recent deployments and shared infrastructure (DB, cache, LB).",
+            "is_fleet_wide": True,
+        }
+
+    note = (
+        f"AI analysis (confidence={data.get('confidence', 0):.0%}): "
+        f"{data.get('likely_cause', '?')} — "
+        f"Recommended: {data.get('recommended_action', '?')}"
+    )
+
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(select(Incident).where(Incident.id == incident_id))
+            incident = result.scalar_one_or_none()
+            if incident is None:
+                return
+            timeline = list(incident.timeline or [])
+            timeline.append({
+                "ts": _now().isoformat(), "actor": "ai",
+                "note": note, "data": data,
+            })
+            incident.timeline = timeline
+            await db.commit()
+        logging.info("[CORRELATION] AI analysis appended to incident %s", incident_id)
+    except Exception as _exc:
+        logging.error("[CORRELATION] Failed to save incident AI note: %s", _exc)
 
 
 # ---------------------------------------------------------------------------
@@ -2184,6 +2395,13 @@ def build_metrics_router() -> APIRouter:
         await db.commit()
 
         _hub = _get_realtime_hub(request)
+
+        # Cross-server correlation — auto-create SEV-2 when 3+ agents spike together
+        await _detect_correlated_spike(
+            db, body.org_id, agent.id,
+            body.metrics.cpu, body.metrics.memory, body.metrics.disk,
+            background_tasks, _hub,
+        )
 
         # SSE: alert_resolved events
         for rid in resolved_ids:

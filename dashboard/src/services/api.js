@@ -385,6 +385,12 @@ export const apiService = {
   async cancelRemediationJob(jobId) {
     return (await api.post(`/api/remediation/jobs/${jobId}/cancel`)).data;
   },
+  async approveRemediationJob(jobId) {
+    return (await api.post(`/api/remediation/jobs/${jobId}/approve`)).data;
+  },
+  async rejectRemediationJob(jobId, reason = '') {
+    return (await api.post(`/api/remediation/jobs/${jobId}/reject`, { reason })).data;
+  },
   async getRemediationStats() {
     try { return (await api.get('/api/remediation/stats')).data; }
     catch (e) { console.error('getRemediationStats failed:', e?.message); return null; }
@@ -491,6 +497,10 @@ export const apiService = {
     try { return (await api.get('/api/v1/incidents/active')).data; }
     catch { return null; }
   },
+  async getIncidents(limit = 20) {
+    try { return (await api.get(`/api/v1/incidents?limit=${limit}`)).data; }
+    catch { return []; }
+  },
 
   // Intelligence endpoints
   async detectAnomalies(limit = 60) {
@@ -547,6 +557,8 @@ export const systemApi = {
 
 // Authentication endpoints Ã¢â‚¬â€ all routed to FastAPI auth service (port 5001)
 export const authApi = {
+  clerkSync: async ({ clerk_token, email, full_name, username }) =>
+    (await authAxios.post('/auth/clerk-sync', { clerk_token, email, full_name, username })).data,
   registerOrg: async ({ email, username, password, full_name }) =>
     (await authAxios.post('/auth/register', { email, username, password, full_name })).data,
   login: async ({ email, password }) => {

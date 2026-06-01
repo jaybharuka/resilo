@@ -233,7 +233,8 @@ async def _ingest_metrics(
     extra: dict | None = None,
 ) -> None:
     """Write MetricSnapshot, run anomaly checks, schedule AI analysis."""
-    from app.api.runtime import _AGENT_EXEC_MODE, _check_anomalies, _lc_analyze
+    from app.api.runtime import (_AGENT_EXEC_MODE, _check_anomalies,
+                                 _detect_correlated_spike, _lc_analyze)
 
     _AGENT_EXEC_MODE.setdefault(agent.id, agent.execution_mode or "manual_approval")
 
@@ -270,6 +271,9 @@ async def _ingest_metrics(
 
     for a in created_alerts:
         background_tasks.add_task(_lc_analyze, a, cpu, memory, org_id)
+
+    # Cross-server correlation — auto-create SEV-2 when 3+ agents spike together
+    await _detect_correlated_spike(db, org_id, agent.id, cpu, memory, disk, background_tasks)
 
 
 # ── Router ────────────────────────────────────────────────────────────────────

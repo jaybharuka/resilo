@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { agentsApi, alertsApi, coreAxios } from '../services/resiloApi';
-import { Monitor, AlertTriangle, Bot, CheckCircle, Activity, Zap, Server, RefreshCw } from 'lucide-react';
+import { apiService } from '../services/api';
+import { Monitor, AlertTriangle, Bot, CheckCircle, Activity, Zap, Server, RefreshCw, Siren } from 'lucide-react';
 
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
 const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
@@ -38,10 +39,11 @@ function CountCard({ icon, label, value, sub, color }) {
 }
 
 export default function Dashboard() {
-  const [agents,    setAgents]    = useState([]);
-  const [alerts,    setAlerts]    = useState([]);
-  const [sysHealth, setSysHealth] = useState(null);
-  const [loading,   setLoading]   = useState(true);
+  const [agents,         setAgents]         = useState([]);
+  const [alerts,         setAlerts]         = useState([]);
+  const [sysHealth,      setSysHealth]      = useState(null);
+  const [activeIncident, setActiveIncident] = useState(null);
+  const [loading,        setLoading]        = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -52,6 +54,10 @@ export default function Dashboard() {
     try {
       const r = await coreAxios.get('/api/health/system');
       setSysHealth(r.data);
+    } catch {}
+    try {
+      const inc = await apiService.getActiveIncident();
+      setActiveIncident(inc);
     } catch {}
     setLoading(false);
   }, []);
@@ -88,6 +94,28 @@ export default function Dashboard() {
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+
+      {/* Active incident banner — auto-created by correlation engine or manually declared */}
+      {activeIncident && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 18px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.4)' }}>
+          <Siren size={16} color='#F87171' style={{ flexShrink: 0, marginTop: 1 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ ...MONO, fontSize: 11, color: '#F87171', letterSpacing: '0.1em' }}>
+                {activeIncident.severity} ACTIVE
+              </span>
+              <span style={{ ...MONO, fontSize: 10, color: '#6B6357' }}>{activeIncident.id}</span>
+              <span style={{ ...MONO, fontSize: 10, padding: '1px 8px', borderRadius: 6, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)', color: '#F87171' }}>
+                {activeIncident.service}
+              </span>
+            </div>
+            <p style={{ ...UI, fontSize: 12, color: '#A89F8C', margin: '4px 0 0', lineHeight: 1.5 }}>{activeIncident.description}</p>
+            {(activeIncident.timeline || []).filter(e => e.actor === 'ai').slice(-1).map((e, i) => (
+              <p key={i} style={{ ...MONO, fontSize: 10, color: '#6B6357', margin: '4px 0 0' }}>AI: {e.note}</p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Rule-fallback warning banner — shown when NVIDIA_API_KEY is not set */}
       {onlyRuleFallback && (
