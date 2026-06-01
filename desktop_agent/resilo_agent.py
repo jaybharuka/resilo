@@ -248,8 +248,8 @@ def _flush_buffer(url: str, agent_key: str) -> None:
     _save_buffer()
 
 
-def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> tuple[bool, float]:
-    """Send heartbeat with backoff retry. Returns (success, poll_interval)."""
+def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any]) -> tuple[bool, float, list]:
+    """Send heartbeat with backoff retry. Returns (success, poll_interval, commands)."""
     global _OFFLINE_MODE
     url  = f"{backend_url.rstrip('/')}/ingest/heartbeat"
     body = {"org_id": org_id, "metrics": metrics}
@@ -260,7 +260,7 @@ def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any])
                 print("[reconnect] Back online — flushing offline buffer …")
                 _OFFLINE_MODE = False
                 _flush_buffer(url, agent_key)
-            return True, float(resp.get("poll_interval", 5))
+            return True, float(resp.get("poll_interval", 5)), resp.get("commands", [])
         if delay is None:
             break
         if i == 0 and not _OFFLINE_MODE:
@@ -271,7 +271,7 @@ def send(backend_url: str, org_id: str, agent_key: str, metrics: dict[str, Any])
         _OFFLINE_MODE = True
     _BUFFER.append(body)
     _save_buffer()
-    return False, 5.0
+    return False, 5.0, []
 
 
 def _poll_commands(backend_url: str, agent_key: str) -> list[dict[str, Any]]:
@@ -288,26 +288,26 @@ def _poll_commands(backend_url: str, agent_key: str) -> list[dict[str, Any]]:
 
 
 def _execute_command(cmd: dict[str, Any]) -> None:
-    """Execute a command received from backend."""
+    """Execute a command received from backend using sandboxed executor."""
+    from executor import execute_command
+    
     action = cmd.get("action", "")
     target = cmd.get("target", "")
-    print(f"[cmd] Executing: {action} → {target}")
-    if action == "restart_service" and target:
-        import subprocess
-        try:
-            subprocess.run(["systemctl", "restart", target], timeout=15, check=False)
-        except Exception as exc:
-            print(f"[cmd] restart_service failed: {exc}")
-    elif action == "free_memory":
-        try:
-            import subprocess
-            subprocess.run(["sync"], timeout=5, check=False)
-        except Exception:
-            pass
-    elif action in ("scale_memory", "disk_cleanup", "notify_only", "noop"):
-        print(f"[cmd] {action} acknowledged — no direct execution")
+    timeout = cmd.get("timeout", 30)
+    dry_run = cmd.get("dry_run", False)
+    
+    print(f"[cmd] Executing: {action} → {target} (timeout={timeout}s, dry_run={dry_run})")
+    
+    result = execute_command(action, target, timeout, dry_run)
+    
+    if result.get("success"):
+        print(f"[cmd] ✓ {action} completed in {result.get('duration_seconds', 0):.2f}s")
+        if result.get("stdout"):
+            print(f"[cmd] stdout: {result['stdout']}")
     else:
-        print(f"[cmd] Unknown action '{action}' — ignored")
+        print(f"[cmd] ✗ {action} failed (exit_code={result.get('exit_code')})")
+        if result.get("stderr"):
+            print(f"[cmd] stderr: {result['stderr']}")
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ def main() -> None:
     while True:
         try:
             metrics = collect(cfg["device_id"], cfg.get("label", "agent"))
-            ok, srv_interval = send(cfg["backend_url"], cfg["org_id"], cfg["agent_key"], metrics)
+            ok, srv_interval, commands = send(cfg["backend_url"], cfg["org_id"], cfg["agent_key"], metrics)
             if ok:
                 print(f"[heartbeat] cpu={metrics['cpu']}% mem={metrics['memory']}% disk={metrics['disk']}%")
                 if srv_interval != interval:
@@ -489,7 +489,6 @@ def main() -> None:
             else:
                 print("[warn] Heartbeat failed — buffered for retry")
 
-            commands = _poll_commands(cfg["backend_url"], cfg["agent_key"])
             if commands:
                 for cmd in commands:
                     _execute_command(cmd)

@@ -247,6 +247,7 @@ class MetricPayload(BaseModel):
 class HeartbeatRequest(BaseModel):
     org_id: str
     metrics: MetricPayload
+    info: dict[str, Any] | None = None
 
 
 class AlertCreateRequest(BaseModel):
@@ -1025,7 +1026,7 @@ async def _call_llm(system_prompt: str, user_message: str) -> str:
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024},
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096},
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(url, json=payload)
@@ -2134,6 +2135,8 @@ def build_metrics_router() -> APIRouter:
         agent.last_seen = _now()
         agent.status = "live"
         _pinfo = agent.platform_info or {}
+        if body.info:
+            _pinfo.update(body.info)
         _pinfo.update({"last_cpu": body.metrics.cpu, "last_memory": body.metrics.memory, "last_disk": body.metrics.disk})
         agent.platform_info = _pinfo
 
@@ -2218,8 +2221,10 @@ def build_metrics_router() -> APIRouter:
             "alerts":   [_a.id for _a in created_alerts],
         }, body.org_id)
         poll_interval = _get_agent_poll_interval(agent.id)
+        pending_cmds = _PENDING_COMMANDS.pop(agent.id, [])
         return {"ok": True, "received_at": snapshot.timestamp.isoformat(),
-                "snapshot": _serialize_metric(snapshot), "poll_interval": poll_interval}
+                "snapshot": _serialize_metric(snapshot), "poll_interval": poll_interval,
+                "commands": pending_cmds}
 
     @router.post("/agent/metrics")
     async def go_agent_metrics(body: GoMetricPayload, request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
@@ -2794,6 +2799,14 @@ def build_agents_router() -> APIRouter:
                 **{k: v for k, v in (agent.platform_info or {}).items()
                    if k not in ("last_cpu", "last_memory", "last_disk")},
                 **((latest.extra or {}) if latest else {}),
+                # Normalize alternate key names from Go/desktop agents so the UI
+                # always gets the canonical names it expects.
+                "cpu_model": (agent.platform_info or {}).get("cpu_model")
+                             or (agent.platform_info or {}).get("arch"),
+                "python":    (agent.platform_info or {}).get("python")
+                             or (agent.platform_info or {}).get("python_version"),
+                "platform":  (agent.platform_info or {}).get("platform")
+                             or (agent.platform_info or {}).get("os"),
             },
             "history": [
                 {"timestamp": s.timestamp.isoformat(), "cpu": s.cpu, "memory": s.memory, "disk": s.disk}
@@ -2869,17 +2882,16 @@ def build_agents_router() -> APIRouter:
         agent = result.scalar_one_or_none()
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found")
+        action = body.get("action")
         command = {
             "id": str(uuid.uuid4()),
             "agent_id": agent_id,
-            "action": body.get("action"),
+            "action": action,
             "params": body.get("params", {}),
+            "source": "manual",
             "status": "queued",
         }
-        pending = list(agent.pending_cmds or [])
-        pending.append(command)
-        agent.pending_cmds = pending
-        await db.commit()
+        _PENDING_COMMANDS.setdefault(agent_id, []).append(command)
         return command
 
 
