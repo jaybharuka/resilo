@@ -1,0 +1,53 @@
+{
+  "scenario_id": "nginx_crash",
+  "description": "nginx worker process crash loop due to invalid config after recent deploy",
+  "metrics": {
+    "cpu": 8.4,
+    "memory": 38.2,
+    "disk": 44.0,
+    "load_avg_1m": 0.5,
+    "load_avg_5m": 0.4,
+    "load_avg_15m": 0.3,
+    "swap_percent": 1.0,
+    "net_established": 3
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "nginx",   "pid":  882, "cpu_percent": 4.8, "memory_percent": 0.9},
+      {"name": "systemd", "pid":    1, "cpu_percent": 1.2, "memory_percent": 0.3}
+    ],
+    "by_mem": [
+      {"name": "nginx", "pid": 882, "cpu_percent": 4.8, "memory_percent": 0.9}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "nginx",   "message": "nginx: [emerg] unknown directive \"proxy_buffering_size\" in /etc/nginx/sites-enabled/app.conf:42"},
+    {"level": "ERROR", "source": "nginx",   "message": "nginx: configuration file /etc/nginx/nginx.conf test failed"},
+    {"level": "ERROR", "source": "systemd", "message": "nginx.service: Control process exited, code=exited, status=1/FAILURE"},
+    {"level": "ERROR", "source": "systemd", "message": "nginx.service: Failed with result 'exit-code'"},
+    {"level": "WARN",  "source": "systemd", "message": "nginx.service: Start request repeated too quickly, refusing to start"}
+  ],
+  "context": {
+    "service_state": {
+      "failed_units": [
+        "nginx.service   loaded failed failed   A high performance web server and a reverse proxy server"
+      ]
+    },
+    "recent_restarts": {
+      "recent_service_events": [
+        "Jun 02 15:41:22 systemd[1]: nginx.service: Failed with result 'exit-code'",
+        "Jun 02 15:41:22 systemd[1]: Failed to start nginx.service",
+        "Jun 02 15:41:32 systemd[1]: nginx.service: Start request repeated too quickly"
+      ]
+    }
+  },
+  "alert": {
+    "category": "service",
+    "severity": "critical",
+    "detail": "nginx service failed — all HTTP traffic down"
+  },
+  "expected_root_cause": "service unavailable",
+  "expected_root_cause_keywords": ["nginx", "config", "invalid", "configuration error", "deploy", "crash loop", "failed"],
+  "expected_action": "restart_service",
+  "acceptable_actions": ["restart_service", "notify_only"]
+}

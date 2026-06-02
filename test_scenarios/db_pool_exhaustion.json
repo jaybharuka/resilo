@@ -1,0 +1,55 @@
+{
+  "scenario_id": "db_pool_exhaustion",
+  "description": "PostgreSQL connection pool fully exhausted by long-running query",
+  "metrics": {
+    "cpu": 48.2,
+    "memory": 61.3,
+    "disk": 52.0,
+    "load_avg_1m": 3.4,
+    "load_avg_5m": 3.1,
+    "load_avg_15m": 2.8,
+    "swap_percent": 5.0,
+    "net_established": 112
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "postgres", "pid": 1231, "cpu_percent": 38.4, "memory_percent": 12.3},
+      {"name": "nginx",    "pid":  882, "cpu_percent":  4.1, "memory_percent":  1.2},
+      {"name": "python3",  "pid": 4421, "cpu_percent":  3.8, "memory_percent":  3.1}
+    ],
+    "by_mem": [
+      {"name": "postgres", "pid": 1231, "cpu_percent": 38.4, "memory_percent": 12.3}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",      "message": "FATAL: remaining connection slots are reserved for replication superuser connections"},
+    {"level": "ERROR", "source": "app",      "message": "connection pool exhausted — all 100 connections in use"},
+    {"level": "WARN",  "source": "app",      "message": "DB acquire timeout after 30s (pool_size=100, overflow=0)"},
+    {"level": "ERROR", "source": "postgres", "message": "too many connections: current 100, max_connections=100"},
+    {"level": "WARN",  "source": "app",      "message": "Retrying DB connection (attempt 3 of 5)"}
+  ],
+  "context": {
+    "pg_connections": {
+      "pg_activity": [
+        " active           |  97",
+        " idle             |   2",
+        " idle in transaction|  1"
+      ]
+    },
+    "pg_long_queries": {
+      "pg_long_queries": [
+        "4821 | 00:17:42 | SELECT e.*, u.* FROM events e JOIN users u ON e.user_id = u.id WHERE e.created_at > '2024-01-01' ORDER BY e.created_at DESC",
+        "4819 | 00:17:38 | SELECT COUNT(*) FROM audit_log WHERE action='login' AND created_at > NOW() - INTERVAL '30 days'"
+      ]
+    }
+  },
+  "alert": {
+    "category": "database",
+    "severity": "critical",
+    "detail": "PostgreSQL connection pool at capacity — new connections refused"
+  },
+  "expected_root_cause": "connection pool saturation",
+  "expected_root_cause_keywords": ["connection pool", "pool saturation", "max connections", "long-running query", "pool exhausted", "too many connections"],
+  "expected_action": "notify_only",
+  "acceptable_actions": ["notify_only", "restart_service", "kill_process"]
+}

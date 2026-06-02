@@ -1,0 +1,63 @@
+{
+  "scenario_id": "oom_kill",
+  "description": "Kernel OOM killer terminates redis due to spiking analytics job",
+  "metrics": {
+    "cpu": 41.2,
+    "memory": 99.1,
+    "disk": 47.0,
+    "load_avg_1m": 5.8,
+    "load_avg_5m": 4.1,
+    "load_avg_15m": 2.3,
+    "swap_percent": 98.0,
+    "net_established": 67
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",  "pid": 8821, "cpu_percent": 31.4, "memory_percent": 44.2},
+      {"name": "redis-server","pid": 2341,"cpu_percent": 3.1, "memory_percent": 18.4}
+    ],
+    "by_mem": [
+      {"name": "python3",     "pid": 8821, "cpu_percent": 31.4, "memory_percent": 44.2},
+      {"name": "redis-server","pid": 2341, "cpu_percent":  3.1, "memory_percent": 18.4}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "kernel",  "message": "Out of memory: Kill process 2341 (redis-server) score 892 or sacrifice child"},
+    {"level": "ERROR", "source": "kernel",  "message": "Killed process 2341 (redis-server) total-vm:4194304kB, anon-rss:3014656kB"},
+    {"level": "ERROR", "source": "app",     "message": "redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused."},
+    {"level": "WARN",  "source": "kernel",  "message": "swap: 98% full, thrashing likely"},
+    {"level": "ERROR", "source": "python3", "message": "MemoryError: unable to allocate 2.1 GiB for analytics batch job"}
+  ],
+  "context": {
+    "oom_history": {
+      "oom_events": [
+        "kernel: Out of memory: Kill process 2341 (redis-server) score 892 or sacrifice child",
+        "kernel: Killed process 2341 (redis-server) total-vm:4194304kB, anon-rss:3014656kB",
+        "kernel: oom_kill_process: Killed process — memory pressure from python3 analytics job"
+      ]
+    },
+    "memory_breakdown": {
+      "meminfo": {
+        "MemTotal": "8192000 kB",
+        "MemAvailable": "73728 kB",
+        "SwapTotal": "4096000 kB",
+        "SwapFree": "81920 kB",
+        "Committed_AS": "16384000 kB"
+      }
+    },
+    "service_state": {
+      "failed_units": [
+        "redis.service  loaded failed failed  Advanced key-value store"
+      ]
+    }
+  },
+  "alert": {
+    "category": "memory",
+    "severity": "critical",
+    "detail": "System memory critically exhausted — OOM killer active"
+  },
+  "expected_root_cause": "memory exhaustion",
+  "expected_root_cause_keywords": ["oom", "out of memory", "memory exhaustion", "oom killer", "analytics", "killed", "redis"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "kill_process", "restart_service"]
+}

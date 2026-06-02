@@ -1,0 +1,62 @@
+{
+  "scenario_id": "disk_full",
+  "description": "Root partition at 98% due to unbounded log rotation failure",
+  "metrics": {
+    "cpu": 12.1,
+    "memory": 44.5,
+    "disk": 98.3,
+    "load_avg_1m": 0.8,
+    "load_avg_5m": 0.9,
+    "load_avg_15m": 0.7,
+    "swap_percent": 2.0,
+    "net_established": 18
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "nginx",   "pid":  882, "cpu_percent": 4.1, "memory_percent": 1.2},
+      {"name": "rsyslogd","pid":  441, "cpu_percent": 3.8, "memory_percent": 0.4}
+    ],
+    "by_mem": [
+      {"name": "nginx",   "pid":  882, "cpu_percent": 4.1, "memory_percent": 1.2}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",     "message": "write /var/log/app/app.log: no space left on device"},
+    {"level": "ERROR", "source": "postgres","message": "could not write to file \"pg_wal/00000001000000010000005E\": No space left on device"},
+    {"level": "ERROR", "source": "rsyslogd","message": "file '/var/log/app/access.log': No space left on device"},
+    {"level": "WARN",  "source": "syslog",  "message": "logrotate: error: error creating output file /var/log/app/app.log.1: No space left on device"}
+  ],
+  "context": {
+    "largest_dirs": {
+      "dir_sizes": [
+        "48G\t/var",
+        "44G\t/var/log",
+        "39G\t/var/log/app",
+        "4.2G\t/home",
+        "1.1G\t/opt"
+      ]
+    },
+    "inode_usage": {
+      "inode_usage": [
+        "Filesystem        IUse% ITotal  IUsed  IFree",
+        "/dev/sda1          12% 6553600  786432 5767168",
+        "/dev/sda2          98% 1048576 1027605   20971"
+      ]
+    },
+    "io_wait": {
+      "iostat": [
+        "Device  r/s  w/s  rMB/s  wMB/s  await  %util",
+        "sda     2.3  48.7   0.1   18.4   12.4   94.2"
+      ]
+    }
+  },
+  "alert": {
+    "category": "disk",
+    "severity": "critical",
+    "detail": "Root filesystem at 98.3% — writes failing"
+  },
+  "expected_root_cause": "storage exhaustion",
+  "expected_root_cause_keywords": ["log", "disk full", "no space", "storage exhaustion", "log rotation", "/var/log"],
+  "expected_action": "disk_cleanup",
+  "acceptable_actions": ["disk_cleanup", "notify_only"]
+}

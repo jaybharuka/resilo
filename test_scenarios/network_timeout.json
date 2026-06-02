@@ -1,0 +1,53 @@
+{
+  "scenario_id": "network_timeout",
+  "description": "Upstream dependency (payment gateway) timing out causing cascading failures",
+  "metrics": {
+    "cpu": 22.7,
+    "memory": 55.3,
+    "disk": 41.0,
+    "load_avg_1m": 1.4,
+    "load_avg_5m": 1.3,
+    "load_avg_15m": 1.2,
+    "swap_percent": 4.0,
+    "net_established": 189
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3", "pid": 4421, "cpu_percent": 14.2, "memory_percent": 5.1},
+      {"name": "nginx",   "pid":  882, "cpu_percent":  5.3, "memory_percent": 1.4}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 4421, "cpu_percent": 14.2, "memory_percent": 5.1}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
+    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
+    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
+    {"level": "WARN",  "source": "app",    "message": "Circuit breaker OPEN for payments_service after 5 consecutive failures"},
+    {"level": "WARN",  "source": "nginx",  "message": "upstream timed out (110: Connection timed out) while reading response header from upstream"}
+  ],
+  "context": {
+    "connection_summary": {
+      "connection_summary": "TCP:   189 (estab 189, closed 42, orphaned 8, timewait 34)"
+    },
+    "dns_tcp_errors": {
+      "dns_tcp_errors": [
+        "kernel: TCP: time wait bucket table overflow",
+        "kernel: possible SYN flooding on port 443"
+      ]
+    },
+    "open_ports": {
+      "listening_ports": ["0.0.0.0:80", "0.0.0.0:443", "0.0.0.0:8000", "127.0.0.1:5432"]
+    }
+  },
+  "alert": {
+    "category": "network",
+    "severity": "high",
+    "detail": "HTTP 504 error rate >40% on /api/checkout — upstream dependency unreachable"
+  },
+  "expected_root_cause": "upstream dependency timeout",
+  "expected_root_cause_keywords": ["upstream", "timeout", "payment", "circuit breaker", "dependency", "external service"],
+  "expected_action": "notify_only",
+  "acceptable_actions": ["notify_only", "restart_service"]
+}

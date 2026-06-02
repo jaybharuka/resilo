@@ -1,0 +1,49 @@
+{
+  "scenario_id": "cpu_spike",
+  "description": "Single runaway process consuming near-100% CPU",
+  "metrics": {
+    "cpu": 97.4,
+    "memory": 42.1,
+    "disk": 38.0,
+    "load_avg_1m": 7.8,
+    "load_avg_5m": 5.2,
+    "load_avg_15m": 2.1,
+    "swap_percent": 8.0,
+    "net_established": 24
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",     "pid": 4421, "cpu_percent": 94.2, "memory_percent": 3.1},
+      {"name": "postgres",    "pid": 1231, "cpu_percent": 1.1,  "memory_percent": 5.4},
+      {"name": "nginx",       "pid":  882, "cpu_percent": 0.3,  "memory_percent": 0.8}
+    ],
+    "by_mem": [
+      {"name": "postgres",    "pid": 1231, "cpu_percent": 1.1,  "memory_percent": 5.4},
+      {"name": "python3",     "pid": 4421, "cpu_percent": 94.2, "memory_percent": 3.1}
+    ]
+  },
+  "logs": [
+    {"level": "WARN",  "source": "app",     "message": "Request queue depth: 847 (threshold: 100)"},
+    {"level": "ERROR", "source": "app",     "message": "Worker thread pool saturated, dropping requests"},
+    {"level": "WARN",  "source": "python3", "message": "GC pause 1240ms — possible tight loop in worker"}
+  ],
+  "context": {
+    "process_tree": {
+      "top_processes_tree": [
+        {"pid": "4421", "ppid": "4400", "pcpu": "94.2", "pmem": "3.1", "comm": "python3"}
+      ]
+    },
+    "scheduler_pressure": {
+      "psi_cpu": "some avg10=88.42 avg60=72.11 avg300=45.23 total=12345678"
+    }
+  },
+  "alert": {
+    "category": "cpu",
+    "severity": "critical",
+    "detail": "CPU utilization exceeded 95% for 5 consecutive minutes"
+  },
+  "expected_root_cause": "runaway process",
+  "expected_root_cause_keywords": ["runaway", "python", "loop", "tight loop", "cpu-bound", "worker"],
+  "expected_action": "kill_process",
+  "acceptable_actions": ["kill_process", "restart_service", "notify_only"]
+}

@@ -44,6 +44,7 @@ from app.api.incident_memory import build_memory_context
 from app.api.memory_store import MemoryStore
 from app.api.log_collector import build_log_evidence, format_log_context
 from app.api.context_collector import collect_context, format_context_evidence
+from app.api.evidence_planner import run_evidence_planner
 
 _log = logging.getLogger(__name__)
 
@@ -745,6 +746,47 @@ async def run_investigation(
             str(exc),
         )
         return _minimal_result(inv_id, agent_id, alert.id, cpu, memory, disk)
+
+    # ── Stage 1.5: Adaptive Evidence Planning (Phase 5) ───────────────────
+    use_planner = (extra_metrics or {}).get("use_evidence_planner", False)
+    if use_planner and call_llm_fn:
+        try:
+            planner_result = await run_evidence_planner(
+                incident_type=evidence.incident_type,
+                metrics={
+                    "cpu":         cpu,
+                    "memory":      memory,
+                    "disk":        disk,
+                    "load_avg_1m": evidence.load_avg_1m,
+                },
+                alert_category=alert.category,
+                alert_severity=alert.severity,
+                alert_detail=alert.detail or "",
+                logs=evidence.top_errors,
+                log_context=evidence.log_context,
+                top_cpu_processes=evidence.top_cpu_processes,
+                call_llm_fn=call_llm_fn,
+            )
+            # Merge planner context into evidence (override static context)
+            if planner_result["gathered"]:
+                evidence = evidence.model_copy(update={
+                    "context_evidence": {
+                        **evidence.context_evidence,
+                        "planner": planner_result["gathered"],
+                    },
+                    "context_text": planner_result["context_text"] or evidence.context_text,
+                })
+            timeline.append(_timeline_event(
+                InvestigationStage.EVIDENCE_COLLECTION,
+                f"Evidence planner: {planner_result['steps_taken']} steps, "
+                f"stopped={planner_result['stopped_because']}",
+            ))
+            _log.info(
+                "[INVESTIGATE] Planner finished: steps=%d stopped=%s",
+                planner_result["steps_taken"], planner_result["stopped_because"]
+            )
+        except Exception as exc:
+            _log.warning("[INVESTIGATE] Evidence planner failed (non-fatal): %s", exc)
 
     # ── Stage 2: Historical Analysis ─────────────────────────────────────────
     retrieval_telemetry: dict = {}
