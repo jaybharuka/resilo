@@ -49,11 +49,14 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 # ── LLM caller (mirrors investigation_engine) ─────────────────────────────────
 
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+
 async def _call_gemini(system_prompt: str, user_msg: str) -> str:
     import google.generativeai as genai
     genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name=_GEMINI_MODEL,
         system_instruction=system_prompt,
     )
     resp = await asyncio.to_thread(
@@ -62,6 +65,23 @@ async def _call_gemini(system_prompt: str, user_msg: str) -> str:
         generation_config={"temperature": 0.2, "max_output_tokens": 2048},
     )
     return resp.text or ""
+
+
+async def _validate_llm() -> None:
+    """Fast-fail: verify model is reachable before running any scenarios."""
+    print(f"  Validating LLM ({_GEMINI_MODEL})…", end=" ", flush=True)
+    try:
+        result = await _call_gemini("You are a test.", "Reply with the word OK only.")
+        if not result.strip():
+            raise ValueError("Empty response from model")
+        print(f"OK  (response: {result.strip()[:40]!r})")
+    except Exception as exc:
+        print(f"FAILED\n")
+        print(f"  [error] LLM validation failed: {exc}")
+        print(f"  Model attempted: {_GEMINI_MODEL}")
+        print(f"  Tip: set GEMINI_MODEL in .env — check available models with:")
+        print(f"       python -c \"import google.generativeai as g; g.configure(api_key='YOUR_KEY'); [print(m.name) for m in g.list_models()]\"")
+        sys.exit(1)
 
 
 # ── Prompt templates (copied from investigation_engine to be self-contained) ──
@@ -433,6 +453,24 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         print("\nNo results.")
         return {}
 
+    # ── Validity guard ────────────────────────────────────────────────────────
+    total_llm_calls = sum(r.get("llm_calls", 0) for r in results)
+    scenarios_with_calls = sum(1 for r in results if r.get("llm_calls", 0) > 0)
+    if total_llm_calls == 0:
+        print("\n" + "!"*60)
+        print("  BENCHMARK RESULT INVALID — LLM NEVER CALLED")
+        print("!"*60)
+        print(f"  Scenarios run:     {n}")
+        print(f"  LLM calls total:   0")
+        print(f"  Accuracy metrics:  SUPPRESSED (all zeros are meaningless)")
+        print("!"*60)
+        print("  Likely cause: model name not found (check GEMINI_MODEL in .env)")
+        print("  Rerun after fixing: python scripts/benchmark_engine.py --ab")
+        print("!"*60)
+        return {"valid": False, "n_scenarios": n, "total_llm_calls": 0}
+    if scenarios_with_calls < n:
+        print(f"\n  [WARN] {n - scenarios_with_calls}/{n} scenarios had 0 LLM calls — partial results only")
+
     top1_correct  = sum(1 for r in results if r["top1_correct"])
     top3_correct  = sum(1 for r in results if r["top3_correct"])
     act_acceptable = sum(1 for r in results if r["action_acceptable"])
@@ -483,6 +521,8 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
     print("="*60)
 
     summary = {
+        "valid":                True,
+        "scenarios_with_llm":   scenarios_with_calls,
         "n_scenarios":          n,
         "top1_accuracy":        round(top1_acc, 3),
         "top3_accuracy":        round(top3_acc, 3),
@@ -514,6 +554,8 @@ async def main() -> None:
     if not os.getenv("GEMINI_API_KEY"):
         print("[error] GEMINI_API_KEY not set")
         sys.exit(1)
+
+    await _validate_llm()
 
     # Load scenarios
     scenario_files = sorted(SCENARIOS_DIR.glob("*.json"))
@@ -565,7 +607,10 @@ async def main() -> None:
         out_path = args.out or str(RESULTS_DIR / f"ab_{run_ts}.json")
         pathlib.Path(out_path).write_text(json.dumps(ab_result, indent=2))
         print(f"\n  A/B results saved → {out_path}")
-        _append_leaderboard(commit, run_ts, static_summary, planner_summary)
+        if static_summary.get("valid", False):
+            _append_leaderboard(commit, run_ts, static_summary, planner_summary)
+        else:
+            print("  [leaderboard] Skipped — invalid run (0 LLM calls)")
         if args.confusion:
             print("\n  [Static mode confusion matrix]")
             _print_confusion_matrix(static_results)
@@ -586,7 +631,10 @@ async def main() -> None:
         out_path = args.out or str(RESULTS_DIR / f"benchmark_{run_ts}.json")
         pathlib.Path(out_path).write_text(json.dumps(summary, indent=2))
         print(f"\n  Results saved → {out_path}")
-        _append_leaderboard(commit, run_ts, summary, None)
+        if summary.get("valid", False):
+            _append_leaderboard(commit, run_ts, summary, None)
+        else:
+            print("  [leaderboard] Skipped — invalid run (0 LLM calls)")
         if args.confusion:
             _print_confusion_matrix(results)
 
