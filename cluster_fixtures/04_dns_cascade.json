@@ -1,0 +1,29 @@
+[
+  {
+    "id": "dns_cascade_cluster",
+    "description": "5 symptoms all caused by the same DNS resolver failure. Should form 1 cluster despite different alert categories.",
+    "expected_clusters": 1,
+    "alerts": [
+      {
+        "text": "Authentication service failing: socket.gaierror Name or service not known for auth-service.internal. DNS resolution failing.",
+        "group_id": 1
+      },
+      {
+        "text": "Payment API timeout: cannot connect to payment.internal. All DNS queries failing to nameserver 10.0.0.53. Nameserver unreachable.",
+        "group_id": 1
+      },
+      {
+        "text": "Worker service unable to reach database: db.internal DNS resolution failed. Error -2 name or service not known.",
+        "group_id": 1
+      },
+      {
+        "text": "Cache service connection refused: redis.internal cannot be resolved. DNS failure causing service mesh breakdown.",
+        "group_id": 1
+      },
+      {
+        "text": "Health checks failing across all services. All inter-service calls returning connection refused. Internal DNS resolver 10.0.0.53 down.",
+        "group_id": 1
+      }
+    ]
+  }
+]

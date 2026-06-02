@@ -666,6 +666,7 @@ class IncidentCluster(Base):
     category:         Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)   # dominant incident type
     member_count:     Mapped[int]            = mapped_column(Integer, default=0, nullable=False)
     avg_similarity:   Mapped[Optional[float]]= mapped_column(Float, nullable=True)
+    min_similarity:   Mapped[Optional[float]]= mapped_column(Float, nullable=True)   # weakest pairwise link — chaining indicator
     representative_alert_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)  # most central member
     correlation_method: Mapped[str]          = mapped_column(String(50), default="semantic", nullable=False)  # semantic|metric|hybrid
     window_start:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

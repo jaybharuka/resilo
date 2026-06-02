@@ -212,6 +212,17 @@ async def _persist_cluster(
     similarities = [_cosine(m.embedding, centroid) for m in group if m.embedding]
     avg_sim = sum(similarities) / len(similarities) if similarities else None
 
+    # Minimum pairwise similarity — single-linkage chaining diagnostic.
+    # If min_sim << avg_sim the cluster was likely chained; surface in UI.
+    embedded_group = [m for m in group if m.embedding]
+    min_pairwise = 1.0
+    for i in range(len(embedded_group)):
+        for j in range(i + 1, len(embedded_group)):
+            s = _cosine(embedded_group[i].embedding, embedded_group[j].embedding)
+            if s < min_pairwise:
+                min_pairwise = s
+    min_sim = min_pairwise if len(embedded_group) >= 2 else None
+
     cluster = IncidentCluster(
         id=str(uuid.uuid4()),
         org_id=org_id,
@@ -222,6 +233,7 @@ async def _persist_cluster(
         category=category,
         member_count=len(group),
         avg_similarity=round(avg_sim, 4) if avg_sim else None,
+        min_similarity=round(min_sim, 4) if min_sim is not None else None,
         representative_alert_id=rep.alert_id,
         correlation_method="semantic",
         window_start=min((m.created_at for m in group), default=now),
@@ -353,6 +365,7 @@ async def get_clusters(
             "category":            c.category,
             "member_count":        c.member_count,
             "avg_similarity":      c.avg_similarity,
+            "min_similarity":      c.min_similarity,
             "correlation_method":  c.correlation_method,
             "window_start":        c.window_start.isoformat() if c.window_start else None,
             "window_end":          c.window_end.isoformat() if c.window_end else None,

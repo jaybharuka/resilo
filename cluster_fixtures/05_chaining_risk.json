@@ -1,0 +1,21 @@
+[
+  {
+    "id": "chaining_risk_three_groups",
+    "description": "Chain risk scenario: memory issue, swap issue, and disk issue are adjacent in embedding space but have different root causes. Should form 3 separate clusters (singletons), NOT be chained into one.",
+    "expected_clusters": 0,
+    "alerts": [
+      {
+        "text": "Application memory usage at 94%. Java heap space exhausted. OutOfMemoryError thrown. JVM GC overhead limit exceeded. Heap dump triggered.",
+        "group_id": 1
+      },
+      {
+        "text": "Swap space 91% consumed. System thrashing. CPU iowait 78%. Processes sleeping on disk I/O waiting for swap pages. Performance severely degraded.",
+        "group_id": 2
+      },
+      {
+        "text": "Disk I/O saturation: disk_read_mbps 312, disk_write_mbps 287. Storage array latency 840ms. Volume throughput limit reached. Writes queuing.",
+        "group_id": 3
+      }
+    ]
+  }
+]

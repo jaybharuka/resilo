@@ -1,0 +1,25 @@
+[
+  {
+    "id": "network_partition_cluster",
+    "description": "Network partition causes 4 different service failures. Superficially different categories but one root cause. Should form 1 cluster.",
+    "expected_clusters": 1,
+    "alerts": [
+      {
+        "text": "Redis connection timeout: TCP connection to redis:6379 timed out after 5000ms. Network retransmit rate 412/s. RTT 840ms avg.",
+        "group_id": 1
+      },
+      {
+        "text": "PostgreSQL SSL connection closed unexpectedly. psycopg2.OperationalError: server closed the connection. Network instability detected.",
+        "group_id": 1
+      },
+      {
+        "text": "gRPC stream error: transport closing. Connection to microservice-b reset by peer. High packet loss detected on 10.0.1.0/24 subnet.",
+        "group_id": 1
+      },
+      {
+        "text": "S3 request timeout: requests to us-east-1 S3 endpoint failing. Socket timeout after 30s. Possible VPC routing issue or NAT gateway saturation.",
+        "group_id": 1
+      }
+    ]
+  }
+]

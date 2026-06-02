@@ -1,0 +1,21 @@
+[
+  {
+    "id": "ssl_auth_cpu_unrelated",
+    "description": "3 unrelated incidents: SSL cert expiry, auth token failure, CPU spike from unrelated batch job. Should NOT cluster.",
+    "expected_clusters": 0,
+    "alerts": [
+      {
+        "text": "SSL certificate for api.example.com expires in 3 days. TLS handshake failing for some clients. Certificate chain validation error.",
+        "group_id": 1
+      },
+      {
+        "text": "JWT authentication tokens rejecting valid sessions. Auth service returning 401. Token signing key rotation may have caused mismatch.",
+        "group_id": 2
+      },
+      {
+        "text": "CPU at 94% on worker-node-3. Batch ML training job consuming all cores. No impact on user-facing services. Scheduled job running as expected.",
+        "group_id": 3
+      }
+    ]
+  }
+]

@@ -123,7 +123,12 @@ export default function Dashboard() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
                     <span style={{ ...MONO, fontSize: 10, color: '#A78BFA' }}>{c.category?.toUpperCase()}</span>
                     {c.avg_similarity != null && (
-                      <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>sim={c.avg_similarity.toFixed(2)}</span>
+                      <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>avg={c.avg_similarity.toFixed(2)}</span>
+                    )}
+                    {c.min_similarity != null && (
+                      <span style={{ ...MONO, fontSize: 9, color: (c.avg_similarity - c.min_similarity) > 0.15 ? C.amber : C.text4 }}>
+                        min={c.min_similarity.toFixed(2)}{(c.avg_similarity - c.min_similarity) > 0.15 ? ' ⚠' : ''}
+                      </span>
                     )}
                   </div>
                   <p style={{ ...UI, fontSize: 12, color: C.text1, margin: '0 0 3px', lineHeight: 1.4 }}>{c.inferred_root_cause || c.title}</p>

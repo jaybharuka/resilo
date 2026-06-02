@@ -1,0 +1,33 @@
+[
+  {
+    "id": "two_concurrent_outages",
+    "description": "Hardest case: 6 alerts from 2 simultaneous but unrelated outages (CPU spike on one host, DB failure on another). Should form exactly 2 clusters.",
+    "expected_clusters": 2,
+    "alerts": [
+      {
+        "text": "CPU at 98% on app-server-1. Python data processing job consuming all cores. Load average 14.2. Response times degraded for users on this node.",
+        "group_id": 1
+      },
+      {
+        "text": "High CPU utilisation on app-server-1: user-space CPU 91%, kernel 7%. Top process: python3 pid 4421 cpu=87%. System unresponsive.",
+        "group_id": 1
+      },
+      {
+        "text": "Thermal throttling detected on app-server-1. CPU frequency reduced from 3.4GHz to 1.8GHz. Core temperature 94C. Fan speed maxed.",
+        "group_id": 1
+      },
+      {
+        "text": "MySQL replication lag 847 seconds on replica db-replica-2. Binary log position falling behind. Write-heavy workload on primary.",
+        "group_id": 2
+      },
+      {
+        "text": "Database failover initiated: primary db-primary-1 unreachable. Replica db-replica-2 being promoted. Connection strings need update.",
+        "group_id": 2
+      },
+      {
+        "text": "Application returning stale data: cache miss rate 100%, falling back to DB replica. Replica lag causing read-your-writes violations.",
+        "group_id": 2
+      }
+    ]
+  }
+]

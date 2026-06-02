@@ -1,0 +1,21 @@
+[
+  {
+    "id": "unrelated_three_separate",
+    "description": "3 completely unrelated incidents: disk full, memory leak, network timeout. Should NOT cluster — expected 0 clusters (3 singletons).",
+    "expected_clusters": 0,
+    "alerts": [
+      {
+        "text": "Root filesystem 97.8% full. /var/log/nginx/access.log is 183GB and was never rotated. Nginx writes failing with ENOSPC.",
+        "group_id": 1
+      },
+      {
+        "text": "Python worker memory usage increasing 50MB per hour. No memory being released. Heap growing unbounded. Likely object reference leak.",
+        "group_id": 2
+      },
+      {
+        "text": "Network connection timeouts on external API calls. DNS resolution succeeding but TCP SYN packets not receiving ACK. Possible upstream firewall issue.",
+        "group_id": 3
+      }
+    ]
+  }
+]

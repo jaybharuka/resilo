@@ -1,0 +1,25 @@
+[
+  {
+    "id": "mixed_oom_vs_disk",
+    "description": "4 alerts: 2 about OOM kill, 2 about disk space. Should form exactly 2 clusters.",
+    "expected_clusters": 2,
+    "alerts": [
+      {
+        "text": "Kernel OOM killer activated. Process redis-server killed (score 892). System memory 99.1%, swap 98% full. Analytics Python job consuming 44% memory.",
+        "group_id": 1
+      },
+      {
+        "text": "Out of memory: Kill process python3 (pid 8821). MemoryError allocating 2.1 GiB for batch job. System near memory exhaustion.",
+        "group_id": 1
+      },
+      {
+        "text": "Disk usage at 97%. Write operations failing across all services. OSError errno 28 no space left on device. /var/log growing rapidly.",
+        "group_id": 2
+      },
+      {
+        "text": "Nginx log rotation failed. access.log is 183GB, no space left on device. File writes failing. Filesystem at capacity.",
+        "group_id": 2
+      }
+    ]
+  }
+]

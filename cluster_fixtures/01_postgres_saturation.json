@@ -1,0 +1,21 @@
+[
+  {
+    "id": "postgres_saturation_cluster",
+    "description": "3 symptoms of the same root cause: Postgres connection pool exhausted. Should form 1 cluster.",
+    "expected_clusters": 1,
+    "alerts": [
+      {
+        "text": "PostgreSQL connection pool exhausted: all 100 connections in use, new requests queuing. Database CPU at 94%.",
+        "group_id": 1
+      },
+      {
+        "text": "API gateway returning 503 errors: upstream database timeout after 30 seconds. sqlalchemy QueuePool limit reached.",
+        "group_id": 1
+      },
+      {
+        "text": "Worker service retry storm: 847 failed DB queries in last 5 minutes, retrying with exponential backoff. Postgres max_connections hit.",
+        "group_id": 1
+      }
+    ]
+  }
+]

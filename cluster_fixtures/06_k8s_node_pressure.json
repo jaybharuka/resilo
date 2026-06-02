@@ -1,0 +1,25 @@
+[
+  {
+    "id": "k8s_eviction_cluster",
+    "description": "Real-world: k8s node memory pressure creates 4 alerts across different pods. All from one root cause. Should form 1 cluster.",
+    "expected_clusters": 1,
+    "alerts": [
+      {
+        "text": "Kubelet evicted pod default/api-server-7d9f8b: node MemoryPressure=True. Available memory 312Mi, below threshold 500Mi.",
+        "group_id": 1
+      },
+      {
+        "text": "Pod default/worker-6c4d9b in CrashLoopBackOff: container OOMKilled, exit code 137. Node memory pressure event.",
+        "group_id": 1
+      },
+      {
+        "text": "Kubernetes node condition MemoryPressure changed to True. 7 pods evicted in last 10 minutes. Node ready=False.",
+        "group_id": 1
+      },
+      {
+        "text": "Java application OOMKilled in container: container exceeded memory limit 2Gi. Kubernetes eviction controller triggered. Pod restarting.",
+        "group_id": 1
+      }
+    ]
+  }
+]
