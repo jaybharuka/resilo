@@ -644,6 +644,63 @@ class IncidentMemory(Base):
 
 # ── InvestigationFeedback (root cause accuracy tracking) ──────────────────────
 
+class IncidentCluster(Base):
+    """
+    A group of alerts/investigations sharing a common root cause,
+    discovered by the semantic correlation engine.
+
+    Lifecycle: open → investigating → resolved | dismissed
+    """
+    __tablename__ = "incident_clusters"
+    __table_args__ = (
+        Index("ix_cluster_org_status", "org_id", "status"),
+        Index("ix_cluster_org_created", "org_id", "created_at"),
+    )
+
+    id:               Mapped[str]            = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:           Mapped[str]            = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    title:            Mapped[str]            = mapped_column(String(500), nullable=False)
+    inferred_root_cause: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status:           Mapped[str]            = mapped_column(String(20), default="open", nullable=False)  # open|investigating|resolved|dismissed
+    severity:         Mapped[str]            = mapped_column(String(20), default="medium", nullable=False)
+    category:         Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)   # dominant incident type
+    member_count:     Mapped[int]            = mapped_column(Integer, default=0, nullable=False)
+    avg_similarity:   Mapped[Optional[float]]= mapped_column(Float, nullable=True)
+    representative_alert_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)  # most central member
+    correlation_method: Mapped[str]          = mapped_column(String(50), default="semantic", nullable=False)  # semantic|metric|hybrid
+    window_start:     Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_end:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at:      Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:       Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    updated_at:       Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    members: Mapped[list["ClusterMember"]] = relationship("ClusterMember", back_populates="cluster", cascade="all, delete-orphan")
+
+
+class ClusterMember(Base):
+    """
+    A single alert or investigation that belongs to an IncidentCluster.
+    """
+    __tablename__ = "cluster_members"
+    __table_args__ = (
+        Index("ix_cluster_member_cluster", "cluster_id"),
+        Index("ix_cluster_member_alert", "alert_id"),
+    )
+
+    id:            Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id:    Mapped[str]           = mapped_column(String(36), ForeignKey("incident_clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    org_id:        Mapped[str]           = mapped_column(String(36), nullable=False, index=True)
+    alert_id:      Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    memory_id:     Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    agent_id:      Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    similarity:    Mapped[Optional[float]] = mapped_column(Float, nullable=True)   # cosine similarity to cluster centroid
+    root_cause:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    category:      Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    joined_at:     Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    cluster: Mapped["IncidentCluster"] = relationship("IncidentCluster", back_populates="members")
+
+
 class InvestigationFeedback(Base):
     """
     Human or automated feedback on investigation root cause accuracy.

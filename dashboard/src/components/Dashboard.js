@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { agentsApi, alertsApi, coreAxios } from '../services/resiloApi';
 import { apiService } from '../services/api';
-import { Monitor, AlertTriangle, Bot, CheckCircle, Activity, Zap, Server, RefreshCw, Siren } from 'lucide-react';
+import { Monitor, AlertTriangle, Bot, CheckCircle, Activity, Zap, Server, RefreshCw, Siren, GitMerge } from 'lucide-react';
 
 const MONO    = { fontFamily: "'IBM Plex Mono', monospace" };
 const DISPLAY = { fontFamily: "'Bebas Neue', sans-serif" };
@@ -44,6 +44,7 @@ export default function Dashboard() {
   const [sysHealth,      setSysHealth]      = useState(null);
   const [activeIncident, setActiveIncident] = useState(null);
   const [loading,        setLoading]        = useState(true);
+  const [clusters,       setClusters]       = useState([]);
 
   const load = useCallback(async () => {
     try {
@@ -58,6 +59,10 @@ export default function Dashboard() {
     try {
       const inc = await apiService.getActiveIncident();
       setActiveIncident(inc);
+    } catch {}
+    try {
+      const r = await coreAxios.get('/investigations/clusters?limit=5&status=open');
+      setClusters(r.data?.clusters || []);
     } catch {}
     setLoading(false);
   }, []);
@@ -94,6 +99,44 @@ export default function Dashboard() {
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+
+      {/* Incident Clusters panel — semantic correlation engine */}
+      {clusters.length > 0 && (
+        <div style={{ ...PANEL, padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 22px', borderBottom: `1px solid ${C.border}` }}>
+            <GitMerge size={13} color='#A78BFA' />
+            <span style={{ ...MONO, fontSize: 10, letterSpacing: '0.12em', color: C.text4 }}>CORRELATED INCIDENT CLUSTERS</span>
+            <span style={{ ...MONO, fontSize: 9, padding: '1px 7px', borderRadius: 4, background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)', color: '#A78BFA', marginLeft: 'auto' }}>
+              {clusters.length} OPEN
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {clusters.map((c, i) => (
+              <div key={c.id} style={{ padding: '12px 22px', borderBottom: i < clusters.length - 1 ? `1px solid ${C.border}` : 'none', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0, marginTop: 2 }}>
+                  <span style={{ ...MONO, fontSize: 9, padding: '1px 5px', borderRadius: 3, background: c.severity === 'critical' ? 'rgba(248,113,113,0.12)' : 'rgba(245,158,11,0.1)', border: `1px solid ${c.severity === 'critical' ? 'rgba(248,113,113,0.3)' : 'rgba(245,158,11,0.2)'}`, color: c.severity === 'critical' ? C.red : C.amber }}>
+                    {c.severity?.toUpperCase()}
+                  </span>
+                  <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>{c.member_count} alerts</span>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
+                    <span style={{ ...MONO, fontSize: 10, color: '#A78BFA' }}>{c.category?.toUpperCase()}</span>
+                    {c.avg_similarity != null && (
+                      <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>sim={c.avg_similarity.toFixed(2)}</span>
+                    )}
+                  </div>
+                  <p style={{ ...UI, fontSize: 12, color: C.text1, margin: '0 0 3px', lineHeight: 1.4 }}>{c.inferred_root_cause || c.title}</p>
+                  {c.members?.slice(0, 3).map((m, j) => (
+                    <span key={j} style={{ ...MONO, fontSize: 9, color: C.text3, marginRight: 8 }}>{m.agent_id?.slice(0, 8) || '?'}</span>
+                  ))}
+                  {c.members?.length > 3 && <span style={{ ...MONO, fontSize: 9, color: C.text4 }}>+{c.members.length - 3} more</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Active incident banner — auto-created by correlation engine or manually declared */}
       {activeIncident && (

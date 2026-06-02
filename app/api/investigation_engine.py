@@ -41,6 +41,7 @@ from app.core.database import (
     AgentActionLog, AlertRecord, Investigation, MetricSnapshot, SessionLocal,
 )
 from app.api.incident_memory import build_memory_context
+from app.api.correlation_engine import correlate_recent_alerts
 from app.api.memory_store import MemoryStore
 from app.api.log_collector import build_log_evidence, format_log_context
 from app.api.context_collector import collect_context, format_context_evidence
@@ -994,6 +995,11 @@ async def run_investigation(
         memory_id = mem_entry.id
     except Exception as exc:
         _log.warning("[INVESTIGATE] Could not save incident memory: %s", exc)
+
+    # ── Cross-incident correlation (async, non-blocking) ─────────────────────
+    asyncio.ensure_future(
+        correlate_recent_alerts(org_id, call_llm_fn=call_llm_fn)
+    )
 
     _log.info(
         "[INVESTIGATE] Completed %s confidence=%.2f routing=%s action=%s "

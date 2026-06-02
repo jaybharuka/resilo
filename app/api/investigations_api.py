@@ -20,8 +20,9 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.incident_memory import find_similar_incidents
+from app.api.correlation_engine import correlate_recent_alerts, get_clusters
 from app.core.database import (
-    Incident, IncidentMemory, Investigation, InvestigationFeedback, LogEntry, get_db,
+    Incident, IncidentCluster, IncidentMemory, Investigation, InvestigationFeedback, LogEntry, get_db,
 )
 
 router = APIRouter(tags=["investigations"])
@@ -831,4 +832,116 @@ async def submit_feedback(
         "investigation_id": investigation_id,
         "correct":         fb.correct,
         "confidence_bucket": bucket,
+    }
+
+
+# ── GET /investigations/clusters ─────────────────────────────────────────────
+
+@router.get("/investigations/clusters")
+async def list_clusters(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    status: str | None = Query(default=None, description="Filter by status: open|investigating|resolved|dismissed"),
+    limit: int = Query(default=20, le=100),
+) -> dict[str, Any]:
+    """Return incident clusters discovered by the semantic correlation engine."""
+    payload = await _require_token(request)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    clusters = await get_clusters(org_id, db, status=status, limit=limit)
+    return {"ok": True, "count": len(clusters), "clusters": clusters}
+
+
+# ── GET /investigations/clusters/{cluster_id} ─────────────────────────────────
+
+@router.get("/investigations/clusters/{cluster_id}")
+async def get_cluster(
+    cluster_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a single cluster with all members."""
+    payload = await _require_token(request)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    result = await db.execute(
+        select(IncidentCluster)
+        .where(IncidentCluster.id == cluster_id)
+        .where(IncidentCluster.org_id == org_id)
+    )
+    cluster = result.scalar_one_or_none()
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    clusters = await get_clusters(org_id, db, limit=1)
+    match = next((c for c in clusters if c["id"] == cluster_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    return {"ok": True, "cluster": match}
+
+
+# ── PATCH /investigations/clusters/{cluster_id} ───────────────────────────────
+
+@router.patch("/investigations/clusters/{cluster_id}")
+async def update_cluster_status(
+    cluster_id: str,
+    body: dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Update cluster status (open → investigating → resolved | dismissed)."""
+    payload = await _require_token(request)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    result = await db.execute(
+        select(IncidentCluster)
+        .where(IncidentCluster.id == cluster_id)
+        .where(IncidentCluster.org_id == org_id)
+    )
+    cluster = result.scalar_one_or_none()
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    allowed = {"open", "investigating", "resolved", "dismissed"}
+    new_status = body.get("status")
+    if new_status and new_status not in allowed:
+        raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
+
+    if new_status:
+        cluster.status = new_status
+        if new_status == "resolved":
+            cluster.resolved_at = datetime.now(timezone.utc)
+    if "inferred_root_cause" in body:
+        cluster.inferred_root_cause = body["inferred_root_cause"]
+
+    await db.commit()
+    return {"ok": True, "id": cluster_id, "status": cluster.status}
+
+
+# ── POST /investigations/correlate ────────────────────────────────────────────
+
+@router.post("/investigations/correlate", status_code=202)
+async def trigger_correlation(
+    request: Request,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Manually trigger a correlation pass over recent alerts for this org."""
+    payload = await _require_token(request)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    window = (body or {}).get("window_minutes", 240)
+    clusters = await correlate_recent_alerts(org_id, call_llm_fn=None, window_minutes=window)
+    return {
+        "ok": True,
+        "clusters_found": len(clusters),
+        "clusters": clusters,
+        "window_minutes": window,
     }
