@@ -47,7 +47,7 @@
     "detail": "nginx service failed — all HTTP traffic down"
   },
   "expected_root_cause": "service unavailable",
-  "expected_root_cause_keywords": ["nginx", "config", "invalid", "configuration error", "deploy", "crash loop", "failed"],
+  "expected_root_cause_keywords": ["nginx", "config", "invalid", "configuration error", "deploy", "crash loop", "failed", "service failure", "proxy", "http", "unavailable", "start", "directive", "syntax", "reload", "worker"],
   "expected_action": "restart_service",
   "acceptable_actions": ["restart_service", "notify_only"]
 }

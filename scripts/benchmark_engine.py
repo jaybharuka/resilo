@@ -185,18 +185,48 @@ def _format_context(ctx: dict) -> str:
     return "\n".join(lines) or "  (none)"
 
 
-def _strip_json(raw: str, array: bool = False) -> Any:
-    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+def _strip_json(raw: str, array: bool = False) -> tuple[Any, str | None]:
+    """Extract JSON from LLM response. Returns (parsed, error_msg|None)."""
+    if not raw or not raw.strip():
+        return ([] if array else {}), "empty response"
+
+    # Strategy 1: strip markdown fences then bracket-find
+    cleaned = raw.strip()
+    for fence in ("```json", "```JSON", "```"):
+        if cleaned.startswith(fence):
+            cleaned = cleaned[len(fence):]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
     char = "[" if array else "{"
     end  = "]" if array else "}"
-    start = raw.find(char)
-    stop  = raw.rfind(end) + 1
-    if start == -1 or stop == 0:
-        return [] if array else {}
-    try:
-        return json.loads(raw[start:stop])
-    except json.JSONDecodeError:
-        return [] if array else {}
+
+    start = cleaned.find(char)
+    stop  = cleaned.rfind(end) + 1
+    if start != -1 and stop > 0:
+        try:
+            return json.loads(cleaned[start:stop]), None
+        except json.JSONDecodeError as e1:
+            # Strategy 2: try the full cleaned string
+            try:
+                return json.loads(cleaned), None
+            except json.JSONDecodeError:
+                pass
+            # Strategy 3: scan for outermost balanced brackets
+            depth = 0
+            for i, ch in enumerate(cleaned[start:], start):
+                if ch == char:   depth += 1
+                elif ch == end:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(cleaned[start:i+1]), None
+                        except json.JSONDecodeError:
+                            break
+            return ([] if array else {}), f"JSONDecodeError: {e1}"
+
+    return ([] if array else {}), f"no {char!r} bracket found in response"
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -315,13 +345,18 @@ async def run_scenario(
         context_text=ctx_text,
     )
 
+    hyp_raw = ""
+    hyp_parse_err = None
     try:
         hyp_raw = await asyncio.wait_for(_call_gemini(_HYP_SYSTEM, hyp_prompt), timeout=30)
-        hypotheses = _strip_json(hyp_raw, array=True)
+        hypotheses, hyp_parse_err = _strip_json(hyp_raw, array=True)
         llm_calls += 1
         est_tokens += (len(_HYP_SYSTEM) + len(hyp_prompt) + len(hyp_raw or "")) // 4
+        if hyp_parse_err:
+            print(f"  [WARN] Hypothesis parse error: {hyp_parse_err}")
     except Exception as exc:
         print(f"  [WARN] Hypothesis generation failed: {exc}")
+        hyp_parse_err = str(exc)
         hypotheses = []
 
     # Stage 1.5: Planner simulation (A/B mode)
@@ -383,13 +418,18 @@ async def run_scenario(
         context_text=ctx_text,
     )
 
+    rca_raw = ""
+    rca_parse_err = None
     try:
         rca_raw = await asyncio.wait_for(_call_gemini(_RCA_SYSTEM, rca_prompt), timeout=30)
-        rca = _strip_json(rca_raw, array=False)
+        rca, rca_parse_err = _strip_json(rca_raw, array=False)
         llm_calls += 1
         est_tokens += (len(_RCA_SYSTEM) + len(rca_prompt) + len(rca_raw or "")) // 4
+        if rca_parse_err:
+            print(f"  [WARN] RCA parse error: {rca_parse_err}")
     except Exception as exc:
         print(f"  [WARN] RCA failed: {exc}")
+        rca_parse_err = str(exc)
         rca = {}
 
     elapsed = time.monotonic() - t0
@@ -398,6 +438,28 @@ async def run_scenario(
     result["est_tokens"]         = est_tokens
     result["planner_steps_taken"] = planner_steps_taken
     result["use_planner"]        = use_planner
+    # ── Failure audit fields ──────────────────────────────────────────────────
+    result["raw_rca"]            = rca_raw[:500] if rca_raw else ""
+    result["rca_parse_error"]    = rca_parse_err
+    result["hyp_parse_error"]    = hyp_parse_err
+    result["incident_type"]      = incident_type
+    # rca_summary used by confusion matrix classifier
+    result["rca_summary"]        = (
+        rca.get("root_cause", "") + " "
+        + " ".join(rca.get("supporting_evidence", []))[:200]
+    ).strip()
+    # failure_type classification
+    root_cause_text = rca.get("root_cause", "")
+    if not hypotheses and not root_cause_text:
+        result["failure_type"] = "llm_call_failed"
+    elif hypotheses and not root_cause_text:
+        result["failure_type"] = "rca_parse_failed"
+    elif not result["top1_correct"] and root_cause_text:
+        result["failure_type"] = "scoring_mismatch_or_wrong_diagnosis"
+    elif result["top1_correct"] and not result["action_acceptable"]:
+        result["failure_type"] = "action_mismatch"
+    else:
+        result["failure_type"] = None
 
     top1_mark = "✓" if result["top1_correct"] else "✗"
     act_mark  = "✓" if result["action_acceptable"] else "✗"
@@ -514,6 +576,17 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         ac = "✓" if r["action_acceptable"]    else "✗"
         print(f"  {r['scenario_id']:<28} {t1:<6} {ac:<8} {r['confidence']:<6.2f} {r['elapsed_s']:.1f}s")
 
+    # Failure audit breakdown
+    failure_counts: dict[str, int] = {}
+    for r in results:
+        ft = r.get("failure_type") or "correct"
+        failure_counts[ft] = failure_counts.get(ft, 0) + 1
+    if any(v > 0 for k, v in failure_counts.items() if k != "correct"):
+        print("\n  Failure audit:")
+        for ftype, count in sorted(failure_counts.items()):
+            mark = "  " if ftype == "correct" else "⚠ "
+            print(f"  {mark}{ftype:<40} {count}")
+
     avg_calls  = sum(r.get("llm_calls", 0) for r in results) / n
     avg_tokens = sum(r.get("est_tokens", 0) for r in results) / n
     print(f"  Avg LLM calls:      {avg_calls:.1f}")
@@ -598,10 +671,10 @@ async def main() -> None:
             "static":          static_summary,
             "planner":         planner_summary,
             "planner_delta_top1": round(
-                planner_summary["top1_accuracy"] - static_summary["top1_accuracy"], 3
+                (planner_summary.get("top1_accuracy") or 0) - (static_summary.get("top1_accuracy") or 0), 3
             ),
             "planner_extra_calls": round(
-                planner_summary["avg_llm_calls"] - static_summary["avg_llm_calls"], 2
+                (planner_summary.get("avg_llm_calls") or 0) - (static_summary.get("avg_llm_calls") or 0), 2
             ),
         }
         out_path = args.out or str(RESULTS_DIR / f"ab_{run_ts}.json")
@@ -646,26 +719,37 @@ def _print_confusion_matrix(results: list[dict]) -> None:
 
     def _detect_type(text: str) -> str:
         t = (text or "").lower()
-        if any(k in t for k in ["pool", "postgres", "connection", "pg_", "sql"]):
+        # Order matters: more specific patterns first
+        if any(k in t for k in ["pool", "postgres", "pg_stat", "pg_", "sql", "connection pool", "max_connections"]):
             return "database"
-        if any(k in t for k in ["oom", "oom_kill", "out of memory", "oom killer"]):
+        if any(k in t for k in ["oom killer", "out of memory", "oom kill", "oomkill"]):
             return "oom"
-        if any(k in t for k in ["nginx", "ssl", "service", "crash", "systemd"]):
-            return "service"
-        if any(k in t for k in ["network", "timeout", "dns", "tcp", "socket"]):
-            return "network"
-        if any(k in t for k in ["disk", "inode", "no space", "filesystem"]):
+        if any(k in t for k in ["disk full", "no space", "inode", "filesystem full", "disk usage", "disk capacity"]):
             return "disk"
-        if any(k in t for k in ["memory", "leak", "heap", "rss", "swap"]):
+        if any(k in t for k in ["memory leak", "heap", "memory exhaustion", "swap", "rss"]):
             return "memory"
-        if any(k in t for k in ["cpu", "load", "process", "runaway", "loop"]):
+        if any(k in t for k in ["timeout", "dns", "upstream", "circuit breaker", "payment"]):
+            return "network"
+        if any(k in t for k in ["nginx", "ssl", "systemd", "service fail", "proxy_", "worker process"]):
+            return "service"
+        if any(k in t for k in ["cpu", "runaway", "tight loop", "cpu-bound"]):
             return "cpu"
+        if any(k in t for k in ["memory", "oom"]):
+            return "memory"
+        if any(k in t for k in ["disk", "storage"]):
+            return "disk"
+        if any(k in t for k in ["network", "tcp", "socket", "connection"]):
+            return "network"
+        if any(k in t for k in ["service", "crash", "process"]):
+            return "service"
         return "unknown"
 
     matrix: dict[str, dict[str, int]] = {}
     for r in results:
+        # actual: prefer explicit incident_type field set during run_scenario
         actual    = r.get("incident_type") or _detect_type(r.get("scenario_id", ""))
-        predicted = _detect_type(r.get("root_cause_text", "") or r.get("rca_summary", ""))
+        # predicted: use rca_summary (rca text + supporting evidence)
+        predicted = _detect_type(r.get("rca_summary", "") or r.get("root_cause", ""))
         matrix.setdefault(actual, {})
         matrix[actual][predicted] = matrix[actual].get(predicted, 0) + 1
 

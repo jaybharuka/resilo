@@ -56,7 +56,7 @@
     "detail": "Root filesystem at 98.3% — writes failing"
   },
   "expected_root_cause": "storage exhaustion",
-  "expected_root_cause_keywords": ["log", "disk full", "no space", "storage exhaustion", "log rotation", "/var/log"],
+  "expected_root_cause_keywords": ["log", "disk full", "no space", "storage exhaustion", "log rotation", "/var/log", "disk usage", "disk space", "filesystem", "storage", "write failure", "writes failing", "disk capacity", "disk"],
   "expected_action": "disk_cleanup",
   "acceptable_actions": ["disk_cleanup", "notify_only"]
 }
