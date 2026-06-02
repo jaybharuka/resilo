@@ -13,20 +13,60 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "java",     "pid": 7823, "cpu_percent": 18.4, "memory_percent": 71.2},
-      {"name": "postgres", "pid": 1231, "cpu_percent":  4.2, "memory_percent":  8.1}
+      {
+        "name": "java",
+        "pid": 7823,
+        "cpu_percent": 18.4,
+        "memory_percent": 71.2
+      },
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 4.2,
+        "memory_percent": 8.1
+      }
     ],
     "by_mem": [
-      {"name": "java",     "pid": 7823, "cpu_percent": 18.4, "memory_percent": 71.2},
-      {"name": "postgres", "pid": 1231, "cpu_percent":  4.2, "memory_percent":  8.1}
+      {
+        "name": "java",
+        "pid": 7823,
+        "cpu_percent": 18.4,
+        "memory_percent": 71.2
+      },
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 4.2,
+        "memory_percent": 8.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "java",    "message": "java.lang.OutOfMemoryError: Java heap space"},
-    {"level": "WARN",  "source": "java",    "message": "GC overhead limit exceeded — heap 89% full"},
-    {"level": "WARN",  "source": "java",    "message": "GC overhead limit exceeded — heap 91% full"},
-    {"level": "ERROR", "source": "java",    "message": "GC overhead limit exceeded — heap 95% full"},
-    {"level": "WARN",  "source": "syslog",  "message": "swap usage at 62% and rising"}
+    {
+      "level": "ERROR",
+      "source": "java",
+      "message": "java.lang.OutOfMemoryError: Java heap space"
+    },
+    {
+      "level": "WARN",
+      "source": "java",
+      "message": "GC overhead limit exceeded \u00e2\u20ac\u201d heap 89% full"
+    },
+    {
+      "level": "WARN",
+      "source": "java",
+      "message": "GC overhead limit exceeded \u00e2\u20ac\u201d heap 91% full"
+    },
+    {
+      "level": "ERROR",
+      "source": "java",
+      "message": "GC overhead limit exceeded \u00e2\u20ac\u201d heap 95% full"
+    },
+    {
+      "level": "WARN",
+      "source": "syslog",
+      "message": "swap usage at 62% and rising"
+    }
   ],
   "context": {
     "memory_breakdown": {
@@ -47,18 +87,41 @@
     },
     "high_mem_procs": {
       "high_mem_processes": [
-        {"pid": "7823", "comm": "java",     "rss": "11782312", "pmem": "71.2"},
-        {"pid": "1231", "comm": "postgres", "rss": "1342080",  "pmem": "8.1"}
+        {
+          "pid": "7823",
+          "comm": "java",
+          "rss": "11782312",
+          "pmem": "71.2"
+        },
+        {
+          "pid": "1231",
+          "comm": "postgres",
+          "rss": "1342080",
+          "pmem": "8.1"
+        }
       ]
     }
   },
   "alert": {
     "category": "memory",
     "severity": "critical",
-    "detail": "Available memory below 5% — system at risk of OOM kills"
+    "detail": "Available memory below 5% \u00e2\u20ac\u201d system at risk of OOM kills"
   },
   "expected_root_cause": "memory leak",
-  "expected_root_cause_keywords": ["memory leak", "heap", "java", "oom", "out of memory", "gc overhead"],
+  "expected_root_cause_keywords": [
+    "memory leak",
+    "heap",
+    "java",
+    "oom",
+    "out of memory",
+    "gc overhead"
+  ],
   "expected_action": "free_memory",
-  "acceptable_actions": ["free_memory", "run_gc", "restart_service", "kill_process"]
+  "acceptable_actions": [
+    "free_memory",
+    "run_gc",
+    "restart_service",
+    "kill_process"
+  ],
+  "tier": "A"
 }

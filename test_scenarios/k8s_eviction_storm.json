@@ -1,0 +1,63 @@
+{
+  "scenario_id": "k8s_eviction_storm",
+  "description": "Tier B (real-world): based on Kubernetes node pressure eviction pattern — kubelet evicting pods under memory pressure, triggering restart loop on all pods",
+  "tier": "B",
+  "source": "Based on Kubernetes node eviction pressure incidents and public SRE postmortems",
+  "metrics": {
+    "cpu": 62.0,
+    "memory": 94.1,
+    "disk": 71.0,
+    "load_avg_1m": 7.8,
+    "load_avg_5m": 6.4,
+    "load_avg_15m": 4.1,
+    "swap_percent": 0.0,
+    "net_established": 54
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "kubelet",    "pid":  421, "cpu_percent": 28.4, "memory_percent":  4.1},
+      {"name": "containerd", "pid":  512, "cpu_percent": 18.2, "memory_percent":  3.8},
+      {"name": "java",       "pid": 8821, "cpu_percent": 14.1, "memory_percent": 61.2}
+    ],
+    "by_mem": [
+      {"name": "java",    "pid": 8821, "cpu_percent": 14.1, "memory_percent": 61.2},
+      {"name": "kubelet", "pid":  421, "cpu_percent": 28.4, "memory_percent":  4.1}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "kubelet",     "message": "Evicted pod default/api-server-7d9f8b-xkp2q: The node was low on resource: memory. Threshold quantity: 500Mi, available: 312Mi"},
+    {"level": "ERROR", "source": "kubelet",     "message": "Evicted pod default/worker-6c4d9b-mnp1r: The node was low on resource: memory."},
+    {"level": "WARN",  "source": "kubelet",     "message": "Node condition MemoryPressure = True"},
+    {"level": "ERROR", "source": "kubelet",     "message": "Evicted pod default/scheduler-5b8f7a-qrs4t: The node was low on resource: memory."},
+    {"level": "WARN",  "source": "containerd",  "message": "OOMKilled container java in pod default/api-server-7d9f8b-xkp2q"}
+  ],
+  "context": {
+    "service_state": {
+      "k8s_node_conditions": {
+        "MemoryPressure": true,
+        "DiskPressure": false,
+        "PIDPressure": false,
+        "Ready": false
+      },
+      "pods_evicted_last_10m": 7,
+      "pods_in_crashloopbackoff": 5
+    },
+    "memory_breakdown": {
+      "meminfo": {
+        "MemTotal": "16384000 kB",
+        "MemAvailable": "319488 kB"
+      },
+      "kubelet_eviction_threshold": "500Mi",
+      "available_at_eviction": "312Mi"
+    }
+  },
+  "alert": {
+    "category": "memory",
+    "severity": "critical",
+    "detail": "Kubernetes node MemoryPressure — 7 pods evicted, 5 in CrashLoopBackOff"
+  },
+  "expected_root_cause": "Kubernetes node memory pressure causing pod eviction storm",
+  "expected_root_cause_keywords": ["evict", "kubelet", "memory pressure", "oom", "crashloopbackoff", "node pressure", "k8s", "kubernetes", "eviction"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "kill_process", "notify_only", "restart_service"]
+}

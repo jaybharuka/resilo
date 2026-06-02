@@ -13,20 +13,60 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "postgres", "pid": 1231, "cpu_percent": 38.4, "memory_percent": 12.3},
-      {"name": "nginx",    "pid":  882, "cpu_percent":  4.1, "memory_percent":  1.2},
-      {"name": "python3",  "pid": 4421, "cpu_percent":  3.8, "memory_percent":  3.1}
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 38.4,
+        "memory_percent": 12.3
+      },
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 4.1,
+        "memory_percent": 1.2
+      },
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 3.8,
+        "memory_percent": 3.1
+      }
     ],
     "by_mem": [
-      {"name": "postgres", "pid": 1231, "cpu_percent": 38.4, "memory_percent": 12.3}
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 38.4,
+        "memory_percent": 12.3
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "app",      "message": "FATAL: remaining connection slots are reserved for replication superuser connections"},
-    {"level": "ERROR", "source": "app",      "message": "connection pool exhausted — all 100 connections in use"},
-    {"level": "WARN",  "source": "app",      "message": "DB acquire timeout after 30s (pool_size=100, overflow=0)"},
-    {"level": "ERROR", "source": "postgres", "message": "too many connections: current 100, max_connections=100"},
-    {"level": "WARN",  "source": "app",      "message": "Retrying DB connection (attempt 3 of 5)"}
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "FATAL: remaining connection slots are reserved for replication superuser connections"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "connection pool exhausted \u00e2\u20ac\u201d all 100 connections in use"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "DB acquire timeout after 30s (pool_size=100, overflow=0)"
+    },
+    {
+      "level": "ERROR",
+      "source": "postgres",
+      "message": "too many connections: current 100, max_connections=100"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Retrying DB connection (attempt 3 of 5)"
+    }
   ],
   "context": {
     "pg_connections": {
@@ -46,10 +86,30 @@
   "alert": {
     "category": "database",
     "severity": "critical",
-    "detail": "PostgreSQL connection pool at capacity — new connections refused"
+    "detail": "PostgreSQL connection pool at capacity \u00e2\u20ac\u201d new connections refused"
   },
   "expected_root_cause": "connection pool saturation",
-  "expected_root_cause_keywords": ["connection pool", "pool saturation", "max connections", "long-running query", "pool exhausted", "too many connections", "holding connections", "holding open connections", "idle in transaction", "connection limit", "connections exhausted", "open connections", "database connections", "pg_stat"],
+  "expected_root_cause_keywords": [
+    "connection pool",
+    "pool saturation",
+    "max connections",
+    "long-running query",
+    "pool exhausted",
+    "too many connections",
+    "holding connections",
+    "holding open connections",
+    "idle in transaction",
+    "connection limit",
+    "connections exhausted",
+    "open connections",
+    "database connections",
+    "pg_stat"
+  ],
   "expected_action": "notify_only",
-  "acceptable_actions": ["notify_only", "restart_service", "kill_process"]
+  "acceptable_actions": [
+    "notify_only",
+    "restart_service",
+    "kill_process"
+  ],
+  "tier": "A"
 }

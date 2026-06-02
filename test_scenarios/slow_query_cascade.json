@@ -1,6 +1,6 @@
 {
   "scenario_id": "slow_query_cascade",
-  "description": "A single 17-minute PostgreSQL query holds locks causing app-wide slowdown — only visible via pg_long_queries collector",
+  "description": "A single 17-minute PostgreSQL query holds locks causing app-wide slowdown \u00e2\u20ac\u201d only visible via pg_long_queries collector",
   "metrics": {
     "cpu": 34.0,
     "memory": 61.0,
@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "postgres", "pid": 3312, "cpu_percent": 18.4, "memory_percent": 12.1},
-      {"name": "python3",  "pid": 4100, "cpu_percent":  9.2, "memory_percent":  8.4}
+      {
+        "name": "postgres",
+        "pid": 3312,
+        "cpu_percent": 18.4,
+        "memory_percent": 12.1
+      },
+      {
+        "name": "python3",
+        "pid": 4100,
+        "cpu_percent": 9.2,
+        "memory_percent": 8.4
+      }
     ],
     "by_mem": [
-      {"name": "postgres", "pid": 3312, "cpu_percent": 18.4, "memory_percent": 12.1}
+      {
+        "name": "postgres",
+        "pid": 3312,
+        "cpu_percent": 18.4,
+        "memory_percent": 12.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "app", "message": "sqlalchemy.exc.TimeoutError: QueuePool limit reached, connection timed out after 30s"},
-    {"level": "ERROR", "source": "app", "message": "sqlalchemy.exc.TimeoutError: QueuePool limit reached, connection timed out after 30s"},
-    {"level": "WARN",  "source": "app", "message": "Slow request detected: GET /api/orders took 31.4s"},
-    {"level": "WARN",  "source": "app", "message": "Slow request detected: POST /api/checkout took 28.9s"}
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "sqlalchemy.exc.TimeoutError: QueuePool limit reached, connection timed out after 30s"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "sqlalchemy.exc.TimeoutError: QueuePool limit reached, connection timed out after 30s"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Slow request detected: GET /api/orders took 31.4s"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Slow request detected: POST /api/checkout took 28.9s"
+    }
   ],
   "context": {
     "pg_long_queries": {
@@ -45,10 +76,25 @@
   "alert": {
     "category": "database",
     "severity": "high",
-    "detail": "Application response time >25s — database connection pool exhausted"
+    "detail": "Application response time >25s \u00e2\u20ac\u201d database connection pool exhausted"
   },
   "expected_root_cause": "long-running query holding locks",
-  "expected_root_cause_keywords": ["long-running query", "long running", "idle in transaction", "lock", "17 minute", "slow query", "FOR UPDATE", "connection pool", "holding"],
+  "expected_root_cause_keywords": [
+    "long-running query",
+    "long running",
+    "idle in transaction",
+    "lock",
+    "17 minute",
+    "slow query",
+    "FOR UPDATE",
+    "connection pool",
+    "holding"
+  ],
   "expected_action": "notify_only",
-  "acceptable_actions": ["notify_only", "kill_process", "restart_service"]
+  "acceptable_actions": [
+    "notify_only",
+    "kill_process",
+    "restart_service"
+  ],
+  "tier": "A"
 }

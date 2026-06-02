@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "nginx",   "pid":  882, "cpu_percent": 4.1, "memory_percent": 1.2},
-      {"name": "rsyslogd","pid":  441, "cpu_percent": 3.8, "memory_percent": 0.4}
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 4.1,
+        "memory_percent": 1.2
+      },
+      {
+        "name": "rsyslogd",
+        "pid": 441,
+        "cpu_percent": 3.8,
+        "memory_percent": 0.4
+      }
     ],
     "by_mem": [
-      {"name": "nginx",   "pid":  882, "cpu_percent": 4.1, "memory_percent": 1.2}
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 4.1,
+        "memory_percent": 1.2
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "app",     "message": "write /var/log/app/app.log: no space left on device"},
-    {"level": "ERROR", "source": "postgres","message": "could not write to file \"pg_wal/00000001000000010000005E\": No space left on device"},
-    {"level": "ERROR", "source": "rsyslogd","message": "file '/var/log/app/access.log': No space left on device"},
-    {"level": "WARN",  "source": "syslog",  "message": "logrotate: error: error creating output file /var/log/app/app.log.1: No space left on device"}
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "write /var/log/app/app.log: no space left on device"
+    },
+    {
+      "level": "ERROR",
+      "source": "postgres",
+      "message": "could not write to file \"pg_wal/00000001000000010000005E\": No space left on device"
+    },
+    {
+      "level": "ERROR",
+      "source": "rsyslogd",
+      "message": "file '/var/log/app/access.log': No space left on device"
+    },
+    {
+      "level": "WARN",
+      "source": "syslog",
+      "message": "logrotate: error: error creating output file /var/log/app/app.log.1: No space left on device"
+    }
   ],
   "context": {
     "largest_dirs": {
@@ -53,10 +84,29 @@
   "alert": {
     "category": "disk",
     "severity": "critical",
-    "detail": "Root filesystem at 98.3% — writes failing"
+    "detail": "Root filesystem at 98.3% \u00e2\u20ac\u201d writes failing"
   },
   "expected_root_cause": "storage exhaustion",
-  "expected_root_cause_keywords": ["log", "disk full", "no space", "storage exhaustion", "log rotation", "/var/log", "disk usage", "disk space", "filesystem", "storage", "write failure", "writes failing", "disk capacity", "disk"],
+  "expected_root_cause_keywords": [
+    "log",
+    "disk full",
+    "no space",
+    "storage exhaustion",
+    "log rotation",
+    "/var/log",
+    "disk usage",
+    "disk space",
+    "filesystem",
+    "storage",
+    "write failure",
+    "writes failing",
+    "disk capacity",
+    "disk"
+  ],
   "expected_action": "disk_cleanup",
-  "acceptable_actions": ["disk_cleanup", "notify_only"]
+  "acceptable_actions": [
+    "disk_cleanup",
+    "notify_only"
+  ],
+  "tier": "A"
 }

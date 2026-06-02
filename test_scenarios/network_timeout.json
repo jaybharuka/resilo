@@ -13,19 +13,54 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 14.2, "memory_percent": 5.1},
-      {"name": "nginx",   "pid":  882, "cpu_percent":  5.3, "memory_percent": 1.4}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 14.2,
+        "memory_percent": 5.1
+      },
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 5.3,
+        "memory_percent": 1.4
+      }
     ],
     "by_mem": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 14.2, "memory_percent": 5.1}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 14.2,
+        "memory_percent": 5.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
-    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
-    {"level": "ERROR", "source": "app",    "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"},
-    {"level": "WARN",  "source": "app",    "message": "Circuit breaker OPEN for payments_service after 5 consecutive failures"},
-    {"level": "WARN",  "source": "nginx",  "message": "upstream timed out (110: Connection timed out) while reading response header from upstream"}
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.payments.example.com', port=443): Read timed out. (read timeout=30)"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Circuit breaker OPEN for payments_service after 5 consecutive failures"
+    },
+    {
+      "level": "WARN",
+      "source": "nginx",
+      "message": "upstream timed out (110: Connection timed out) while reading response header from upstream"
+    }
   ],
   "context": {
     "connection_summary": {
@@ -37,16 +72,37 @@
       ]
     },
     "open_ports": {
-      "listening_ports": ["0.0.0.0:80", "0.0.0.0:443", "0.0.0.0:8000", "127.0.0.1:5432"]
+      "listening_ports": [
+        "0.0.0.0:80",
+        "0.0.0.0:443",
+        "0.0.0.0:8000",
+        "127.0.0.1:5432"
+      ]
     }
   },
   "alert": {
     "category": "network",
     "severity": "high",
-    "detail": "HTTP 504 error rate >40% on /api/checkout — upstream dependency unreachable"
+    "detail": "HTTP 504 error rate >40% on /api/checkout \u00e2\u20ac\u201d upstream dependency unreachable"
   },
   "expected_root_cause": "upstream dependency timeout",
-  "expected_root_cause_keywords": ["upstream", "timeout", "payment", "circuit breaker", "dependency", "external service", "syn", "flood", "connection", "tcp", "network"],
+  "expected_root_cause_keywords": [
+    "upstream",
+    "timeout",
+    "payment",
+    "circuit breaker",
+    "dependency",
+    "external service",
+    "syn",
+    "flood",
+    "connection",
+    "tcp",
+    "network"
+  ],
   "expected_action": "notify_only",
-  "acceptable_actions": ["notify_only", "restart_service"]
+  "acceptable_actions": [
+    "notify_only",
+    "restart_service"
+  ],
+  "tier": "A"
 }

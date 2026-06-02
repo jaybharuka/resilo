@@ -1,6 +1,6 @@
 {
   "scenario_id": "ntp_clock_skew",
-  "description": "NTP daemon stopped causing clock skew — JWT tokens rejected as expired, TLS handshakes failing intermittently",
+  "description": "NTP daemon stopped causing clock skew \u00e2\u20ac\u201d JWT tokens rejected as expired, TLS handshakes failing intermittently",
   "metrics": {
     "cpu": 13.0,
     "memory": 40.0,
@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 9.2, "memory_percent": 7.1},
-      {"name": "nginx",   "pid":  882, "cpu_percent": 2.1, "memory_percent": 1.2}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 9.2,
+        "memory_percent": 7.1
+      },
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 2.1,
+        "memory_percent": 1.2
+      }
     ],
     "by_mem": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 9.2, "memory_percent": 7.1}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 9.2,
+        "memory_percent": 7.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "auth",   "message": "JWT validation failed: token expired (exp=1748912345, now=1748956789) — clock skew 44444s"},
-    {"level": "ERROR", "source": "app",    "message": "ssl.SSLError: CERTIFICATE_VERIFY_FAILED: certificate is not yet valid (_ssl.c:1007)"},
-    {"level": "WARN",  "source": "app",    "message": "Authentication failure rate 78% in last 5 minutes"},
-    {"level": "ERROR", "source": "ntpd",   "message": "ntpd: exiting: no valid service address found"}
+    {
+      "level": "ERROR",
+      "source": "auth",
+      "message": "JWT validation failed: token expired (exp=1748912345, now=1748956789) \u00e2\u20ac\u201d clock skew 44444s"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "ssl.SSLError: CERTIFICATE_VERIFY_FAILED: certificate is not yet valid (_ssl.c:1007)"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Authentication failure rate 78% in last 5 minutes"
+    },
+    {
+      "level": "ERROR",
+      "source": "ntpd",
+      "message": "ntpd: exiting: no valid service address found"
+    }
   ],
   "context": {
     "service_state": {
@@ -39,10 +70,25 @@
   "alert": {
     "category": "service",
     "severity": "high",
-    "detail": "Authentication failure rate 78% — JWT tokens being rejected"
+    "detail": "Authentication failure rate 78% \u00e2\u20ac\u201d JWT tokens being rejected"
   },
   "expected_root_cause": "NTP clock skew",
-  "expected_root_cause_keywords": ["ntp", "clock skew", "ntpd", "time sync", "clock", "skew", "jwt", "expired", "44444", "synchronized"],
+  "expected_root_cause_keywords": [
+    "ntp",
+    "clock skew",
+    "ntpd",
+    "time sync",
+    "clock",
+    "skew",
+    "jwt",
+    "expired",
+    "44444",
+    "synchronized"
+  ],
   "expected_action": "restart_service",
-  "acceptable_actions": ["restart_service", "notify_only"]
+  "acceptable_actions": [
+    "restart_service",
+    "notify_only"
+  ],
+  "tier": "A"
 }

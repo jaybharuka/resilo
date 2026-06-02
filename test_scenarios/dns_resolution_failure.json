@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 12.1, "memory_percent": 6.2},
-      {"name": "nginx",   "pid":  882, "cpu_percent":  3.4, "memory_percent": 1.1}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 12.1,
+        "memory_percent": 6.2
+      },
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 3.4,
+        "memory_percent": 1.1
+      }
     ],
     "by_mem": [
-      {"name": "python3", "pid": 4421, "cpu_percent": 12.1, "memory_percent": 6.2}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 12.1,
+        "memory_percent": 6.2
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "app", "message": "requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"},
-    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'auth-service.internal'"},
-    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'db.internal'"},
-    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'cache.internal'"}
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "socket.gaierror: [Errno -2] Name or service not known: 'auth-service.internal'"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "socket.gaierror: [Errno -2] Name or service not known: 'db.internal'"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "socket.gaierror: [Errno -2] Name or service not known: 'cache.internal'"
+    }
   ],
   "context": {
     "net_connection_summary": {
@@ -37,10 +68,23 @@
   "alert": {
     "category": "network",
     "severity": "critical",
-    "detail": "Service mesh down — all inter-service calls failing with connection errors"
+    "detail": "Service mesh down \u00e2\u20ac\u201d all inter-service calls failing with connection errors"
   },
   "expected_root_cause": "DNS resolver failure",
-  "expected_root_cause_keywords": ["dns", "resolver", "name or service not known", "gaierror", "nameserver", "resolution", "internal", "10.0.0.53"],
+  "expected_root_cause_keywords": [
+    "dns",
+    "resolver",
+    "name or service not known",
+    "gaierror",
+    "nameserver",
+    "resolution",
+    "internal",
+    "10.0.0.53"
+  ],
   "expected_action": "notify_only",
-  "acceptable_actions": ["notify_only", "restart_service"]
+  "acceptable_actions": [
+    "notify_only",
+    "restart_service"
+  ],
+  "tier": "A"
 }

@@ -448,8 +448,11 @@ async def run_scenario(
 
     # Stage 1.5: Planner simulation (A/B mode)
     planner_steps_taken = 0
+    planner_collectors: list[str] = []
+    planner_pre_hyp    = hypotheses[0].get("cause", "") if hypotheses else ""
+    planner_pre_conf   = hypotheses[0].get("confidence", 0.0) if hypotheses else 0.0
     if use_planner and hypotheses:
-        top_hyp = hypotheses[0].get("cause", "") if hypotheses else ""
+        top_hyp = planner_pre_hyp
         planner_system = (
             "You are a senior SRE choosing the next collector. "
             "Respond ONLY with JSON: {\"confident_enough\": bool, \"collector\": str|null, \"reason\": str}"
@@ -479,6 +482,7 @@ async def run_scenario(
                 collector = str(decision.get("collector") or "")
                 if collector and collector not in gathered_keys:
                     gathered_keys.append(collector)
+                    planner_collectors.append(collector)
             except Exception:
                 break
 
@@ -525,8 +529,17 @@ async def run_scenario(
     result  = _score_scenario(scenario, hypotheses, rca, elapsed)
     result["llm_calls"]          = llm_calls
     result["est_tokens"]         = est_tokens
-    result["planner_steps_taken"] = planner_steps_taken
-    result["use_planner"]        = use_planner
+    result["planner_steps_taken"]      = planner_steps_taken
+    result["use_planner"]              = use_planner
+    # ── Planner influence tracking ────────────────────────────────────────────
+    post_conf = float(rca.get("confidence", 0.0))
+    planner_post_hyp = rca.get("root_cause", "")
+    result["planner_collectors"]       = planner_collectors
+    result["planner_changed_diagnosis"] = (
+        bool(planner_collectors)
+        and planner_pre_hyp.lower()[:40] != planner_post_hyp.lower()[:40]
+    )
+    result["planner_confidence_delta"] = round(post_conf - planner_pre_conf, 3) if use_planner else None
     # ── Failure audit fields ──────────────────────────────────────────────────
     result["raw_rca"]            = rca_raw[:500] if rca_raw else ""
     result["rca_parse_error"]    = rca_parse_err
@@ -681,11 +694,36 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
             mark = "  " if ftype == "correct" else "⚠ "
             print(f"  {mark}{ftype:<40} {count}")
 
+    # Planner influence table (only shown in planner mode)
+    planner_runs = [r for r in results if r.get("use_planner")]
+    if planner_runs:
+        influenced   = sum(1 for r in planner_runs if r.get("planner_changed_diagnosis"))
+        any_collect  = sum(1 for r in planner_runs if r.get("planner_collectors"))
+        conf_deltas  = [r["planner_confidence_delta"] for r in planner_runs
+                        if r.get("planner_confidence_delta") is not None]
+        avg_delta    = sum(conf_deltas) / len(conf_deltas) if conf_deltas else 0.0
+        print(f"\n  Planner influence ({len(planner_runs)} runs):")
+        print(f"    Collectors requested:    {any_collect}/{len(planner_runs)} scenarios")
+        print(f"    Changed diagnosis:       {influenced}/{len(planner_runs)} scenarios")
+        print(f"    Avg confidence delta:    {avg_delta:+.3f}")
+        top_collectors: dict[str, int] = {}
+        for r in planner_runs:
+            for c in r.get("planner_collectors", []):
+                top_collectors[c] = top_collectors.get(c, 0) + 1
+        if top_collectors:
+            ranked = sorted(top_collectors.items(), key=lambda x: -x[1])
+            print(f"    Most requested:          {', '.join(f'{c}({v})' for c,v in ranked[:5])}")
+
     avg_calls  = sum(r.get("llm_calls", 0) for r in results) / n
     avg_tokens = sum(r.get("est_tokens", 0) for r in results) / n
     print(f"  Avg LLM calls:      {avg_calls:.1f}")
     print(f"  Avg est. tokens:    {avg_tokens:.0f}")
     print("="*60)
+
+    planner_influence_rate = (
+        sum(1 for r in planner_runs if r.get("planner_changed_diagnosis")) / len(planner_runs)
+        if planner_runs else None
+    )
 
     summary = {
         "valid":                True,
@@ -701,13 +739,38 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         "calibration_gap":      round(calibration_gap, 3),
         "avg_investigation_s":  round(avg_time, 2),
         "avg_llm_calls":        round(avg_calls, 2),
-        "avg_est_tokens":       round(avg_tokens, 0),
-        "per_scenario":         results,
+        "avg_est_tokens":          round(avg_tokens, 0),
+        "planner_influence_rate":  planner_influence_rate,
+        "per_scenario":            results,
     }
     return summary
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+
+def _inject_noise(scenario: dict[str, Any], seed: int | None = None) -> dict[str, Any]:
+    """Tier C: inject irrelevant logs and metrics to test robustness."""
+    import copy, random
+    rng = random.Random(seed)
+    s = copy.deepcopy(scenario)
+    noise_logs = [
+        {"level": "INFO",  "source": "cron",    "message": "Backup completed: 4218 files archived"},
+        {"level": "DEBUG", "source": "app",     "message": "Cache hit ratio: 0.87"},
+        {"level": "INFO",  "source": "monitor", "message": "Health check passed for /api/ping"},
+        {"level": "DEBUG", "source": "nginx",   "message": "200 GET /favicon.ico 0.001s"},
+        {"level": "INFO",  "source": "app",     "message": "Scheduled job 'report_generator' started"},
+        {"level": "WARN",  "source": "app",     "message": "Deprecated API endpoint /v1/users called by client 10.0.1.44"},
+        {"level": "INFO",  "source": "postgres","message": "checkpoint complete: wrote 142 buffers (0.1%)"},
+    ]
+    injected = rng.sample(noise_logs, min(4, len(noise_logs)))
+    s["logs"] = injected + s.get("logs", [])  # prepend noise to bury signal
+    # Slightly perturb neutral metrics (not the pathological ones)
+    for key in ["load_avg_5m", "net_established"]:
+        if key in s.get("metrics", {}):
+            s["metrics"][key] = round(s["metrics"][key] * rng.uniform(0.9, 1.1), 1)
+    s["_noise_injected"] = True
+    return s
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark the investigation engine")
@@ -716,6 +779,8 @@ async def main() -> None:
     parser.add_argument("--ab",         action="store_true", help="A/B: run each scenario twice (static then planner)")
     parser.add_argument("--confusion",  action="store_true", help="Print confusion matrix after run")
     parser.add_argument("--no-verbose", action="store_true")
+    parser.add_argument("--noise",      action="store_true", help="Tier C: inject irrelevant noise into scenarios before running")
+    parser.add_argument("--tier",       help="Filter scenarios by tier tag (A, B, C or comma-list)")
     args = parser.parse_args()
 
     if not os.getenv("GEMINI_API_KEY"):
@@ -730,11 +795,21 @@ async def main() -> None:
         print(f"[error] No scenario files found in {SCENARIOS_DIR}")
         sys.exit(1)
 
+    tier_filter: set[str] = set()
+    if args.tier:
+        tier_filter = {t.strip().upper() for t in args.tier.split(",")}
+
     scenarios = []
     for sf in scenario_files:
         s = json.loads(sf.read_text())
         if args.scenario and s["scenario_id"] != args.scenario:
             continue
+        if tier_filter:
+            scenario_tier = s.get("tier", "A").upper()
+            if scenario_tier not in tier_filter:
+                continue
+        if args.noise:
+            s = _inject_noise(s)
         scenarios.append(s)
 
     if not scenarios:

@@ -1,0 +1,53 @@
+{
+  "scenario_id": "flapping_service",
+  "description": "Ambiguous: service alternates between healthy and degraded every ~2 minutes — could be memory leak, external dependency, or load balancer misconfiguration",
+  "tier": "A",
+  "ambiguous": true,
+  "metrics": {
+    "cpu": 44.0,
+    "memory": 67.0,
+    "disk": 35.0,
+    "load_avg_1m": 2.8,
+    "load_avg_5m": 2.6,
+    "load_avg_15m": 2.4,
+    "swap_percent": 22.0,
+    "net_established": 141
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "node",   "pid": 5512, "cpu_percent": 38.1, "memory_percent": 52.4},
+      {"name": "nginx",  "pid":  882, "cpu_percent":  3.2, "memory_percent":  1.1}
+    ],
+    "by_mem": [
+      {"name": "node", "pid": 5512, "cpu_percent": 38.1, "memory_percent": 52.4}
+    ]
+  },
+  "logs": [
+    {"level": "INFO",  "source": "monitor", "message": "Health check PASSED  /api/health 200 OK (12ms)"},
+    {"level": "ERROR", "source": "monitor", "message": "Health check FAILED  /api/health 503 Service Unavailable (30012ms)"},
+    {"level": "INFO",  "source": "monitor", "message": "Health check PASSED  /api/health 200 OK (18ms)"},
+    {"level": "ERROR", "source": "monitor", "message": "Health check FAILED  /api/health 503 Service Unavailable (30008ms)"},
+    {"level": "WARN",  "source": "app",     "message": "Event loop lag 4800ms — possible GC pause or blocking call"},
+    {"level": "WARN",  "source": "app",     "message": "Heap usage: 1891MB / 2048MB (92%)"}
+  ],
+  "context": {
+    "process_tree": {
+      "pid_5512": {
+        "uptime_hours": 18,
+        "heap_used_mb": 1891,
+        "heap_limit_mb": 2048,
+        "gc_major_count": 847,
+        "gc_pause_max_ms": 4812
+      }
+    }
+  },
+  "alert": {
+    "category": "service",
+    "severity": "high",
+    "detail": "Service availability 61% over last 30 minutes — intermittent 503 errors"
+  },
+  "expected_root_cause": "Node.js heap exhaustion causing GC pauses",
+  "expected_root_cause_keywords": ["heap", "gc", "memory", "node", "pause", "event loop", "gc pause", "heap exhaustion", "v8", "leak"],
+  "expected_action": "restart_service",
+  "acceptable_actions": ["restart_service", "run_gc", "free_memory", "notify_only"]
+}

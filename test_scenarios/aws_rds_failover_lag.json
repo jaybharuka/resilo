@@ -1,0 +1,50 @@
+{
+  "scenario_id": "aws_rds_failover_lag",
+  "description": "Tier B (real-world): based on AWS RDS Multi-AZ failover pattern — replica lag spikes during promotion causing read queries to return stale data then timeout",
+  "tier": "B",
+  "source": "Based on AWS RDS Multi-AZ failover incident patterns and public postmortems",
+  "metrics": {
+    "cpu": 29.0,
+    "memory": 52.0,
+    "disk": 44.0,
+    "load_avg_1m": 1.8,
+    "load_avg_5m": 1.7,
+    "load_avg_15m": 1.4,
+    "swap_percent": 3.0,
+    "net_established": 163
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",  "pid": 4421, "cpu_percent": 22.1, "memory_percent": 18.4},
+      {"name": "pgbouncer","pid": 3901, "cpu_percent":  4.2, "memory_percent":  2.1}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 4421, "cpu_percent": 22.1, "memory_percent": 18.4}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",      "message": "psycopg2.OperationalError: could not connect to server: Connection refused (host=rds-replica.us-east-1.rds.amazonaws.com)"},
+    {"level": "ERROR", "source": "app",      "message": "sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) SSL connection has been closed unexpectedly"},
+    {"level": "WARN",  "source": "app",      "message": "Read replica lag: 847 seconds — falling back to primary"},
+    {"level": "ERROR", "source": "app",      "message": "sqlalchemy.exc.TimeoutError: QueuePool limit reached after falling back from replica"},
+    {"level": "INFO",  "source": "monitor",  "message": "RDS event: Multi-AZ failover initiated — promoting replica rds-replica-2 to primary"}
+  ],
+  "context": {
+    "pg_connections": {
+      "total": 98,
+      "max": 100,
+      "replica_lag_seconds": 847,
+      "failover_in_progress": true,
+      "primary_endpoint_changed": true
+    }
+  },
+  "alert": {
+    "category": "database",
+    "severity": "critical",
+    "detail": "Database read replica unavailable — application falling back to primary, connection pool saturated"
+  },
+  "expected_root_cause": "RDS Multi-AZ failover causing replica lag and connection exhaustion",
+  "expected_root_cause_keywords": ["failover", "replica", "lag", "rds", "multi-az", "promotion", "replica lag", "connection pool", "fallback"],
+  "expected_action": "notify_only",
+  "acceptable_actions": ["notify_only", "restart_service"]
+}

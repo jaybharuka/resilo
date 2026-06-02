@@ -1,0 +1,55 @@
+{
+  "scenario_id": "db_and_cache_failure",
+  "description": "Ambiguous: both Redis and Postgres degraded simultaneously — network partition, shared resource contention, or cascading failure from single root cause",
+  "tier": "A",
+  "ambiguous": true,
+  "metrics": {
+    "cpu": 51.0,
+    "memory": 58.0,
+    "disk": 39.0,
+    "load_avg_1m": 3.9,
+    "load_avg_5m": 3.7,
+    "load_avg_15m": 2.1,
+    "swap_percent": 8.0,
+    "net_established": 247
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",     "pid": 4421, "cpu_percent": 34.2, "memory_percent": 21.1},
+      {"name": "postgres",    "pid": 3312, "cpu_percent": 12.4, "memory_percent": 18.8},
+      {"name": "redis-server","pid": 2341, "cpu_percent":  2.1, "memory_percent":  9.4}
+    ],
+    "by_mem": [
+      {"name": "postgres",    "pid": 3312, "cpu_percent": 12.4, "memory_percent": 18.8},
+      {"name": "python3",     "pid": 4421, "cpu_percent": 34.2, "memory_percent": 21.1}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app", "message": "redis.exceptions.TimeoutError: Timeout reading from socket"},
+    {"level": "ERROR", "source": "app", "message": "sqlalchemy.exc.OperationalError: could not connect to server: Connection timed out"},
+    {"level": "ERROR", "source": "app", "message": "redis.exceptions.TimeoutError: Timeout reading from socket"},
+    {"level": "WARN",  "source": "app", "message": "Fallback to direct DB: cache miss rate 100%"},
+    {"level": "ERROR", "source": "app", "message": "sqlalchemy.exc.OperationalError: SSL connection has been closed unexpectedly"}
+  ],
+  "context": {
+    "net_connection_summary": {
+      "connection_summary": "TCP: 247 (estab 247, timewait 184, close_wait 89)",
+      "retransmits_per_s": 412,
+      "rtt_ms_avg": 840
+    },
+    "pg_connections": {
+      "total": 94,
+      "max": 100,
+      "waiting": 71
+    }
+  },
+  "alert": {
+    "category": "database",
+    "severity": "critical",
+    "detail": "Cache and database both timing out — all write operations failing"
+  },
+  "expected_root_cause": "network degradation causing database and cache timeouts",
+  "expected_root_cause_keywords": ["network", "timeout", "retransmit", "rtt", "connection", "tcp", "latency", "redis", "postgres", "partition"],
+  "expected_action": "notify_only",
+  "acceptable_actions": ["notify_only", "restart_service"]
+}

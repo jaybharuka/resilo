@@ -13,19 +13,54 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "nginx",   "pid":  882, "cpu_percent": 4.8, "memory_percent": 0.9},
-      {"name": "systemd", "pid":    1, "cpu_percent": 1.2, "memory_percent": 0.3}
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 4.8,
+        "memory_percent": 0.9
+      },
+      {
+        "name": "systemd",
+        "pid": 1,
+        "cpu_percent": 1.2,
+        "memory_percent": 0.3
+      }
     ],
     "by_mem": [
-      {"name": "nginx", "pid": 882, "cpu_percent": 4.8, "memory_percent": 0.9}
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 4.8,
+        "memory_percent": 0.9
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "nginx",   "message": "nginx: [emerg] unknown directive \"proxy_buffering_size\" in /etc/nginx/sites-enabled/app.conf:42"},
-    {"level": "ERROR", "source": "nginx",   "message": "nginx: configuration file /etc/nginx/nginx.conf test failed"},
-    {"level": "ERROR", "source": "systemd", "message": "nginx.service: Control process exited, code=exited, status=1/FAILURE"},
-    {"level": "ERROR", "source": "systemd", "message": "nginx.service: Failed with result 'exit-code'"},
-    {"level": "WARN",  "source": "systemd", "message": "nginx.service: Start request repeated too quickly, refusing to start"}
+    {
+      "level": "ERROR",
+      "source": "nginx",
+      "message": "nginx: [emerg] unknown directive \"proxy_buffering_size\" in /etc/nginx/sites-enabled/app.conf:42"
+    },
+    {
+      "level": "ERROR",
+      "source": "nginx",
+      "message": "nginx: configuration file /etc/nginx/nginx.conf test failed"
+    },
+    {
+      "level": "ERROR",
+      "source": "systemd",
+      "message": "nginx.service: Control process exited, code=exited, status=1/FAILURE"
+    },
+    {
+      "level": "ERROR",
+      "source": "systemd",
+      "message": "nginx.service: Failed with result 'exit-code'"
+    },
+    {
+      "level": "WARN",
+      "source": "systemd",
+      "message": "nginx.service: Start request repeated too quickly, refusing to start"
+    }
   ],
   "context": {
     "service_state": {
@@ -44,10 +79,31 @@
   "alert": {
     "category": "service",
     "severity": "critical",
-    "detail": "nginx service failed — all HTTP traffic down"
+    "detail": "nginx service failed \u00e2\u20ac\u201d all HTTP traffic down"
   },
   "expected_root_cause": "service unavailable",
-  "expected_root_cause_keywords": ["nginx", "config", "invalid", "configuration error", "deploy", "crash loop", "failed", "service failure", "proxy", "http", "unavailable", "start", "directive", "syntax", "reload", "worker"],
+  "expected_root_cause_keywords": [
+    "nginx",
+    "config",
+    "invalid",
+    "configuration error",
+    "deploy",
+    "crash loop",
+    "failed",
+    "service failure",
+    "proxy",
+    "http",
+    "unavailable",
+    "start",
+    "directive",
+    "syntax",
+    "reload",
+    "worker"
+  ],
   "expected_action": "restart_service",
-  "acceptable_actions": ["restart_service", "notify_only"]
+  "acceptable_actions": [
+    "restart_service",
+    "notify_only"
+  ],
+  "tier": "A"
 }

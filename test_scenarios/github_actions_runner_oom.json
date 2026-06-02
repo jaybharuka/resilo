@@ -1,0 +1,64 @@
+{
+  "scenario_id": "github_actions_runner_oom",
+  "description": "Tier B (real-world): based on GitHub 2022 Actions runner incident — parallel test matrix jobs exhausting runner memory, causing cascading job failures",
+  "tier": "B",
+  "source": "Based on GitHub Incident Report 2022 — Actions runner memory exhaustion pattern",
+  "metrics": {
+    "cpu": 78.0,
+    "memory": 97.8,
+    "disk": 62.0,
+    "load_avg_1m": 14.2,
+    "load_avg_5m": 12.8,
+    "load_avg_15m": 8.1,
+    "swap_percent": 94.0,
+    "net_established": 88
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "runner",  "pid": 1101, "cpu_percent": 31.2, "memory_percent": 28.4},
+      {"name": "runner",  "pid": 1102, "cpu_percent": 29.8, "memory_percent": 27.1},
+      {"name": "runner",  "pid": 1103, "cpu_percent": 14.1, "memory_percent": 22.8},
+      {"name": "node",    "pid": 2201, "cpu_percent":  2.1, "memory_percent":  8.9}
+    ],
+    "by_mem": [
+      {"name": "runner", "pid": 1101, "cpu_percent": 31.2, "memory_percent": 28.4},
+      {"name": "runner", "pid": 1102, "cpu_percent": 29.8, "memory_percent": 27.1},
+      {"name": "runner", "pid": 1103, "cpu_percent": 14.1, "memory_percent": 22.8}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "kernel",  "message": "Out of memory: Kill process 1103 (runner) score 812 or sacrifice child"},
+    {"level": "ERROR", "source": "runner",  "message": "##[error] The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled."},
+    {"level": "ERROR", "source": "runner",  "message": "##[error] Process completed with exit code 137"},
+    {"level": "WARN",  "source": "runner",  "message": "##[warning] You are running out of disk space. The runner will stop working when the machine runs out of disk space."},
+    {"level": "ERROR", "source": "runner",  "message": "##[error] Lost communication with the server. Retrying in 30 seconds (1/10)"}
+  ],
+  "context": {
+    "oom_history": {
+      "oom_events": [
+        "kernel: oom_kill_process: Killed process 1103 (runner) — 3 parallel matrix jobs sharing 7GB RAM",
+        "kernel: oom_kill_process: Killed process 1102 (runner)",
+        "kernel: oom_kill_process: Killed process 1101 (runner)"
+      ]
+    },
+    "memory_breakdown": {
+      "meminfo": {
+        "MemTotal": "7340032 kB",
+        "MemAvailable": "114688 kB",
+        "SwapTotal": "2097152 kB",
+        "SwapFree": "122880 kB"
+      },
+      "concurrent_jobs": 3,
+      "per_job_memory_mb": 2400
+    }
+  },
+  "alert": {
+    "category": "memory",
+    "severity": "critical",
+    "detail": "CI runner OOM — 3 parallel jobs killed, pipeline failing"
+  },
+  "expected_root_cause": "parallel CI jobs exhausting runner memory",
+  "expected_root_cause_keywords": ["oom", "parallel", "runner", "memory", "matrix", "concurrent", "exit code 137", "killed", "out of memory"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "kill_process", "notify_only"]
+}

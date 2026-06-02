@@ -1,6 +1,6 @@
 {
   "scenario_id": "cascading_restart_loop",
-  "description": "Misconfigured health check causes systemd to restart service repeatedly — CPU spike is a symptom, not the cause",
+  "description": "Misconfigured health check causes systemd to restart service repeatedly \u00e2\u20ac\u201d CPU spike is a symptom, not the cause",
   "metrics": {
     "cpu": 79.0,
     "memory": 48.0,
@@ -13,19 +13,54 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "python3",  "pid": 9921, "cpu_percent": 71.2, "memory_percent": 14.1},
-      {"name": "systemd",  "pid":    1, "cpu_percent":  4.1, "memory_percent":  0.4}
+      {
+        "name": "python3",
+        "pid": 9921,
+        "cpu_percent": 71.2,
+        "memory_percent": 14.1
+      },
+      {
+        "name": "systemd",
+        "pid": 1,
+        "cpu_percent": 4.1,
+        "memory_percent": 0.4
+      }
     ],
     "by_mem": [
-      {"name": "python3", "pid": 9921, "cpu_percent": 71.2, "memory_percent": 14.1}
+      {
+        "name": "python3",
+        "pid": 9921,
+        "cpu_percent": 71.2,
+        "memory_percent": 14.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "systemd", "message": "api-worker.service: Main process exited, code=exited, status=1/FAILURE"},
-    {"level": "ERROR", "source": "systemd", "message": "api-worker.service: Failed with result 'exit-code'"},
-    {"level": "INFO",  "source": "systemd", "message": "api-worker.service: Scheduled restart job, restart counter is at 23"},
-    {"level": "ERROR", "source": "app",     "message": "RuntimeError: database connection failed during startup health check"},
-    {"level": "INFO",  "source": "systemd", "message": "api-worker.service: Start request repeated too quickly (23 restarts in 4 minutes)"}
+    {
+      "level": "ERROR",
+      "source": "systemd",
+      "message": "api-worker.service: Main process exited, code=exited, status=1/FAILURE"
+    },
+    {
+      "level": "ERROR",
+      "source": "systemd",
+      "message": "api-worker.service: Failed with result 'exit-code'"
+    },
+    {
+      "level": "INFO",
+      "source": "systemd",
+      "message": "api-worker.service: Scheduled restart job, restart counter is at 23"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "RuntimeError: database connection failed during startup health check"
+    },
+    {
+      "level": "INFO",
+      "source": "systemd",
+      "message": "api-worker.service: Start request repeated too quickly (23 restarts in 4 minutes)"
+    }
   ],
   "context": {
     "service_state": {
@@ -39,10 +74,25 @@
   "alert": {
     "category": "cpu",
     "severity": "high",
-    "detail": "CPU utilization 79% — service restart loop detected"
+    "detail": "CPU utilization 79% \u00e2\u20ac\u201d service restart loop detected"
   },
   "expected_root_cause": "service restart loop",
-  "expected_root_cause_keywords": ["restart loop", "restart", "health check", "repeated", "exit-code", "startup", "systemd", "api-worker", "database connection"],
+  "expected_root_cause_keywords": [
+    "restart loop",
+    "restart",
+    "health check",
+    "repeated",
+    "exit-code",
+    "startup",
+    "systemd",
+    "api-worker",
+    "database connection"
+  ],
   "expected_action": "restart_service",
-  "acceptable_actions": ["restart_service", "notify_only", "kill_process"]
+  "acceptable_actions": [
+    "restart_service",
+    "notify_only",
+    "kill_process"
+  ],
+  "tier": "A"
 }

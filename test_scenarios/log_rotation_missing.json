@@ -1,6 +1,6 @@
 {
   "scenario_id": "log_rotation_missing",
-  "description": "Single unrotated access log grew to 180GB filling disk — disk_largest_dirs collector required to identify culprit",
+  "description": "Single unrotated access log grew to 180GB filling disk \u00e2\u20ac\u201d disk_largest_dirs collector required to identify culprit",
   "metrics": {
     "cpu": 11.0,
     "memory": 42.0,
@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "nginx",   "pid": 882, "cpu_percent": 6.1, "memory_percent": 1.2},
-      {"name": "python3", "pid": 991, "cpu_percent": 3.2, "memory_percent": 4.1}
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 6.1,
+        "memory_percent": 1.2
+      },
+      {
+        "name": "python3",
+        "pid": 991,
+        "cpu_percent": 3.2,
+        "memory_percent": 4.1
+      }
     ],
     "by_mem": [
-      {"name": "python3", "pid": 991, "cpu_percent": 3.2, "memory_percent": 4.1}
+      {
+        "name": "python3",
+        "pid": 991,
+        "cpu_percent": 3.2,
+        "memory_percent": 4.1
+      }
     ]
   },
   "logs": [
-    {"level": "ERROR", "source": "nginx",  "message": "open() \"/var/log/nginx/access.log\" failed (28: No space left on device)"},
-    {"level": "ERROR", "source": "app",    "message": "OSError: [Errno 28] No space left on device: '/tmp/upload_8821.tmp'"},
-    {"level": "ERROR", "source": "app",    "message": "OSError: [Errno 28] No space left on device: '/tmp/upload_9103.tmp'"},
-    {"level": "WARN",  "source": "cron",   "message": "logrotate: error: skipping \"/var/log/nginx/access.log\" because parent directory has insecure permissions"}
+    {
+      "level": "ERROR",
+      "source": "nginx",
+      "message": "open() \"/var/log/nginx/access.log\" failed (28: No space left on device)"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "OSError: [Errno 28] No space left on device: '/tmp/upload_8821.tmp'"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "OSError: [Errno 28] No space left on device: '/tmp/upload_9103.tmp'"
+    },
+    {
+      "level": "WARN",
+      "source": "cron",
+      "message": "logrotate: error: skipping \"/var/log/nginx/access.log\" because parent directory has insecure permissions"
+    }
   ],
   "context": {
     "disk_largest_dirs": {
@@ -40,10 +71,24 @@
   "alert": {
     "category": "disk",
     "severity": "critical",
-    "detail": "Root filesystem at 97.8% — write failures on multiple services"
+    "detail": "Root filesystem at 97.8% \u00e2\u20ac\u201d write failures on multiple services"
   },
   "expected_root_cause": "unrotated nginx log file",
-  "expected_root_cause_keywords": ["log rotation", "logrotate", "access.log", "unrotated", "nginx log", "183", "/var/log/nginx", "no space", "disk"],
+  "expected_root_cause_keywords": [
+    "log rotation",
+    "logrotate",
+    "access.log",
+    "unrotated",
+    "nginx log",
+    "183",
+    "/var/log/nginx",
+    "no space",
+    "disk"
+  ],
   "expected_action": "disk_cleanup",
-  "acceptable_actions": ["disk_cleanup", "notify_only"]
+  "acceptable_actions": [
+    "disk_cleanup",
+    "notify_only"
+  ],
+  "tier": "A"
 }

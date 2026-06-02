@@ -13,24 +13,67 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "python3",     "pid": 4421, "cpu_percent": 94.2, "memory_percent": 3.1},
-      {"name": "postgres",    "pid": 1231, "cpu_percent": 1.1,  "memory_percent": 5.4},
-      {"name": "nginx",       "pid":  882, "cpu_percent": 0.3,  "memory_percent": 0.8}
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 94.2,
+        "memory_percent": 3.1
+      },
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 1.1,
+        "memory_percent": 5.4
+      },
+      {
+        "name": "nginx",
+        "pid": 882,
+        "cpu_percent": 0.3,
+        "memory_percent": 0.8
+      }
     ],
     "by_mem": [
-      {"name": "postgres",    "pid": 1231, "cpu_percent": 1.1,  "memory_percent": 5.4},
-      {"name": "python3",     "pid": 4421, "cpu_percent": 94.2, "memory_percent": 3.1}
+      {
+        "name": "postgres",
+        "pid": 1231,
+        "cpu_percent": 1.1,
+        "memory_percent": 5.4
+      },
+      {
+        "name": "python3",
+        "pid": 4421,
+        "cpu_percent": 94.2,
+        "memory_percent": 3.1
+      }
     ]
   },
   "logs": [
-    {"level": "WARN",  "source": "app",     "message": "Request queue depth: 847 (threshold: 100)"},
-    {"level": "ERROR", "source": "app",     "message": "Worker thread pool saturated, dropping requests"},
-    {"level": "WARN",  "source": "python3", "message": "GC pause 1240ms — possible tight loop in worker"}
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "Request queue depth: 847 (threshold: 100)"
+    },
+    {
+      "level": "ERROR",
+      "source": "app",
+      "message": "Worker thread pool saturated, dropping requests"
+    },
+    {
+      "level": "WARN",
+      "source": "python3",
+      "message": "GC pause 1240ms \u00e2\u20ac\u201d possible tight loop in worker"
+    }
   ],
   "context": {
     "process_tree": {
       "top_processes_tree": [
-        {"pid": "4421", "ppid": "4400", "pcpu": "94.2", "pmem": "3.1", "comm": "python3"}
+        {
+          "pid": "4421",
+          "ppid": "4400",
+          "pcpu": "94.2",
+          "pmem": "3.1",
+          "comm": "python3"
+        }
       ]
     },
     "scheduler_pressure": {
@@ -43,7 +86,19 @@
     "detail": "CPU utilization exceeded 95% for 5 consecutive minutes"
   },
   "expected_root_cause": "runaway process",
-  "expected_root_cause_keywords": ["runaway", "python", "loop", "tight loop", "cpu-bound", "worker"],
+  "expected_root_cause_keywords": [
+    "runaway",
+    "python",
+    "loop",
+    "tight loop",
+    "cpu-bound",
+    "worker"
+  ],
   "expected_action": "kill_process",
-  "acceptable_actions": ["kill_process", "restart_service", "notify_only"]
+  "acceptable_actions": [
+    "kill_process",
+    "restart_service",
+    "notify_only"
+  ],
+  "tier": "A"
 }

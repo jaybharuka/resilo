@@ -1,6 +1,6 @@
 {
   "scenario_id": "container_oom_throttle",
-  "description": "Container memory limit hit causing CPU throttling — symptoms look like CPU issue but root cause is cgroup memory limit",
+  "description": "Container memory limit hit causing CPU throttling \u00e2\u20ac\u201d symptoms look like CPU issue but root cause is cgroup memory limit",
   "metrics": {
     "cpu": 88.0,
     "memory": 71.0,
@@ -13,18 +13,49 @@
   },
   "top_processes": {
     "by_cpu": [
-      {"name": "java",    "pid": 1001, "cpu_percent": 82.1, "memory_percent": 68.4},
-      {"name": "systemd", "pid":    1, "cpu_percent":  1.2, "memory_percent":  0.3}
+      {
+        "name": "java",
+        "pid": 1001,
+        "cpu_percent": 82.1,
+        "memory_percent": 68.4
+      },
+      {
+        "name": "systemd",
+        "pid": 1,
+        "cpu_percent": 1.2,
+        "memory_percent": 0.3
+      }
     ],
     "by_mem": [
-      {"name": "java", "pid": 1001, "cpu_percent": 82.1, "memory_percent": 68.4}
+      {
+        "name": "java",
+        "pid": 1001,
+        "cpu_percent": 82.1,
+        "memory_percent": 68.4
+      }
     ]
   },
   "logs": [
-    {"level": "WARN",  "source": "app",    "message": "GC overhead limit exceeded — application pausing"},
-    {"level": "WARN",  "source": "app",    "message": "GC overhead limit exceeded — application pausing"},
-    {"level": "ERROR", "source": "kernel", "message": "memory cgroup out of memory: Kill process 1001 (java)"},
-    {"level": "INFO",  "source": "app",    "message": "JVM heap usage: 3891MB / 4096MB (95%)"}
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "GC overhead limit exceeded \u00e2\u20ac\u201d application pausing"
+    },
+    {
+      "level": "WARN",
+      "source": "app",
+      "message": "GC overhead limit exceeded \u00e2\u20ac\u201d application pausing"
+    },
+    {
+      "level": "ERROR",
+      "source": "kernel",
+      "message": "memory cgroup out of memory: Kill process 1001 (java)"
+    },
+    {
+      "level": "INFO",
+      "source": "app",
+      "message": "JVM heap usage: 3891MB / 4096MB (95%)"
+    }
   ],
   "context": {
     "memory_breakdown": {
@@ -42,10 +73,26 @@
   "alert": {
     "category": "cpu",
     "severity": "critical",
-    "detail": "CPU utilization 88% — application throughput degraded by 70%"
+    "detail": "CPU utilization 88% \u00e2\u20ac\u201d application throughput degraded by 70%"
   },
   "expected_root_cause": "container memory limit",
-  "expected_root_cause_keywords": ["cgroup", "container", "memory limit", "heap", "java", "gc overhead", "memory.limit", "oom", "jvm"],
+  "expected_root_cause_keywords": [
+    "cgroup",
+    "container",
+    "memory limit",
+    "heap",
+    "java",
+    "gc overhead",
+    "memory.limit",
+    "oom",
+    "jvm"
+  ],
   "expected_action": "free_memory",
-  "acceptable_actions": ["free_memory", "run_gc", "restart_service", "notify_only"]
+  "acceptable_actions": [
+    "free_memory",
+    "run_gc",
+    "restart_service",
+    "notify_only"
+  ],
+  "tier": "A"
 }

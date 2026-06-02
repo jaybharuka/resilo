@@ -1,0 +1,54 @@
+{
+  "scenario_id": "cpu_memory_pressure",
+  "description": "Ambiguous: high CPU, high memory, swap pressure AND network retries simultaneously — multiple plausible root causes",
+  "tier": "A",
+  "ambiguous": true,
+  "metrics": {
+    "cpu": 87.0,
+    "memory": 91.0,
+    "disk": 48.0,
+    "load_avg_1m": 9.4,
+    "load_avg_5m": 8.8,
+    "load_avg_15m": 6.1,
+    "swap_percent": 71.0,
+    "net_established": 312,
+    "disk_read_mbps": 18.0,
+    "disk_write_mbps": 12.0
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",     "pid": 4421, "cpu_percent": 61.2, "memory_percent": 48.1},
+      {"name": "postgres",    "pid": 3312, "cpu_percent": 18.4, "memory_percent": 28.9},
+      {"name": "redis-server","pid": 2341, "cpu_percent":  4.1, "memory_percent": 10.2}
+    ],
+    "by_mem": [
+      {"name": "python3",  "pid": 4421, "cpu_percent": 61.2, "memory_percent": 48.1},
+      {"name": "postgres", "pid": 3312, "cpu_percent": 18.4, "memory_percent": 28.9}
+    ]
+  },
+  "logs": [
+    {"level": "WARN",  "source": "app",      "message": "Response time P99 > 8s on /api/reports"},
+    {"level": "ERROR", "source": "app",      "message": "sqlalchemy.exc.TimeoutError: connection timed out"},
+    {"level": "WARN",  "source": "app",      "message": "Memory usage 91% — approaching limit"},
+    {"level": "WARN",  "source": "kernel",   "message": "swap: 71% full"},
+    {"level": "ERROR", "source": "app",      "message": "requests.exceptions.ConnectTimeout: upstream retry attempt 3/3"}
+  ],
+  "context": {
+    "pg_connections": {
+      "total": 87,
+      "max": 100,
+      "idle_in_transaction": 8,
+      "active": 41,
+      "waiting": 38
+    }
+  },
+  "alert": {
+    "category": "cpu",
+    "severity": "critical",
+    "detail": "CPU 87%, memory 91%, swap 71% — system-wide degradation"
+  },
+  "expected_root_cause": "memory pressure causing CPU thrash",
+  "expected_root_cause_keywords": ["memory", "cpu", "swap", "pressure", "thrash", "python3", "postgres", "connection", "degradation"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "kill_process", "run_gc", "notify_only"]
+}
