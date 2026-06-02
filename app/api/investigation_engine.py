@@ -40,9 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import (
     AgentActionLog, AlertRecord, Investigation, MetricSnapshot, SessionLocal,
 )
-from app.api.incident_memory import (
-    build_memory_context, find_similar_incidents, save_incident_memory,
-)
+from app.api.incident_memory import build_memory_context
+from app.api.memory_store import MemoryStore
 
 _log = logging.getLogger(__name__)
 
@@ -233,10 +232,10 @@ async def _historical_analysis(
     evidence: Evidence,
     alert: AlertRecord,
     timeline: list[dict],
-) -> tuple[list[dict], str]:
-    """Retrieve similar incidents and build the memory context block."""
+) -> tuple[list[dict], str, dict]:
+    """Retrieve similar incidents using semantic search and build the memory context block."""
     timeline.append(_timeline_event(
-        InvestigationStage.HISTORICAL_ANALYSIS, "Searching historical incident memory"
+        InvestigationStage.HISTORICAL_ANALYSIS, "Searching historical incident memory (semantic)"
     ))
 
     metrics_dict = {
@@ -244,7 +243,7 @@ async def _historical_analysis(
         "memory": evidence.memory,
         "disk": evidence.disk,
     }
-    similar = await find_similar_incidents(
+    similar, telemetry = await MemoryStore.search(
         db,
         org_id=org_id,
         category=evidence.incident_type,
@@ -255,13 +254,17 @@ async def _historical_analysis(
     )
 
     n = len(similar)
+    method = telemetry.get("method", "keyword")
     timeline.append(_timeline_event(
         InvestigationStage.HISTORICAL_ANALYSIS,
-        f"Found {n} similar historical incident(s)" if n else "No similar incidents in memory",
+        f"Found {n} similar incident(s) via {method} search "
+        f"(retrieval={telemetry.get('retrieval_time_ms', 0):.0f}ms)"
+        if n else
+        f"No similar incidents in memory ({method} search, {telemetry.get('retrieval_time_ms', 0):.0f}ms)",
     ))
 
     memory_context = build_memory_context(similar)
-    return similar, memory_context
+    return similar, memory_context, telemetry
 
 
 # ── Stage 3: Hypothesis Generation ───────────────────────────────────────────
@@ -540,8 +543,10 @@ async def _persist_investigation(
     recommended_action: str,
     routing: ActionRouting,
     timeline: list[dict],
+    retrieval_telemetry: dict | None = None,
 ) -> None:
     """Upsert Investigation row into DB."""
+    telem = retrieval_telemetry or {}
     try:
         async with SessionLocal() as db:
             result = await db.execute(
@@ -563,6 +568,9 @@ async def _persist_investigation(
             inv.confidence         = rca.confidence
             inv.action_routing     = routing.value
             inv.timeline           = timeline
+            inv.semantic_hits      = telem.get("semantic_hits")
+            inv.avg_similarity     = telem.get("avg_similarity")
+            inv.retrieval_time_ms  = telem.get("retrieval_time_ms")
             inv.completed_at       = datetime.now(timezone.utc)
             await db.commit()
     except Exception as exc:
@@ -666,8 +674,9 @@ async def run_investigation(
         return _minimal_result(inv_id, agent_id, alert.id, cpu, memory, disk)
 
     # ── Stage 2: Historical Analysis ─────────────────────────────────────────
+    retrieval_telemetry: dict = {}
     try:
-        similar, memory_context = await _historical_analysis(
+        similar, memory_context, retrieval_telemetry = await _historical_analysis(
             db, org_id, evidence, alert, timeline
         )
     except Exception as exc:
@@ -721,6 +730,7 @@ async def run_investigation(
     await _persist_investigation(
         inv_id, org_id, agent_id, alert.id,
         evidence, similar, hypotheses, rca, recommended_action, routing, timeline,
+        retrieval_telemetry,
     )
 
     # ── Save to Incident Memory ───────────────────────────────────────────────
@@ -731,7 +741,7 @@ async def run_investigation(
             "load_avg_1m": evidence.load_avg_1m,
             "swap_percent": evidence.swap_percent,
         }
-        mem_entry = await save_incident_memory(
+        mem_entry = await MemoryStore.save(
             db,
             org_id=org_id,
             title=alert.title,

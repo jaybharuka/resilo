@@ -634,8 +634,42 @@ class IncidentMemory(Base):
     success:            Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     resolution_time:    Mapped[Optional[float]]= mapped_column(Float, nullable=True)               # seconds from first alert to resolve
     tags:               Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # keyword tags for similarity scoring
+    # ── Semantic embedding (Phase 2) ──────────────────────────────────────────
+    embedding:              Mapped[Optional[list]]  = mapped_column(JSON, nullable=True)            # float[] — Gemini text-embedding-004
+    embedding_model:        Mapped[Optional[str]]   = mapped_column(String(100), nullable=True)     # e.g. "text-embedding-004"
+    embedding_created_at:   Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     resolved_at:        Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ── InvestigationFeedback (root cause accuracy tracking) ──────────────────────
+
+class InvestigationFeedback(Base):
+    """
+    Human or automated feedback on investigation root cause accuracy.
+    Drives accuracy metrics and future embedding fine-tuning.
+    """
+    __tablename__ = "investigation_feedback"
+    __table_args__ = (
+        Index("ix_inv_feedback_org_created", "org_id", "created_at"),
+        Index("ix_inv_feedback_investigation", "investigation_id"),
+    )
+
+    id:                     Mapped[str]            = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:                 Mapped[str]            = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    investigation_id:       Mapped[str]            = mapped_column(String(100), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
+    agent_id:               Mapped[Optional[str]]  = mapped_column(String(36), nullable=True)
+    incident_type:          Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)       # cpu|memory|disk|fleet
+    confidence_bucket:      Mapped[Optional[str]]  = mapped_column(String(20), nullable=True)       # high|medium|low
+    predicted_root_cause:   Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    actual_root_cause:      Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    correct:                Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)          # True=accurate, False=wrong, None=unknown
+    predicted_action:       Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
+    actual_action:          Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
+    action_correct:         Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    submitted_by:           Mapped[Optional[str]]  = mapped_column(String(36), nullable=True)       # user_id or "system"
+    note:                   Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    created_at:             Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # ── Investigation (multi-stage AI investigation workflow) ─────────────────────
@@ -670,6 +704,10 @@ class Investigation(Base):
     confidence:         Mapped[float]          = mapped_column(Float, default=0.0, nullable=False)
     action_routing:     Mapped[Optional[str]]  = mapped_column(String(30), nullable=True)          # auto_execute|manual_approval|investigation_only
     timeline:           Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{timestamp, event}]
+    # ── Semantic retrieval telemetry (Phase 2) ─────────────────────────────────
+    semantic_hits:      Mapped[Optional[int]]   = mapped_column(nullable=True)                      # number of embedding matches above threshold
+    avg_similarity:     Mapped[Optional[float]] = mapped_column(Float, nullable=True)               # mean cosine similarity of retrieved memories
+    retrieval_time_ms:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)               # ms spent in memory search
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

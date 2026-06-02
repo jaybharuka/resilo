@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.incident_memory import find_similar_incidents
 from app.core.database import (
-    Incident, IncidentMemory, Investigation, get_db,
+    Incident, IncidentMemory, Investigation, InvestigationFeedback, get_db,
 )
 
 router = APIRouter(tags=["investigations"])
@@ -178,19 +178,95 @@ async def investigation_stats(
     )
     memory_entries = mem_count_result.scalar() or 0
 
+    # ── Embedding coverage ────────────────────────────────────────────────────
+    embed_count_result = await db.execute(
+        select(func.count())
+        .where(IncidentMemory.org_id == org_id)
+        .where(IncidentMemory.embedding.isnot(None))
+    )
+    embedded_entries = embed_count_result.scalar() or 0
+
+    # ── Root cause accuracy (from feedback) ───────────────────────────────────
+    fb_result = await db.execute(
+        select(InvestigationFeedback)
+        .where(InvestigationFeedback.org_id == org_id)
+        .where(InvestigationFeedback.created_at >= cutoff)
+    )
+    fb_rows: list[InvestigationFeedback] = fb_result.scalars().all()
+
+    total_fb      = len(fb_rows)
+    fb_correct    = sum(1 for f in fb_rows if f.correct is True)
+    fb_incorrect  = sum(1 for f in fb_rows if f.correct is False)
+    overall_accuracy = (
+        round(fb_correct / (fb_correct + fb_incorrect), 3)
+        if (fb_correct + fb_incorrect) > 0 else None
+    )
+
+    # Accuracy by incident type
+    by_type: dict[str, dict] = {}
+    for f in fb_rows:
+        t = f.incident_type or "unknown"
+        rec = by_type.setdefault(t, {"total": 0, "correct": 0})
+        rec["total"] += 1
+        if f.correct is True:
+            rec["correct"] += 1
+    accuracy_by_type = {
+        t: round(v["correct"] / v["total"], 3) if v["total"] else None
+        for t, v in by_type.items()
+    }
+
+    # Accuracy by confidence bucket
+    by_bucket: dict[str, dict] = {}
+    for f in fb_rows:
+        b = f.confidence_bucket or "unknown"
+        rec = by_bucket.setdefault(b, {"total": 0, "correct": 0})
+        rec["total"] += 1
+        if f.correct is True:
+            rec["correct"] += 1
+    accuracy_by_confidence = {
+        b: round(v["correct"] / v["total"], 3) if v["total"] else None
+        for b, v in by_bucket.items()
+    }
+
+    # ── Semantic retrieval metrics ────────────────────────────────────────────
+    semantic_rows = [r for r in completed if r.semantic_hits is not None]
+    avg_semantic_hits = (
+        round(sum(r.semantic_hits for r in semantic_rows) / len(semantic_rows), 2)
+        if semantic_rows else None
+    )
+    sims_all = [r.avg_similarity for r in completed if r.avg_similarity is not None]
+    avg_retrieval_similarity = round(sum(sims_all) / len(sims_all), 4) if sims_all else None
+    rt_all = [r.retrieval_time_ms for r in completed if r.retrieval_time_ms is not None]
+    avg_retrieval_ms = round(sum(rt_all) / len(rt_all), 1) if rt_all else None
+
     return {
-        "ok":                   True,
-        "window_hours":         window_hours,
-        "total_investigations": len(rows),
-        "by_status":            dict(by_status),
-        "by_routing":           dict(by_routing),
-        "avg_confidence":       avg_confidence,
-        "successful_fix_rate":  successful_fix_rate,
-        "false_positive_rate":  false_positive_rate,
-        "stage_at_failure":     dict(stage_counts),
-        "top_root_causes":      top_root_causes,
-        "top_actions":          top_actions,
-        "memory_entries":       memory_entries,
+        "ok":                      True,
+        "window_hours":            window_hours,
+        "total_investigations":    len(rows),
+        "by_status":               dict(by_status),
+        "by_routing":              dict(by_routing),
+        "avg_confidence":          avg_confidence,
+        "successful_fix_rate":     successful_fix_rate,
+        "false_positive_rate":     false_positive_rate,
+        "stage_at_failure":        dict(stage_counts),
+        "top_root_causes":         top_root_causes,
+        "top_actions":             top_actions,
+        "memory_entries":          memory_entries,
+        "embedded_entries":        embedded_entries,
+        "embedding_coverage":      (
+            round(embedded_entries / memory_entries, 3) if memory_entries else None
+        ),
+        "accuracy": {
+            "total_feedback":          total_fb,
+            "overall":                 overall_accuracy,
+            "by_incident_type":        accuracy_by_type,
+            "by_confidence_bucket":    accuracy_by_confidence,
+        },
+        "semantic_retrieval": {
+            "avg_hits":                avg_semantic_hits,
+            "avg_similarity":          avg_retrieval_similarity,
+            "avg_retrieval_ms":        avg_retrieval_ms,
+        },
     }
 
 
@@ -381,4 +457,83 @@ async def get_similar_incidents(
         "incident_id": incident_id,
         "count":       len(similar),
         "similar":     similar,
+    }
+
+
+# ── POST /investigations/{id}/feedback ───────────────────────────────────────
+
+@router.post("/investigations/{investigation_id}/feedback", status_code=201)
+async def submit_feedback(
+    investigation_id: str,
+    body: dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Submit root-cause accuracy feedback for an investigation.
+
+    Body:
+      correct              : bool   — was the predicted root cause accurate?
+      actual_root_cause    : str    — what actually caused the incident (optional)
+      action_correct       : bool   — was the recommended action appropriate? (optional)
+      actual_action        : str    — action that was actually taken (optional)
+      note                 : str    — freeform human note (optional)
+    """
+    payload = await _require_token(request)
+    org_id: str = payload.get("org_id", "")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    # Verify investigation belongs to this org
+    result = await db.execute(
+        select(Investigation)
+        .where(Investigation.id == investigation_id)
+        .where(Investigation.org_id == org_id)
+    )
+    inv = result.scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    # Confidence bucket
+    conf = inv.confidence or 0.0
+    if conf >= 0.95:
+        bucket = "high"
+    elif conf >= 0.70:
+        bucket = "medium"
+    else:
+        bucket = "low"
+
+    # Derive incident_type from evidence
+    incident_type = None
+    if inv.evidence and isinstance(inv.evidence, dict):
+        incident_type = inv.evidence.get("incident_type")
+
+    fb = InvestigationFeedback(
+        org_id=org_id,
+        investigation_id=investigation_id,
+        agent_id=inv.agent_id,
+        incident_type=incident_type,
+        confidence_bucket=bucket,
+        predicted_root_cause=(
+            inv.root_cause.get("root_cause") if isinstance(inv.root_cause, dict) else None
+        ),
+        actual_root_cause=body.get("actual_root_cause"),
+        correct=body.get("correct"),
+        predicted_action=inv.recommended_action,
+        actual_action=body.get("actual_action"),
+        action_correct=body.get("action_correct"),
+        submitted_by=payload.get("sub", "unknown"),
+        note=body.get("note"),
+    )
+    db.add(fb)
+    await db.commit()
+    await db.refresh(fb)
+
+    _log.info("[FEEDBACK] investigation=%s correct=%s", investigation_id[:12], body.get("correct"))
+    return {
+        "ok":              True,
+        "feedback_id":     fb.id,
+        "investigation_id": investigation_id,
+        "correct":         fb.correct,
+        "confidence_bucket": bucket,
     }
