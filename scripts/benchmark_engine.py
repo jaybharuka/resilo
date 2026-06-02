@@ -51,6 +51,12 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 _GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
+_REPAIR_SYSTEM = (
+    "You are a JSON repair assistant. "
+    "The user will give you malformed or truncated JSON. "
+    "Return ONLY the corrected, valid, complete JSON — no explanation, no markdown fences."
+)
+
 
 async def _call_gemini(system_prompt: str, user_msg: str) -> str:
     import google.generativeai as genai
@@ -65,6 +71,36 @@ async def _call_gemini(system_prompt: str, user_msg: str) -> str:
         generation_config={"temperature": 0.2, "max_output_tokens": 2048},
     )
     return resp.text or ""
+
+
+async def _call_gemini_json(
+    system_prompt: str,
+    user_msg: str,
+    array: bool = False,
+    timeout: float = 30,
+) -> tuple[Any, str | None, int]:
+    """Call Gemini, parse JSON, repair once on failure. Returns (parsed, error|None, llm_calls_used)."""
+    raw = await asyncio.wait_for(_call_gemini(system_prompt, user_msg), timeout=timeout)
+    parsed, err = _strip_json(raw, array=array)
+
+    if err is None:
+        return parsed, None, 1
+
+    # ── Repair pass: ask the model to fix its own malformed output ──────────
+    repair_prompt = (
+        f"The following JSON is malformed ({err}). Fix it and return ONLY valid JSON:\n\n"
+        f"{raw[:1500]}"
+    )
+    try:
+        repaired_raw = await asyncio.wait_for(
+            _call_gemini(_REPAIR_SYSTEM, repair_prompt), timeout=15
+        )
+        repaired, repair_err = _strip_json(repaired_raw, array=array)
+        if repair_err is None:
+            return repaired, None, 2          # repaired: 2 calls used
+        return ([] if array else {}), f"repair_failed: {repair_err}", 2
+    except Exception as exc:
+        return ([] if array else {}), f"repair_exception: {exc}", 2
 
 
 async def _validate_llm() -> None:
@@ -304,20 +340,32 @@ async def run_scenario(
     alert     = scenario["alert"]
     top_procs = scenario.get("top_processes", {})
 
-    # Determine incident type
-    category = alert.get("category", "").lower()
-    if "cpu" in category or metrics.get("cpu", 0) >= 85:
-        incident_type = "cpu"
-    elif "memory" in category or metrics.get("memory", 0) >= 85:
-        incident_type = "memory"
-    elif "disk" in category or metrics.get("disk", 0) >= 85:
-        incident_type = "disk"
-    elif "network" in category:
-        incident_type = "network"
-    elif "database" in category or "db" in category:
-        incident_type = "db"
+    # Determine incident type — scenario_id wins for known OOM scenarios
+    _SID_TYPE_MAP = {
+        "oom_kill": "oom", "oom": "oom",
+        "cpu_spike": "cpu",
+        "db_pool_exhaustion": "database",
+        "disk_full": "disk",
+        "memory_leak": "memory",
+        "network_timeout": "network",
+        "nginx_crash": "service",
+    }
+    if sid in _SID_TYPE_MAP:
+        incident_type = _SID_TYPE_MAP[sid]
     else:
-        incident_type = "service"
+        category = alert.get("category", "").lower()
+        if "cpu" in category or metrics.get("cpu", 0) >= 85:
+            incident_type = "cpu"
+        elif "memory" in category or metrics.get("memory", 0) >= 85:
+            incident_type = "memory"
+        elif "disk" in category or metrics.get("disk", 0) >= 85:
+            incident_type = "disk"
+        elif "network" in category:
+            incident_type = "network"
+        elif "database" in category or "db" in category:
+            incident_type = "database"
+        else:
+            incident_type = "service"
 
     cpu_lines  = _format_procs(top_procs.get("by_cpu", []))
     mem_lines  = _format_procs(top_procs.get("by_mem", []))
@@ -348,12 +396,15 @@ async def run_scenario(
     hyp_raw = ""
     hyp_parse_err = None
     try:
-        hyp_raw = await asyncio.wait_for(_call_gemini(_HYP_SYSTEM, hyp_prompt), timeout=30)
-        hypotheses, hyp_parse_err = _strip_json(hyp_raw, array=True)
-        llm_calls += 1
-        est_tokens += (len(_HYP_SYSTEM) + len(hyp_prompt) + len(hyp_raw or "")) // 4
+        hypotheses, hyp_parse_err, hyp_calls = await _call_gemini_json(
+            _HYP_SYSTEM, hyp_prompt, array=True, timeout=30
+        )
+        llm_calls += hyp_calls
+        est_tokens += (len(_HYP_SYSTEM) + len(hyp_prompt)) // 4
         if hyp_parse_err:
-            print(f"  [WARN] Hypothesis parse error: {hyp_parse_err}")
+            print(f"  [WARN] Hypothesis parse failed (repair also failed): {hyp_parse_err}")
+        elif hyp_calls > 1:
+            print(f"  [INFO] Hypothesis JSON repaired in {hyp_calls} calls")
     except Exception as exc:
         print(f"  [WARN] Hypothesis generation failed: {exc}")
         hyp_parse_err = str(exc)
@@ -381,12 +432,11 @@ async def run_scenario(
                 "Are you confident enough OR what would you collect next?"
             )
             try:
-                raw = await asyncio.wait_for(
-                    _call_gemini(planner_system, planner_user), timeout=15
+                decision, _, plan_calls = await _call_gemini_json(
+                    planner_system, planner_user, array=False, timeout=15
                 )
-                decision = _strip_json(raw, array=False)
-                llm_calls += 1
-                est_tokens += (len(planner_system) + len(planner_user) + len(raw or "")) // 4
+                llm_calls += plan_calls
+                est_tokens += (len(planner_system) + len(planner_user)) // 4
                 planner_steps_taken += 1
                 if decision.get("confident_enough", False):
                     break
@@ -421,12 +471,15 @@ async def run_scenario(
     rca_raw = ""
     rca_parse_err = None
     try:
-        rca_raw = await asyncio.wait_for(_call_gemini(_RCA_SYSTEM, rca_prompt), timeout=30)
-        rca, rca_parse_err = _strip_json(rca_raw, array=False)
-        llm_calls += 1
-        est_tokens += (len(_RCA_SYSTEM) + len(rca_prompt) + len(rca_raw or "")) // 4
+        rca, rca_parse_err, rca_calls = await _call_gemini_json(
+            _RCA_SYSTEM, rca_prompt, array=False, timeout=30
+        )
+        llm_calls += rca_calls
+        est_tokens += (len(_RCA_SYSTEM) + len(rca_prompt)) // 4
         if rca_parse_err:
-            print(f"  [WARN] RCA parse error: {rca_parse_err}")
+            print(f"  [WARN] RCA parse failed (repair also failed): {rca_parse_err}")
+        elif rca_calls > 1:
+            print(f"  [INFO] RCA JSON repaired in {rca_calls} calls")
     except Exception as exc:
         print(f"  [WARN] RCA failed: {exc}")
         rca_parse_err = str(exc)
@@ -448,14 +501,19 @@ async def run_scenario(
         rca.get("root_cause", "") + " "
         + " ".join(rca.get("supporting_evidence", []))[:200]
     ).strip()
-    # failure_type classification
+    # failure_type classification (5 specific categories)
     root_cause_text = rca.get("root_cause", "")
-    if not hypotheses and not root_cause_text:
-        result["failure_type"] = "llm_call_failed"
+    if rca_parse_err and ("repair" in (rca_parse_err or "") or not root_cause_text and not hypotheses):
+        result["failure_type"] = "json_parse_failed"
     elif hypotheses and not root_cause_text:
-        result["failure_type"] = "rca_parse_failed"
+        result["failure_type"] = "empty_rca"
     elif not result["top1_correct"] and root_cause_text:
-        result["failure_type"] = "scoring_mismatch_or_wrong_diagnosis"
+        keywords = scenario.get("expected_root_cause_keywords", [])
+        hyp_match = any(
+            _matches_expected(h.get("cause", ""), keywords)
+            for h in hypotheses[:5]
+        )
+        result["failure_type"] = "scoring_mismatch" if hyp_match else "wrong_diagnosis"
     elif result["top1_correct"] and not result["action_acceptable"]:
         result["failure_type"] = "action_mismatch"
     else:

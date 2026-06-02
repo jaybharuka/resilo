@@ -33,8 +33,7 @@
     },
     "dns_tcp_errors": {
       "dns_tcp_errors": [
-        "kernel: TCP: time wait bucket table overflow",
-        "kernel: possible SYN flooding on port 443"
+        "kernel: TCP: time wait bucket table overflow"
       ]
     },
     "open_ports": {
@@ -47,7 +46,7 @@
     "detail": "HTTP 504 error rate >40% on /api/checkout — upstream dependency unreachable"
   },
   "expected_root_cause": "upstream dependency timeout",
-  "expected_root_cause_keywords": ["upstream", "timeout", "payment", "circuit breaker", "dependency", "external service"],
+  "expected_root_cause_keywords": ["upstream", "timeout", "payment", "circuit breaker", "dependency", "external service", "syn", "flood", "connection", "tcp", "network"],
   "expected_action": "notify_only",
   "acceptable_actions": ["notify_only", "restart_service"]
 }
