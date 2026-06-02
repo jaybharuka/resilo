@@ -46,7 +46,7 @@ _log = logging.getLogger(__name__)
 
 # ── Embedding model constants ─────────────────────────────────────────────────
 
-_EMBED_MODEL       = "text-embedding-004"
+_EMBED_MODEL       = "gemini-embedding-001"
 _EMBED_DIM         = 768          # text-embedding-004 output dimension
 _EMBED_TIMEOUT     = 10.0         # seconds
 _COSINE_THRESHOLD  = 0.70         # minimum cosine similarity to surface a hit

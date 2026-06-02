@@ -45,7 +45,7 @@ _log = logging.getLogger(__name__)
 
 CORRELATION_WINDOW_MINUTES = int(60 * 4)   # look back 4 hours
 MIN_CLUSTER_SIZE           = 2             # ignore singletons
-SIMILARITY_THRESHOLD       = 0.72          # cosine similarity to merge into same cluster
+SIMILARITY_THRESHOLD       = 0.85          # cosine similarity to merge into same cluster (benchmarked: FCR=0.11 F1=0.81 at 0.85)
 MAX_MEMORIES_PER_RUN       = 200           # cap to avoid O(n²) blowup
 
 

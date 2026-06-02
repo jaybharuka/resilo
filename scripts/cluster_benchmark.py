@@ -41,27 +41,40 @@ ROOT = Path(__file__).parent.parent
 FIXTURES_DIR = ROOT / "cluster_fixtures"
 sys.path.insert(0, str(ROOT))
 
+# Load .env so GEMINI_API_KEY is available when running directly
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_THRESHOLD = float(os.getenv("CLUSTER_THRESHOLD", "0.72"))
-EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
+EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 async def _embed(texts: list[str]) -> list[list[float]]:
-    """Call Gemini text-embedding-004 for a batch of texts."""
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
+    """Call Gemini text-embedding-004 via REST (mirrors production memory_store.py)."""
+    import httpx
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{EMBEDDING_MODEL}:embedContent?key={api_key}"
+    )
 
     async def _one(text: str) -> list[float]:
-        result = await asyncio.to_thread(
-            genai.embed_content,
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type="RETRIEVAL_DOCUMENT",
-        )
-        return result["embedding"]
+        payload = {
+            "model": f"models/{EMBEDDING_MODEL}",
+            "content": {"parts": [{"text": text[:8000]}]},
+            "taskType": "SEMANTIC_SIMILARITY",
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()["embedding"]["values"]
 
     return await asyncio.gather(*[_one(t) for t in texts])
 
