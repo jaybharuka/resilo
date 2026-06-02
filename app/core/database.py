@@ -672,6 +672,32 @@ class InvestigationFeedback(Base):
     created_at:             Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+# ── LogEntry (agent log lines for investigation context) ─────────────────────
+
+class LogEntry(Base):
+    """
+    Recent log lines collected from an agent during an incident.
+    Stores up to 500 lines per incident window; purged after 7 days.
+    Used by log_collector.py to enrich investigation evidence.
+    """
+    __tablename__ = "log_entries"
+    __table_args__ = (
+        Index("ix_logentry_agent_collected", "agent_id", "collected_at"),
+        Index("ix_logentry_org_collected",   "org_id",   "collected_at"),
+    )
+
+    id:           Mapped[str]           = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:       Mapped[str]           = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    agent_id:     Mapped[str]           = mapped_column(String(36), nullable=False, index=True)
+    alert_id:     Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    source:       Mapped[str]           = mapped_column(String(100), nullable=False)    # syslog|journald|app|windows_event
+    level:        Mapped[str]           = mapped_column(String(20),  nullable=False)    # ERROR|WARN|INFO|DEBUG
+    message:      Mapped[str]           = mapped_column(Text, nullable=False)
+    raw_line:     Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    collected_at: Mapped[datetime]      = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    log_ts:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # original timestamp from log line
+
+
 # ── Investigation (multi-stage AI investigation workflow) ─────────────────────
 
 class Investigation(Base):
@@ -705,9 +731,10 @@ class Investigation(Base):
     action_routing:     Mapped[Optional[str]]  = mapped_column(String(30), nullable=True)          # auto_execute|manual_approval|investigation_only
     timeline:           Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{timestamp, event}]
     # ── Semantic retrieval telemetry (Phase 2) ─────────────────────────────────
-    semantic_hits:      Mapped[Optional[int]]   = mapped_column(nullable=True)                      # number of embedding matches above threshold
-    avg_similarity:     Mapped[Optional[float]] = mapped_column(Float, nullable=True)               # mean cosine similarity of retrieved memories
-    retrieval_time_ms:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)               # ms spent in memory search
+    semantic_hits:              Mapped[Optional[int]]   = mapped_column(nullable=True)              # number of embedding matches above threshold
+    avg_similarity:             Mapped[Optional[float]] = mapped_column(Float, nullable=True)       # mean cosine similarity of retrieved memories
+    retrieval_time_ms:          Mapped[Optional[float]] = mapped_column(Float, nullable=True)       # ms spent in memory search
+    memories_used_in_reasoning: Mapped[Optional[int]]   = mapped_column(nullable=True)              # how many retrieved memories referenced in final RCA
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

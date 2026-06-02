@@ -27,7 +27,7 @@ from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import (Agent, AgentActionLog, AlertRecord, AlertRule, Incident,
-                               IncidentMemory, Investigation, InvestigationFeedback,
+                               IncidentMemory, Investigation, InvestigationFeedback, LogEntry,
                                MetricSnapshot, NotificationChannel, NotificationLog,
                                OnboardingToken, Organization, RemediationJob,
                                SessionLocal, User, UserSession, get_db)

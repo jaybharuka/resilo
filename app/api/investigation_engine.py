@@ -42,6 +42,7 @@ from app.core.database import (
 )
 from app.api.incident_memory import build_memory_context
 from app.api.memory_store import MemoryStore
+from app.api.log_collector import build_log_evidence, format_log_context
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +85,14 @@ class Evidence(BaseModel):
     last_action: str | None = None
     last_action_success: bool | None = None
     collection_note: str = ""
+    # ── Log intelligence (Phase 3) ─────────────────────────────────────────
+    log_line_count:     int = 0
+    error_line_count:   int = 0
+    high_value_count:   int = 0
+    top_errors:         list[str] = Field(default_factory=list)
+    high_value_lines:   list[str] = Field(default_factory=list)
+    log_summary:        str | None = None
+    log_context:        str = ""   # formatted block for LLM injection
 
 
 class Hypothesis(BaseModel):
@@ -161,6 +170,7 @@ async def _collect_evidence(
     disk: float,
     alert: AlertRecord,
     extra_metrics: dict[str, Any] | None = None,
+    call_llm_fn: Any = None,
 ) -> tuple[Evidence, list[dict]]:
     """Gather all available evidence about the current incident."""
     timeline: list[dict] = []
@@ -201,6 +211,27 @@ async def _collect_evidence(
     if top_mem:
         note_parts.append(f"Top Mem: {top_mem[0].get('name', '?')} at {top_mem[0].get('memory_percent', 0):.1f}%")
 
+    # ── Log intelligence ────────────────────────────────────────────────────
+    log_ev = await build_log_evidence(
+        db,
+        agent_id=agent_id,
+        org_id=org_id,
+        alert_id=alert.id,
+        incident_type=incident_type,
+        cpu=cpu,
+        memory=memory,
+        alert_time=alert.created_at if hasattr(alert, "created_at") else None,
+        call_llm_fn=call_llm_fn,
+    )
+    log_ctx = format_log_context(log_ev)
+
+    if log_ev["log_line_count"] > 0:
+        note_parts.append(
+            f"Logs: {log_ev['log_line_count']} lines, "
+            f"{log_ev['error_line_count']} errors, "
+            f"{log_ev['high_value_count']} critical patterns"
+        )
+
     evidence = Evidence(
         incident_type=incident_type,
         cpu=cpu,
@@ -215,11 +246,19 @@ async def _collect_evidence(
         last_action=last_action,
         last_action_success=last_action_success,
         collection_note="; ".join(note_parts),
+        log_line_count=log_ev["log_line_count"],
+        error_line_count=log_ev["error_line_count"],
+        high_value_count=log_ev["high_value_count"],
+        top_errors=log_ev["top_errors"],
+        high_value_lines=log_ev["high_value_lines"],
+        log_summary=log_ev["log_summary"],
+        log_context=log_ctx,
     )
 
     timeline.append(_timeline_event(
         InvestigationStage.EVIDENCE_COLLECTION,
-        f"Evidence collected: type={incident_type} cpu={cpu:.1f}% mem={memory:.1f}% disk={disk:.1f}%",
+        f"Evidence collected: type={incident_type} cpu={cpu:.1f}% mem={memory:.1f}% disk={disk:.1f}% "
+        f"logs={log_ev['log_line_count']}lines/{log_ev['error_line_count']}errors",
     ))
     return evidence, timeline
 
@@ -296,6 +335,7 @@ TOP PROCESSES (CPU):
 TOP PROCESSES (MEMORY):
 {top_mem_lines}
 
+{log_context}
 {memory_context}
 
 Generate 3 to 5 hypotheses explaining this incident.
@@ -344,6 +384,7 @@ async def _generate_hypotheses(
         detail=alert.detail or "",
         top_cpu_lines=top_cpu_lines,
         top_mem_lines=top_mem_lines,
+        log_context=evidence.log_context or "",
         memory_context=memory_context,
     )
 
@@ -422,6 +463,7 @@ Incident context:
 Top hypotheses (ranked by confidence):
 {hypotheses_block}
 
+{log_context}
 {memory_context}
 
 Perform root cause analysis and return exactly this JSON object:
@@ -467,6 +509,7 @@ async def _root_cause_analysis(
         category=alert.category,
         severity=alert.severity,
         hypotheses_block=hypotheses_block,
+        log_context=evidence.log_context or "",
         memory_context=memory_context,
     )
 
@@ -547,6 +590,15 @@ async def _persist_investigation(
 ) -> None:
     """Upsert Investigation row into DB."""
     telem = retrieval_telemetry or {}
+
+    # Count how many retrieved memories were actually referenced in final RCA
+    hist_refs: list[str] = rca.historical_matches or []
+    mem_titles: list[str] = [m.get("title", "") for m in (similar or [])]
+    memories_used = sum(
+        1 for title in mem_titles
+        if title and any(title[:40].lower() in ref.lower() for ref in hist_refs)
+    )
+
     try:
         async with SessionLocal() as db:
             result = await db.execute(
@@ -557,21 +609,22 @@ async def _persist_investigation(
                 inv = Investigation(id=inv_id, org_id=org_id, agent_id=agent_id)
                 db.add(inv)
 
-            inv.alert_id           = alert_id
-            inv.status             = "completed"
-            inv.stage              = "ACTION_PLANNING"
-            inv.evidence           = evidence.model_dump()
-            inv.similar_incidents  = similar
-            inv.hypotheses         = [h.model_dump() for h in hypotheses]
-            inv.root_cause         = rca.model_dump()
-            inv.recommended_action = recommended_action
-            inv.confidence         = rca.confidence
-            inv.action_routing     = routing.value
-            inv.timeline           = timeline
-            inv.semantic_hits      = telem.get("semantic_hits")
-            inv.avg_similarity     = telem.get("avg_similarity")
-            inv.retrieval_time_ms  = telem.get("retrieval_time_ms")
-            inv.completed_at       = datetime.now(timezone.utc)
+            inv.alert_id                    = alert_id
+            inv.status                      = "completed"
+            inv.stage                       = "ACTION_PLANNING"
+            inv.evidence                    = evidence.model_dump()
+            inv.similar_incidents           = similar
+            inv.hypotheses                  = [h.model_dump() for h in hypotheses]
+            inv.root_cause                  = rca.model_dump()
+            inv.recommended_action          = recommended_action
+            inv.confidence                  = rca.confidence
+            inv.action_routing              = routing.value
+            inv.timeline                    = timeline
+            inv.semantic_hits               = telem.get("semantic_hits")
+            inv.avg_similarity              = telem.get("avg_similarity")
+            inv.retrieval_time_ms           = telem.get("retrieval_time_ms")
+            inv.memories_used_in_reasoning  = memories_used
+            inv.completed_at                = datetime.now(timezone.utc)
             await db.commit()
     except Exception as exc:
         _log.error("[INVESTIGATE] Failed to persist investigation %s: %s", inv_id, exc)
@@ -661,7 +714,7 @@ async def run_investigation(
     # ── Stage 1: Evidence Collection ─────────────────────────────────────────
     try:
         evidence, timeline = await _collect_evidence(
-            db, agent_id, org_id, cpu, memory, disk, alert, extra_metrics
+            db, agent_id, org_id, cpu, memory, disk, alert, extra_metrics, call_llm_fn
         )
     except Exception as exc:
         _log.error("[INVESTIGATE] Evidence collection failed: %s", exc)

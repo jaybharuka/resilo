@@ -23,6 +23,7 @@ from app.api.v1_api import build_v1_router
 from app.api.intelligence_api import build_intelligence_router
 from app.api.prometheus_bridge import build_prometheus_router
 from app.api.investigations_api import router as investigations_router
+from app.api.logs_api import router as logs_router
 from app.core.database import init_db, wait_for_db
 
 metrics_router = build_metrics_router()
@@ -48,6 +49,7 @@ router.include_router(build_v1_router())
 router.include_router(build_intelligence_router())
 router.include_router(build_prometheus_router())
 router.include_router(investigations_router)
+router.include_router(logs_router)
 
 app = FastAPI(title="core_api")
 app.add_middleware(
@@ -107,6 +109,24 @@ async def _startup() -> None:
             await conn.execute(text(
                 "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS ai_confidence_threshold FLOAT"
             ))
+            # Phase 2 — semantic memory columns
+            for col, typ in [
+                ("embedding",              "JSON"),
+                ("embedding_model",        "VARCHAR(100)"),
+                ("embedding_created_at",   "TIMESTAMPTZ"),
+            ]:
+                await conn.execute(text(
+                    f"ALTER TABLE incident_memory ADD COLUMN IF NOT EXISTS {col} {typ}"
+                ))
+            for col, typ in [
+                ("semantic_hits",              "INTEGER"),
+                ("avg_similarity",             "FLOAT"),
+                ("retrieval_time_ms",          "FLOAT"),
+                ("memories_used_in_reasoning", "INTEGER"),
+            ]:
+                await conn.execute(text(
+                    f"ALTER TABLE investigations ADD COLUMN IF NOT EXISTS {col} {typ}"
+                ))
         logging.warning("[startup] schema columns ensured OK")
     except Exception as exc:
         logging.error("[startup] schema ensure FAILED: %s", exc)

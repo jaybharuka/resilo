@@ -267,6 +267,20 @@ async def investigation_stats(
             "avg_similarity":          avg_retrieval_similarity,
             "avg_retrieval_ms":        avg_retrieval_ms,
         },
+        "memory_usefulness": {
+            "retrieved":   int(sum(
+                len(r.similar_incidents or []) for r in completed
+            )),
+            "used_in_reasoning": int(sum(
+                r.memories_used_in_reasoning or 0 for r in completed
+                if r.memories_used_in_reasoning is not None
+            )),
+            "usefulness_rate": round(
+                sum(r.memories_used_in_reasoning or 0 for r in completed if r.memories_used_in_reasoning is not None) /
+                max(sum(len(r.similar_incidents or []) for r in completed), 1),
+                3
+            ),
+        },
     }
 
 
