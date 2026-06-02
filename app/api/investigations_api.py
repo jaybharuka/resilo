@@ -374,6 +374,161 @@ async def get_investigation(
     return {"ok": True, "investigation": _inv_to_dict(inv)}
 
 
+# ── GET /investigations/{id}/explain ─────────────────────────────────────────
+
+@router.get("/investigations/{investigation_id}/explain")
+async def explain_investigation(
+    investigation_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Explainability dashboard for a single investigation.
+
+    Returns a structured summary of:
+      - Root cause + confidence
+      - Which evidence sources were used (logs/context/memory)
+      - Evidence planner steps (if planner was used)
+      - Hypothesis ranking
+      - Historical memory matches
+      - LLM cost (calls, tokens, latency)
+      - Recommended action + routing path
+      - Full reasoning chain
+    """
+    payload = await _require_token(request)
+    org_id: str = payload.get("org_id", "")
+
+    result = await db.execute(
+        select(Investigation)
+        .where(Investigation.id == investigation_id)
+        .where(Investigation.org_id == org_id)
+    )
+    inv = result.scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    evidence: dict = inv.evidence or {}
+    root_cause: dict = inv.root_cause or {}
+    hypotheses: list = inv.hypotheses or []
+    ctx_evidence: dict = inv.context_evidence or {}
+    llm_cost: dict = inv.llm_cost or {}
+
+    # ── Evidence sources used ─────────────────────────────────────────────────
+    log_line_count    = evidence.get("log_line_count", 0)
+    error_line_count  = evidence.get("error_line_count", 0)
+    ctx_sections      = list(ctx_evidence.keys())
+    planner_steps     = ctx_evidence.get("planner", {})
+    has_memory        = bool(inv.similar_incidents)
+
+    evidence_sources = []
+    if log_line_count > 0:
+        evidence_sources.append({
+            "source": "logs",
+            "used": True,
+            "detail": f"{log_line_count} lines collected, {error_line_count} errors"
+        })
+    else:
+        evidence_sources.append({"source": "logs", "used": False, "detail": "no logs collected"})
+
+    static_ctx = [k for k in ctx_sections if k != "planner"]
+    if static_ctx:
+        evidence_sources.append({
+            "source": "dynamic_context",
+            "used": True,
+            "detail": f"sections: {', '.join(static_ctx)}"
+        })
+    else:
+        evidence_sources.append({"source": "dynamic_context", "used": False, "detail": "not collected"})
+
+    if planner_steps:
+        planner_section = planner_steps if isinstance(planner_steps, dict) else {}
+        evidence_sources.append({
+            "source": "evidence_planner",
+            "used": True,
+            "detail": f"{len(planner_section)} adaptive collectors run"
+        })
+
+    if has_memory:
+        evidence_sources.append({
+            "source": "semantic_memory",
+            "used": True,
+            "detail": f"{len(inv.similar_incidents)} historical matches retrieved"
+        })
+    else:
+        evidence_sources.append({"source": "semantic_memory", "used": False, "detail": "no matches found"})
+
+    # ── Hypothesis ranking ────────────────────────────────────────────────────
+    ranked_hypotheses = sorted(
+        [
+            {
+                "rank":       i + 1,
+                "cause":      h.get("cause", ""),
+                "confidence": round(float(h.get("confidence", 0)), 3),
+                "evidence":   h.get("evidence", [])[:3],
+            }
+            for i, h in enumerate(hypotheses)
+        ],
+        key=lambda x: x["confidence"],
+        reverse=True,
+    )
+
+    # ── Memory matches ────────────────────────────────────────────────────────
+    memory_matches = [
+        {
+            "title":      m.get("title", ""),
+            "similarity": round(float(m.get("similarity", 0)), 3),
+            "root_cause": m.get("root_cause", "")[:120],
+        }
+        for m in (inv.similar_incidents or [])[:5]
+    ]
+
+    # ── Timeline highlights (human-readable stage names) ──────────────────────
+    stage_labels = {
+        "EVIDENCE_COLLECTION":   "Evidence Collection",
+        "HISTORICAL_ANALYSIS":   "Historical Analysis",
+        "HYPOTHESIS_GENERATION": "Hypothesis Generation",
+        "ROOT_CAUSE_ANALYSIS":   "Root Cause Analysis",
+        "ACTION_PLANNING":       "Action Planning",
+    }
+    timeline_highlights = [
+        {
+            "stage":  stage_labels.get(e.get("stage", ""), e.get("stage", "")),
+            "event":  e.get("event", ""),
+            "time":   e.get("timestamp", ""),
+        }
+        for e in (inv.timeline or [])
+    ]
+
+    return {
+        "ok": True,
+        "investigation_id": inv.id,
+        "status":           inv.status,
+        "root_cause": {
+            "summary":              root_cause.get("root_cause", ""),
+            "confidence":           round(float(root_cause.get("confidence", 0)), 3),
+            "confidence_pct":       f"{root_cause.get('confidence', 0)*100:.0f}%",
+            "supporting_evidence":  root_cause.get("supporting_evidence", [])[:5],
+            "reasoning_steps":      root_cause.get("reasoning_steps", []),
+        },
+        "recommended_action":   inv.recommended_action,
+        "action_routing":       inv.action_routing,
+        "evidence_sources":     evidence_sources,
+        "hypotheses":           ranked_hypotheses,
+        "memory_matches":       memory_matches,
+        "memories_used_in_reasoning": inv.memories_used_in_reasoning or 0,
+        "planner_steps":        planner_steps if isinstance(planner_steps, list) else [],
+        "llm_cost": {
+            "calls":       llm_cost.get("llm_calls", 0),
+            "est_tokens":  llm_cost.get("est_tokens", 0),
+            "total_ms":    llm_cost.get("total_llm_ms", 0),
+            "avg_ms":      llm_cost.get("avg_llm_ms", 0),
+        },
+        "timeline": timeline_highlights,
+        "created_at":   inv.created_at.isoformat() if inv.created_at else None,
+        "completed_at": inv.completed_at.isoformat() if inv.completed_at else None,
+    }
+
+
 # ── GET /incidents/{incident_id}/timeline ─────────────────────────────────────
 
 @router.get("/incidents/{incident_id}/timeline")

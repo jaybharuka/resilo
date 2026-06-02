@@ -737,6 +737,8 @@ class Investigation(Base):
     memories_used_in_reasoning: Mapped[Optional[int]]   = mapped_column(nullable=True)              # how many retrieved memories referenced in final RCA
     # ── Dynamic context evidence (Phase 4) ─────────────────────────────────────
     context_evidence:           Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {process_tree, oom_history, pg_connections, ...}
+    # ── LLM cost telemetry (Phase 5) ────────────────────────────────────────────
+    llm_cost:                   Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {llm_calls, est_tokens, total_llm_ms, avg_llm_ms}
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

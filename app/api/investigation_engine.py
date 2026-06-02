@@ -127,6 +127,40 @@ class InvestigationResult(BaseModel):
     action_routing: ActionRouting
     timeline: list[dict] = Field(default_factory=list)
     memory_id: str | None = None
+    # ── Cost telemetry (Phase 5) ─────────────────────────────────────────────
+    llm_cost: dict = Field(default_factory=dict)  # {llm_calls, est_tokens, total_llm_ms, avg_llm_ms}
+
+
+# ── LLM cost tracker ────────────────────────────────────────────────────────
+
+class LLMCallTracker:
+    """
+    Wraps a call_llm_fn to count calls, estimate tokens, and track latency.
+    Use as a drop-in replacement for call_llm_fn inside a single investigation.
+    """
+    def __init__(self, fn: Any) -> None:
+        self._fn            = fn
+        self.calls:    int  = 0
+        self.tokens:   int  = 0   # rough estimate: chars / 4
+        self.total_ms: float = 0.0
+
+    async def __call__(self, system: str, user: str) -> str:
+        import time as _time
+        t0  = _time.monotonic()
+        raw = await self._fn(system, user)
+        elapsed_ms = (_time.monotonic() - t0) * 1000
+        self.calls      += 1
+        self.total_ms   += elapsed_ms
+        self.tokens     += (len(system) + len(user) + len(raw or "")) // 4
+        return raw
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "llm_calls":   self.calls,
+            "est_tokens":  self.tokens,
+            "total_llm_ms": round(self.total_ms, 1),
+            "avg_llm_ms":  round(self.total_ms / max(self.calls, 1), 1),
+        }
 
 
 # ── Helper utilities ──────────────────────────────────────────────────────────
@@ -607,6 +641,7 @@ async def _persist_investigation(
     routing: ActionRouting,
     timeline: list[dict],
     retrieval_telemetry: dict | None = None,
+    llm_cost: dict | None = None,
 ) -> None:
     """Upsert Investigation row into DB."""
     telem = retrieval_telemetry or {}
@@ -645,6 +680,7 @@ async def _persist_investigation(
             inv.retrieval_time_ms           = telem.get("retrieval_time_ms")
             inv.memories_used_in_reasoning  = memories_used
             inv.context_evidence            = evidence.context_evidence or {}
+            inv.llm_cost                    = llm_cost or {}
             inv.completed_at                = datetime.now(timezone.utc)
             await db.commit()
     except Exception as exc:
@@ -715,6 +751,10 @@ async def run_investigation(
     inv_id = f"INV-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
     _log.info("[INVESTIGATE] Starting investigation %s agent=%s alert=%s",
               inv_id, agent_id, alert.id)
+
+    # Wrap LLM calls so cost is tracked for this entire investigation
+    tracker = LLMCallTracker(call_llm_fn) if call_llm_fn else None
+    call_llm_fn = tracker  # type: ignore[assignment]
 
     # Create the DB row immediately so the API can see "running" status
     try:
@@ -841,11 +881,13 @@ async def run_investigation(
         f"Confidence={rca.confidence:.0%} → routing={routing.value} action={recommended_action}",
     ))
 
+    llm_cost = tracker.summary() if tracker else {}
+
     # ── Persist Investigation ─────────────────────────────────────────────────
     await _persist_investigation(
         inv_id, org_id, agent_id, alert.id,
         evidence, similar, hypotheses, rca, recommended_action, routing, timeline,
-        retrieval_telemetry,
+        retrieval_telemetry, llm_cost,
     )
 
     # ── Save to Incident Memory ───────────────────────────────────────────────
@@ -875,8 +917,12 @@ async def run_investigation(
         _log.warning("[INVESTIGATE] Could not save incident memory: %s", exc)
 
     _log.info(
-        "[INVESTIGATE] Completed %s confidence=%.2f routing=%s action=%s",
+        "[INVESTIGATE] Completed %s confidence=%.2f routing=%s action=%s "
+        "llm_calls=%d tokens~%d total_ms=%.0f",
         inv_id, rca.confidence, routing.value, recommended_action,
+        llm_cost.get("llm_calls", 0),
+        llm_cost.get("est_tokens", 0),
+        llm_cost.get("total_llm_ms", 0),
     )
 
     return InvestigationResult(
@@ -892,6 +938,7 @@ async def run_investigation(
         action_routing=routing,
         timeline=timeline,
         memory_id=memory_id,
+        llm_cost=llm_cost,
     )
 
 

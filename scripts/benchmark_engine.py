@@ -14,7 +14,11 @@ measures:
 Usage:
   python scripts/benchmark_engine.py
   python scripts/benchmark_engine.py --scenario cpu_spike
+  python scripts/benchmark_engine.py --ab          # A/B: static vs planner
   python scripts/benchmark_engine.py --out results/benchmark_2026-06-02.json
+
+Leaderboard:
+  Each run appends to benchmark_results/leaderboard.json with git commit + metrics.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import asyncio
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 from typing import Any
@@ -222,7 +227,21 @@ def _score_scenario(
 
 # ── Single scenario runner ────────────────────────────────────────────────────
 
-async def run_scenario(scenario: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
+def _get_git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+async def run_scenario(
+    scenario: dict[str, Any],
+    use_planner: bool = False,
+    verbose: bool = True,
+) -> dict[str, Any]:
     sid = scenario["scenario_id"]
     print(f"\n{'='*60}")
     print(f"  Scenario: {sid}")
@@ -256,6 +275,8 @@ async def run_scenario(scenario: dict[str, Any], verbose: bool = True) -> dict[s
     ctx_text   = _format_context(ctx)
 
     t0 = time.monotonic()
+    llm_calls = 0
+    est_tokens = 0
 
     # Stage 1: Hypotheses
     hyp_prompt = _HYP_TEMPLATE.format(
@@ -277,9 +298,48 @@ async def run_scenario(scenario: dict[str, Any], verbose: bool = True) -> dict[s
     try:
         hyp_raw = await asyncio.wait_for(_call_gemini(_HYP_SYSTEM, hyp_prompt), timeout=30)
         hypotheses = _strip_json(hyp_raw, array=True)
+        llm_calls += 1
+        est_tokens += (len(_HYP_SYSTEM) + len(hyp_prompt) + len(hyp_raw or "")) // 4
     except Exception as exc:
         print(f"  [WARN] Hypothesis generation failed: {exc}")
         hypotheses = []
+
+    # Stage 1.5: Planner simulation (A/B mode)
+    planner_steps_taken = 0
+    if use_planner and hypotheses:
+        top_hyp = hypotheses[0].get("cause", "") if hypotheses else ""
+        planner_system = (
+            "You are a senior SRE choosing the next collector. "
+            "Respond ONLY with JSON: {\"confident_enough\": bool, \"collector\": str|null, \"reason\": str}"
+        )
+        gathered_keys: list[str] = []
+        for _step in range(4):
+            planner_user = (
+                f"Incident: {incident_type} cpu={metrics.get('cpu',0):.0f}% "
+                f"mem={metrics.get('memory',0):.0f}%\n"
+                f"Current best hypothesis: {top_hyp[:100]}\n"
+                f"Logs:\n{log_lines[:300]}\n"
+                f"Already gathered: {', '.join(gathered_keys) or 'none'}\n\n"
+                "Available: process_tree, memory_breakdown, oom_history, "
+                "disk_largest_dirs, pg_connections, pg_long_queries, "
+                "service_state, net_open_ports, net_connection_summary\n\n"
+                "Are you confident enough OR what would you collect next?"
+            )
+            try:
+                raw = await asyncio.wait_for(
+                    _call_gemini(planner_system, planner_user), timeout=15
+                )
+                decision = _strip_json(raw, array=False)
+                llm_calls += 1
+                est_tokens += (len(planner_system) + len(planner_user) + len(raw or "")) // 4
+                planner_steps_taken += 1
+                if decision.get("confident_enough", False):
+                    break
+                collector = str(decision.get("collector") or "")
+                if collector and collector not in gathered_keys:
+                    gathered_keys.append(collector)
+            except Exception:
+                break
 
     if verbose:
         for i, h in enumerate(hypotheses[:3]):
@@ -306,23 +366,66 @@ async def run_scenario(scenario: dict[str, Any], verbose: bool = True) -> dict[s
     try:
         rca_raw = await asyncio.wait_for(_call_gemini(_RCA_SYSTEM, rca_prompt), timeout=30)
         rca = _strip_json(rca_raw, array=False)
+        llm_calls += 1
+        est_tokens += (len(_RCA_SYSTEM) + len(rca_prompt) + len(rca_raw or "")) // 4
     except Exception as exc:
         print(f"  [WARN] RCA failed: {exc}")
         rca = {}
 
     elapsed = time.monotonic() - t0
     result  = _score_scenario(scenario, hypotheses, rca, elapsed)
+    result["llm_calls"]          = llm_calls
+    result["est_tokens"]         = est_tokens
+    result["planner_steps_taken"] = planner_steps_taken
+    result["use_planner"]        = use_planner
 
     top1_mark = "✓" if result["top1_correct"] else "✗"
     act_mark  = "✓" if result["action_acceptable"] else "✗"
     print(f"\n  Root Cause: {result['root_cause'][:80]}")
     print(f"  Action:     {result['recommended_action']}")
-    print(f"  Top-1: {top1_mark}   Action: {act_mark}   Confidence: {result['confidence']:.2f}   Time: {elapsed:.1f}s")
+    print(f"  Top-1: {top1_mark}   Action: {act_mark}   Confidence: {result['confidence']:.2f}   "
+          f"Time: {elapsed:.1f}s   LLM calls: {llm_calls}   ~{est_tokens} tokens")
 
     return result
 
 
 # ── Aggregate report ──────────────────────────────────────────────────────────
+
+def _print_ab_comparison(static_results: list[dict], planner_results: list[dict]) -> None:
+    """Print a comparison table for A/B mode."""
+    pairs = {r["scenario_id"]: r for r in static_results}
+    print("\n" + "="*72)
+    print("  A/B COMPARISON: Static vs Planner")
+    print("="*72)
+    print(f"  {'Scenario':<28} {'Static Top1':<14} {'Planner Top1':<14} {'ΔCalls':<8} {'ΔTime'}")
+    print(f"  {'-'*28} {'-'*13} {'-'*13} {'-'*7} {'-'*6}")
+    for pr in planner_results:
+        sid = pr["scenario_id"]
+        sr  = pairs.get(sid)
+        if not sr:
+            continue
+        s_t1 = "✓" if sr["top1_correct"] else "✗"
+        p_t1 = "✓" if pr["top1_correct"] else "✗"
+        delta_calls = pr["llm_calls"] - sr["llm_calls"]
+        delta_time  = pr["elapsed_s"] - sr["elapsed_s"]
+        print(f"  {sid:<28} {s_t1} ({sr['confidence']:.2f})      "
+              f"{p_t1} ({pr['confidence']:.2f})      "
+              f"+{delta_calls:<6}  +{delta_time:.1f}s")
+
+    s_top1 = sum(1 for r in static_results  if r["top1_correct"]) / max(len(static_results), 1)
+    p_top1 = sum(1 for r in planner_results if r["top1_correct"]) / max(len(planner_results), 1)
+    s_calls = sum(r["llm_calls"] for r in static_results)  / max(len(static_results), 1)
+    p_calls = sum(r["llm_calls"] for r in planner_results) / max(len(planner_results), 1)
+    s_time  = sum(r["elapsed_s"] for r in static_results)  / max(len(static_results), 1)
+    p_time  = sum(r["elapsed_s"] for r in planner_results) / max(len(planner_results), 1)
+    print(f"\n  SUMMARY:")
+    print(f"    Static  → Top-1: {s_top1:.0%}  avg calls: {s_calls:.1f}  avg time: {s_time:.1f}s")
+    print(f"    Planner → Top-1: {p_top1:.0%}  avg calls: {p_calls:.1f}  avg time: {p_time:.1f}s")
+    delta_acc = (p_top1 - s_top1) * 100
+    print(f"    Planner improvement: {delta_acc:+.1f}pp accuracy  "
+          f"+{p_calls - s_calls:.1f} calls  +{p_time - s_time:.1f}s")
+    print("="*72)
+
 
 def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(results)
@@ -373,6 +476,12 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         ac = "✓" if r["action_acceptable"]    else "✗"
         print(f"  {r['scenario_id']:<28} {t1:<6} {ac:<8} {r['confidence']:<6.2f} {r['elapsed_s']:.1f}s")
 
+    avg_calls  = sum(r.get("llm_calls", 0) for r in results) / n
+    avg_tokens = sum(r.get("est_tokens", 0) for r in results) / n
+    print(f"  Avg LLM calls:      {avg_calls:.1f}")
+    print(f"  Avg est. tokens:    {avg_tokens:.0f}")
+    print("="*60)
+
     summary = {
         "n_scenarios":          n,
         "top1_accuracy":        round(top1_acc, 3),
@@ -384,6 +493,8 @@ def _print_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         "conf_when_incorrect":  round(avg_conf_incorrect, 3),
         "calibration_gap":      round(calibration_gap, 3),
         "avg_investigation_s":  round(avg_time, 2),
+        "avg_llm_calls":        round(avg_calls, 2),
+        "avg_est_tokens":       round(avg_tokens, 0),
         "per_scenario":         results,
     }
     return summary
@@ -395,6 +506,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark the investigation engine")
     parser.add_argument("--scenario", help="Run a single scenario by ID")
     parser.add_argument("--out",      help="Write JSON results to this file")
+    parser.add_argument("--ab",         action="store_true", help="A/B: run each scenario twice (static then planner)")
     parser.add_argument("--no-verbose", action="store_true")
     args = parser.parse_args()
 
@@ -419,18 +531,94 @@ async def main() -> None:
         print(f"[error] No matching scenarios for --scenario={args.scenario}")
         sys.exit(1)
 
-    print(f"\nRunning {len(scenarios)} scenario(s)…")
-    results = []
-    for s in scenarios:
-        r = await run_scenario(s, verbose=not args.no_verbose)
-        results.append(r)
+    commit = _get_git_commit()
+    run_ts = int(time.time())
 
-    summary = _print_report(results)
+    if args.ab:
+        print(f"\nA/B mode — running {len(scenarios)} scenario(s) × 2 (static + planner)…")
+        static_results  = []
+        planner_results = []
+        for s in scenarios:
+            sr = await run_scenario(s, use_planner=False, verbose=not args.no_verbose)
+            static_results.append(sr)
+            pr = await run_scenario(s, use_planner=True,  verbose=not args.no_verbose)
+            planner_results.append(pr)
 
-    # Write results
-    out_path = args.out or str(RESULTS_DIR / f"benchmark_{int(time.time())}.json")
-    pathlib.Path(out_path).write_text(json.dumps(summary, indent=2))
-    print(f"\n  Results saved → {out_path}")
+        _print_ab_comparison(static_results, planner_results)
+        static_summary  = _print_report(static_results)
+        planner_summary = _print_report(planner_results)
+
+        ab_result = {
+            "commit":          commit,
+            "timestamp":       run_ts,
+            "mode":            "ab",
+            "static":          static_summary,
+            "planner":         planner_summary,
+            "planner_delta_top1": round(
+                planner_summary["top1_accuracy"] - static_summary["top1_accuracy"], 3
+            ),
+            "planner_extra_calls": round(
+                planner_summary["avg_llm_calls"] - static_summary["avg_llm_calls"], 2
+            ),
+        }
+        out_path = args.out or str(RESULTS_DIR / f"ab_{run_ts}.json")
+        pathlib.Path(out_path).write_text(json.dumps(ab_result, indent=2))
+        print(f"\n  A/B results saved → {out_path}")
+        _append_leaderboard(commit, run_ts, static_summary, planner_summary)
+    else:
+        print(f"\nRunning {len(scenarios)} scenario(s)…")
+        results = []
+        for s in scenarios:
+            r = await run_scenario(s, use_planner=False, verbose=not args.no_verbose)
+            results.append(r)
+
+        summary = _print_report(results)
+        summary["commit"]    = commit
+        summary["timestamp"] = run_ts
+        summary["mode"]      = "static"
+
+        out_path = args.out or str(RESULTS_DIR / f"benchmark_{run_ts}.json")
+        pathlib.Path(out_path).write_text(json.dumps(summary, indent=2))
+        print(f"\n  Results saved → {out_path}")
+        _append_leaderboard(commit, run_ts, summary, None)
+
+
+def _append_leaderboard(
+    commit: str,
+    ts: int,
+    static_summary: dict,
+    planner_summary: dict | None,
+) -> None:
+    """Append this run to the rolling leaderboard JSON."""
+    lb_path = RESULTS_DIR / "leaderboard.json"
+    try:
+        leaderboard: list = json.loads(lb_path.read_text()) if lb_path.exists() else []
+    except Exception:
+        leaderboard = []
+
+    entry: dict[str, Any] = {
+        "commit":          commit,
+        "timestamp":       ts,
+        "top1_accuracy":   static_summary.get("top1_accuracy"),
+        "action_accuracy": static_summary.get("action_accuracy"),
+        "calibration_gap": static_summary.get("calibration_gap"),
+        "avg_llm_calls":   static_summary.get("avg_llm_calls"),
+        "avg_time_s":      static_summary.get("avg_investigation_s"),
+    }
+    if planner_summary:
+        entry["planner_top1_accuracy"] = planner_summary.get("top1_accuracy")
+        entry["planner_delta"]         = round(
+            (planner_summary.get("top1_accuracy") or 0)
+            - (static_summary.get("top1_accuracy") or 0), 3
+        )
+        entry["planner_extra_calls"]   = round(
+            (planner_summary.get("avg_llm_calls") or 0)
+            - (static_summary.get("avg_llm_calls") or 0), 2
+        )
+
+    leaderboard.append(entry)
+    lb_path.write_text(json.dumps(leaderboard, indent=2))
+    print(f"  Leaderboard updated → {lb_path}  ({len(leaderboard)} entries)")
 
 
 if __name__ == "__main__":
