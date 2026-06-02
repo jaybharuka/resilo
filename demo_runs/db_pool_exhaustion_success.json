@@ -1,0 +1,89 @@
+{
+  "demo_id": "db_pool_exhaustion_success",
+  "title": "Postgres Connection Pool Exhaustion",
+  "description": "All 100 Postgres connections were held open by a slow analytics query. The investigation engine identified the blocking query, retrieved a matching incident from semantic memory, and routed to manual approval for connection termination.",
+  "scenario_id": "db_pool_exhaustion",
+  "timestamp": "2026-06-02T09:14:05Z",
+  "duration_seconds": 14.1,
+
+  "alert": {
+    "category": "database",
+    "severity": "critical",
+    "detail": "Postgres connection pool exhausted — 100/100 connections active, new connections refused"
+  },
+
+  "metrics": {
+    "cpu": 38.2,
+    "memory": 61.4,
+    "disk": 55.0,
+    "load_avg_1m": 2.1,
+    "swap_percent": 5.0
+  },
+
+  "evidence_sources_used": [
+    { "source": "logs",            "used": true,  "detail": "18 errors — connection refused, pool wait timeout" },
+    { "source": "dynamic_context", "used": true,  "detail": "sections: pg_connections, pg_long_queries" },
+    { "source": "semantic_memory", "used": true,  "detail": "2 historical matches — DB pool exhaustion Jan 2026, Feb 2026" },
+    { "source": "evidence_planner","used": true,  "detail": "2 adaptive collectors: pg_long_queries, pg_lock_waits" }
+  ],
+
+  "hypotheses": [
+    { "rank": 1, "cause": "Long-running analytics query holding connections open", "confidence": 0.94 },
+    { "rank": 2, "cause": "Connection leak in application ORM layer",              "confidence": 0.71 },
+    { "rank": 3, "cause": "Replica lag causing connection wait on primary",        "confidence": 0.38 }
+  ],
+
+  "root_cause": {
+    "summary": "A scheduled analytics query (pid 8841, duration 847s) held 23 connections in 'idle in transaction' state. Combined with a connection leak in the API service (not closing connections on 5xx paths), the pool reached capacity. Historical memory confirmed identical pattern from Feb 2026 — same query, same fix.",
+    "confidence": 0.94,
+    "confidence_pct": "94%",
+    "supporting_evidence": [
+      "pg_stat_activity: 23 connections idle in transaction >600s",
+      "Long query pid 8841: SELECT ... FROM events JOIN ... (847s elapsed)",
+      "API service logs: ConnectionPoolTimeoutError x18 in 5 minutes",
+      "Historical match Feb 2026: same query pattern, resolved by pg_terminate_backend",
+      "pg_locks: 14 lock waits on relation 'events', holder pid 8841"
+    ],
+    "reasoning_steps": [
+      "CPU 38% with pool exhaustion → not a compute problem, likely lock/connection contention",
+      "pg_connections shows 23 idle-in-transaction entries >600s each — abnormal hold",
+      "pg_long_queries confirms pid 8841 at 847s — analytics job that started outside business hours",
+      "Semantic memory match: Feb 2026 same pattern, terminated pid, pool recovered in 30s",
+      "Connection leak compounds: API not closing on 5xx means even after kill, pool stays near limit"
+    ]
+  },
+
+  "recommended_action": "terminate_db_connection",
+  "action_routing": "manual_approval",
+
+  "planner_steps": [
+    { "step": 1, "collector": "pg_long_queries",  "reason": "connection exhaustion often caused by long transactions", "confident_enough": false },
+    { "step": 2, "collector": "pg_lock_waits",    "reason": "confirm whether long query is causing lock cascades",     "confident_enough": true }
+  ],
+
+  "memory_matches": [
+    { "title": "DB Pool Exhaustion — Feb 2026", "similarity": 0.923, "root_cause": "Analytics query held idle-in-transaction connections, pg_terminate_backend resolved" },
+    { "title": "DB Pool Exhaustion — Jan 2026", "similarity": 0.871, "root_cause": "ORM connection leak on 5xx paths, patched in v1.4.2" }
+  ],
+
+  "llm_cost": {
+    "calls": 4,
+    "est_tokens": 3240,
+    "total_ms": 12840,
+    "avg_ms": 3210
+  },
+
+  "evidence_contribution": {
+    "logs_helped":    true,
+    "memory_helped":  true,
+    "context_helped": true,
+    "planner_helped": true
+  },
+
+  "outcome": {
+    "action_taken": "terminate_db_connection",
+    "action_target": "postgres:8841",
+    "resolved": true,
+    "resolution_note": "Connection pool recovered to 12/100 within 45 seconds. Fix confirmed: added connection.close() to 5xx handler in API service."
+  }
+}

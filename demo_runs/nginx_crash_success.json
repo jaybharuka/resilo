@@ -1,0 +1,79 @@
+{
+  "demo_id": "nginx_crash_success",
+  "title": "Nginx Worker Crash — SSL Certificate Expiry",
+  "description": "Nginx workers crashed after attempting to reload an expired SSL certificate during a config reload. The investigation engine detected the crash pattern in logs, identified the cert expiry as root cause, and auto-executed a service restart after confidence threshold was met.",
+  "scenario_id": "nginx_crash",
+  "timestamp": "2026-06-02T02:07:44Z",
+  "duration_seconds": 7.8,
+
+  "alert": {
+    "category": "service",
+    "severity": "critical",
+    "detail": "nginx.service exited with code 1 — 3 worker processes crashed within 60 seconds"
+  },
+
+  "metrics": {
+    "cpu": 4.1,
+    "memory": 28.3,
+    "disk": 44.0,
+    "load_avg_1m": 0.3,
+    "swap_percent": 2.0
+  },
+
+  "evidence_sources_used": [
+    { "source": "logs",            "used": true,  "detail": "11 errors — SSL_CTX_use_certificate, certificate verify failed" },
+    { "source": "dynamic_context", "used": true,  "detail": "sections: service_state, systemd_journal" },
+    { "source": "semantic_memory", "used": false, "detail": "no prior similar incidents" },
+    { "source": "evidence_planner","used": false, "detail": "static mode — log evidence sufficient" }
+  ],
+
+  "hypotheses": [
+    { "rank": 1, "cause": "Expired SSL certificate causing nginx worker crash on reload",     "confidence": 0.96 },
+    { "rank": 2, "cause": "Nginx config syntax error introduced by recent deployment",         "confidence": 0.44 },
+    { "rank": 3, "cause": "File descriptor limit reached causing accept() failure",            "confidence": 0.29 }
+  ],
+
+  "root_cause": {
+    "summary": "The SSL certificate at /etc/nginx/ssl/api.crt expired at 00:00 UTC. A scheduled nginx config reload at 02:00 attempted to load the expired cert, causing all 3 worker processes to exit with SSL_CTX_use_certificate error. No cert renewal automation was configured.",
+    "confidence": 0.96,
+    "confidence_pct": "96%",
+    "supporting_evidence": [
+      "nginx error log: SSL_CTX_use_certificate_file('/etc/nginx/ssl/api.crt') failed",
+      "openssl verify: certificate has expired (notAfter=Jun  2 00:00:00 2026 GMT)",
+      "systemd: nginx.service: Main process exited, code=exited, status=1/FAILURE",
+      "3 worker process exits within 60s — consistent with reload cascade",
+      "No certbot renewal job in crontab — manual cert rotation required"
+    ],
+    "reasoning_steps": [
+      "CPU 4.1%, memory 28% → system healthy, crash is application-level not resource exhaustion",
+      "Logs show SSL_CTX_use_certificate error — cert file exists but rejected by OpenSSL",
+      "Timestamp: crashes started at 02:00:01 UTC, matching scheduled reload cron",
+      "service_state shows nginx.service failed immediately after reload, not gradual degradation",
+      "Root cause confirmed: cert expired 2 hours before crash at 00:00 UTC"
+    ]
+  },
+
+  "recommended_action": "restart_service",
+  "action_routing": "auto_execute",
+
+  "llm_cost": {
+    "calls": 2,
+    "est_tokens": 2010,
+    "total_ms": 5940,
+    "avg_ms": 2970
+  },
+
+  "evidence_contribution": {
+    "logs_helped":    true,
+    "memory_helped":  false,
+    "context_helped": true,
+    "planner_helped": false
+  },
+
+  "outcome": {
+    "action_taken": "restart_service",
+    "action_target": "nginx",
+    "resolved": false,
+    "resolution_note": "Service restart failed — certificate still expired. Auto-escalated to manual_approval. Operator renewed cert via certbot and restarted. Added cert expiry monitoring alert at 30-day threshold."
+  }
+}

@@ -507,6 +507,7 @@ async def main() -> None:
     parser.add_argument("--scenario", help="Run a single scenario by ID")
     parser.add_argument("--out",      help="Write JSON results to this file")
     parser.add_argument("--ab",         action="store_true", help="A/B: run each scenario twice (static then planner)")
+    parser.add_argument("--confusion",  action="store_true", help="Print confusion matrix after run")
     parser.add_argument("--no-verbose", action="store_true")
     args = parser.parse_args()
 
@@ -565,6 +566,11 @@ async def main() -> None:
         pathlib.Path(out_path).write_text(json.dumps(ab_result, indent=2))
         print(f"\n  A/B results saved → {out_path}")
         _append_leaderboard(commit, run_ts, static_summary, planner_summary)
+        if args.confusion:
+            print("\n  [Static mode confusion matrix]")
+            _print_confusion_matrix(static_results)
+            print("\n  [Planner mode confusion matrix]")
+            _print_confusion_matrix(planner_results)
     else:
         print(f"\nRunning {len(scenarios)} scenario(s)…")
         results = []
@@ -581,6 +587,67 @@ async def main() -> None:
         pathlib.Path(out_path).write_text(json.dumps(summary, indent=2))
         print(f"\n  Results saved → {out_path}")
         _append_leaderboard(commit, run_ts, summary, None)
+        if args.confusion:
+            _print_confusion_matrix(results)
+
+
+def _print_confusion_matrix(results: list[dict]) -> None:
+    """Print a confusion matrix: actual incident type → predicted incident type."""
+    # Extract actual (from scenario) and predicted (from rca text)
+    TYPES = ["cpu", "memory", "disk", "database", "network", "service", "oom"]
+
+    def _detect_type(text: str) -> str:
+        t = (text or "").lower()
+        if any(k in t for k in ["pool", "postgres", "connection", "pg_", "sql"]):
+            return "database"
+        if any(k in t for k in ["oom", "oom_kill", "out of memory", "oom killer"]):
+            return "oom"
+        if any(k in t for k in ["nginx", "ssl", "service", "crash", "systemd"]):
+            return "service"
+        if any(k in t for k in ["network", "timeout", "dns", "tcp", "socket"]):
+            return "network"
+        if any(k in t for k in ["disk", "inode", "no space", "filesystem"]):
+            return "disk"
+        if any(k in t for k in ["memory", "leak", "heap", "rss", "swap"]):
+            return "memory"
+        if any(k in t for k in ["cpu", "load", "process", "runaway", "loop"]):
+            return "cpu"
+        return "unknown"
+
+    matrix: dict[str, dict[str, int]] = {}
+    for r in results:
+        actual    = r.get("incident_type") or _detect_type(r.get("scenario_id", ""))
+        predicted = _detect_type(r.get("root_cause_text", "") or r.get("rca_summary", ""))
+        matrix.setdefault(actual, {})
+        matrix[actual][predicted] = matrix[actual].get(predicted, 0) + 1
+
+    if not matrix:
+        print("  [confusion] No data to display")
+        return
+
+    all_predicted = sorted({p for row in matrix.values() for p in row})
+    col_w = max(14, max(len(p) for p in all_predicted))
+    row_w = max(14, max(len(a) for a in matrix))
+
+    print("\n" + "="*60)
+    print("  CONFUSION MATRIX  (rows=actual, cols=predicted)")
+    print("="*60)
+    header = f"  {'Actual':<{row_w}}" + "".join(f"  {p:<{col_w}}" for p in all_predicted)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for actual, row in sorted(matrix.items()):
+        line = f"  {actual:<{row_w}}"
+        for p in all_predicted:
+            count = row.get(p, 0)
+            cell  = str(count) if count > 0 else "-"
+            line += f"  {cell:<{col_w}}"
+        print(line)
+    print("="*60)
+    # Diagonal accuracy
+    correct = sum(row.get(a, 0) for a, row in matrix.items())
+    total   = sum(v for row in matrix.values() for v in row.values())
+    print(f"  Type identification accuracy: {correct}/{total} = {correct/max(total,1):.0%}")
+    print("="*60)
 
 
 def _append_leaderboard(

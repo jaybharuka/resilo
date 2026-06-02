@@ -381,6 +381,25 @@ async def benchmark_trends(
     }
 
 
+# ── GET /investigations/demo-runs ────────────────────────────────────────────
+
+@router.get("/investigations/demo-runs")
+async def get_demo_runs(request: Request) -> dict[str, Any]:
+    """Return pre-computed demo investigation fixtures from demo_runs/."""
+    await _require_token(request)
+    import pathlib, json as _json
+    demo_dir = pathlib.Path(__file__).parent.parent.parent / "demo_runs"
+    if not demo_dir.exists():
+        return {"ok": True, "runs": [], "note": "No demo_runs/ directory found"}
+    runs = []
+    for f in sorted(demo_dir.glob("*.json")):
+        try:
+            runs.append(_json.loads(f.read_text()))
+        except Exception:
+            pass
+    return {"ok": True, "count": len(runs), "runs": runs}
+
+
 # ── GET /investigations ───────────────────────────────────────────────────────
 
 @router.get("/investigations")

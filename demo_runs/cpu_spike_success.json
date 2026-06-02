@@ -1,0 +1,79 @@
+{
+  "demo_id": "cpu_spike_success",
+  "title": "CPU Runaway — Python Worker",
+  "description": "A tight loop in a background task worker consumed 94% CPU for 8 minutes before the investigation engine identified and isolated the process.",
+  "scenario_id": "cpu_spike",
+  "timestamp": "2026-06-02T14:32:11Z",
+  "duration_seconds": 9.4,
+
+  "alert": {
+    "category": "cpu",
+    "severity": "critical",
+    "detail": "CPU utilization exceeded 95% for 5 consecutive minutes"
+  },
+
+  "metrics": {
+    "cpu": 97.4,
+    "memory": 42.1,
+    "disk": 38.0,
+    "load_avg_1m": 7.8,
+    "swap_percent": 8.0
+  },
+
+  "evidence_sources_used": [
+    { "source": "logs",            "used": true,  "detail": "3 errors — queue depth 847, worker pool saturated" },
+    { "source": "dynamic_context", "used": true,  "detail": "sections: process_tree, scheduler_pressure" },
+    { "source": "semantic_memory", "used": false, "detail": "no prior similar incidents" },
+    { "source": "evidence_planner","used": false, "detail": "static mode" }
+  ],
+
+  "hypotheses": [
+    { "rank": 1, "cause": "Runaway python3 worker in tight CPU loop", "confidence": 0.91 },
+    { "rank": 2, "cause": "GC thrash caused by object accumulation",  "confidence": 0.62 },
+    { "rank": 3, "cause": "Scheduled batch job contention",           "confidence": 0.41 }
+  ],
+
+  "root_cause": {
+    "summary": "A python3 worker process (pid 4421) entered a tight loop due to an unhandled exception in the request queue consumer, consuming 94.2% CPU and saturating the thread pool. No circuit breaker was configured for queue depth overflow.",
+    "confidence": 0.91,
+    "confidence_pct": "91%",
+    "supporting_evidence": [
+      "python3 pid 4421 at 94.2% CPU for >5 minutes",
+      "Request queue depth: 847 (threshold 100)",
+      "Worker thread pool saturated — requests dropped",
+      "PSI CPU pressure avg10=88.42 avg60=72.11",
+      "GC pause 1240ms indicating tight loop"
+    ],
+    "reasoning_steps": [
+      "CPU 97.4% with single process at 94.2% → likely single runaway process",
+      "process_tree shows python3 pid 4421 with no children — not a fork bomb",
+      "Log shows queue depth 847 — worker not draining queue, confirms tight loop",
+      "PSI pressure avg60=72.11 consistent with sustained single-core saturation",
+      "GC pause 1240ms indicates tight object allocation loop, not I/O wait"
+    ]
+  },
+
+  "recommended_action": "kill_process",
+  "action_routing": "manual_approval",
+
+  "llm_cost": {
+    "calls": 2,
+    "est_tokens": 1840,
+    "total_ms": 6210,
+    "avg_ms": 3105
+  },
+
+  "evidence_contribution": {
+    "logs_helped":    true,
+    "memory_helped":  false,
+    "context_helped": true,
+    "planner_helped": false
+  },
+
+  "outcome": {
+    "action_taken": "kill_process",
+    "action_target": "python3:4421",
+    "resolved": true,
+    "resolution_note": "CPU dropped to 4.2% within 90 seconds of process kill. Root cause confirmed — exception handler missing in queue consumer."
+  }
+}
