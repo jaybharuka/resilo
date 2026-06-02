@@ -7,9 +7,13 @@ Remove:  python resilo_agent.py --uninstall    # remove startup service
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
+import logging
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -310,6 +314,322 @@ def _execute_command(cmd: dict[str, Any]) -> None:
             print(f"[cmd] stderr: {result['stderr']}")
 
 
+# ── Log Shipper ──────────────────────────────────────────────────────────────
+
+# Patterns that always pass the local filter regardless of level
+_LOG_KEEP_PATTERNS: list[re.Pattern] = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"out.of.memory|oom.killer|killed.process",
+        r"connection.(?:refused|reset|timeout|pool|exhaust)",
+        r"too.many.(?:open.files|connections|clients)",
+        r"disk.(?:full|quota)|no.space.left",
+        r"segfault|segmentation.fault",
+        r"exception|traceback|panic",
+        r"timeout.*\d+\s*(?:ms|s)",
+        r"circuit.breaker|retry.*\d+.of",
+        r"health.check.fail",
+        r"swap.(?:full|exhausted)",
+    ]
+]
+
+# Levels that pass by default (case-insensitive)
+_KEEP_LEVELS = {"error", "err", "warn", "warning", "critical", "crit", "fatal", "alert", "emerg"}
+
+# Max messages to track for deduplication per ship cycle
+_DEDUP_WINDOW = 500
+# Max batch size per POST
+_LOG_BATCH_SIZE = 200
+# Ship interval seconds
+_LOG_SHIP_INTERVAL = 30
+
+
+class _DedupTracker:
+    """Count-based deduplication within a sliding window."""
+    def __init__(self, maxsize: int = _DEDUP_WINDOW) -> None:
+        self._counts: dict[str, int] = {}
+        self._maxsize = maxsize
+
+    def _key(self, message: str) -> str:
+        # Normalise numbers so "error 123" == "error 456"
+        normalised = re.sub(r"\d+", "#", message.lower())[:120]
+        return hashlib.md5(normalised.encode(), usedforsecurity=False).hexdigest()[:16]
+
+    def seen(self, message: str) -> int:
+        """Record message; return total count (1 = first occurrence)."""
+        k = self._key(message)
+        self._counts[k] = self._counts.get(k, 0) + 1
+        if len(self._counts) > self._maxsize:
+            # Evict oldest half
+            keys = list(self._counts)[:self._maxsize // 2]
+            for old in keys:
+                del self._counts[old]
+        return self._counts[k]
+
+    def reset(self) -> None:
+        self._counts.clear()
+
+
+def _should_keep(level: str, message: str) -> bool:
+    """True if this log line should be shipped."""
+    if level.lower() in _KEEP_LEVELS:
+        return True
+    return any(p.search(message) for p in _LOG_KEEP_PATTERNS)
+
+
+def _normalise_line(raw: str, source: str) -> dict[str, Any] | None:
+    """
+    Parse a raw log line into {level, source, message, raw_line, log_ts}.
+    Returns None if the line should be dropped.
+    """
+    raw = raw.strip()
+    if not raw or len(raw) < 4:
+        return None
+
+    level = "INFO"
+    message = raw
+    log_ts: str | None = None
+
+    # Syslog / journald pattern: "Jan  2 15:04:05 host service[pid]: message"
+    m = re.match(
+        r'^(?P<ts>\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+:\s+(?P<msg>.+)$',
+        raw
+    )
+    if m:
+        message = m.group("msg")
+        log_ts = m.group("ts")
+
+    # ISO timestamp prefix: "2024-01-02T15:04:05 LEVEL message"
+    m2 = re.match(
+        r'^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*)\s+'
+        r'(?P<lvl>ERROR|WARN(?:ING)?|INFO|DEBUG|CRITICAL|FATAL)\s+(?P<msg>.+)$',
+        raw, re.IGNORECASE
+    )
+    if m2:
+        log_ts  = m2.group("ts")
+        level   = m2.group("lvl").upper()
+        message = m2.group("msg")
+
+    # Bare level prefix: "ERROR: message" or "[ERROR] message"
+    m3 = re.match(
+        r'^\[?(?P<lvl>ERROR|WARN(?:ING)?|INFO|DEBUG|CRITICAL|FATAL)\]?[:\s]+(?P<msg>.+)$',
+        raw, re.IGNORECASE
+    )
+    if m3:
+        level   = m3.group("lvl").upper()
+        message = m3.group("msg")
+
+    # Truncate giant lines
+    message = message[:1000]
+
+    if not _should_keep(level, message):
+        return None
+
+    return {
+        "level":    level,
+        "source":   source,
+        "message":  message,
+        "raw_line": raw[:500],
+        "log_ts":   log_ts,
+    }
+
+
+# ── Platform-specific collectors ──────────────────────────────────────────────
+
+def _collect_journald(lines: int = 300) -> list[dict[str, Any]]:
+    """Read recent journald entries (Linux only)."""
+    try:
+        result = subprocess.run(
+            ["journalctl", "-n", str(lines), "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=10
+        )
+        collected = []
+        for raw in result.stdout.splitlines():
+            entry = _normalise_line(raw, "journald")
+            if entry:
+                collected.append(entry)
+        return collected
+    except Exception:
+        return []
+
+
+def _collect_syslog(lines: int = 200) -> list[dict[str, Any]]:
+    """Read tail of /var/log/syslog or /var/log/messages (Linux/macOS)."""
+    for path in ("/var/log/syslog", "/var/log/messages", "/var/log/system.log"):
+        if os.path.exists(path):
+            try:
+                result = subprocess.run(
+                    ["tail", "-n", str(lines), path],
+                    capture_output=True, text=True, timeout=10
+                )
+                collected = []
+                for raw in result.stdout.splitlines():
+                    entry = _normalise_line(raw, "syslog")
+                    if entry:
+                        collected.append(entry)
+                return collected
+            except Exception:
+                return []
+    return []
+
+
+def _collect_windows_eventlog(max_events: int = 200) -> list[dict[str, Any]]:
+    """
+    Read Windows Application + System event logs using PowerShell.
+    Only fetches Warning/Error/Critical events — avoids Information flood.
+    """
+    ps_script = (
+        "$logs = @('Application','System'); "
+        "$events = @(); "
+        "foreach ($log in $logs) { "
+        "  try { $events += Get-EventLog -LogName $log -EntryType Error,Warning "
+        f"    -Newest {max_events // 2} -ErrorAction SilentlyContinue "
+        "  } catch {} "
+        "}; "
+        "$events | Select-Object -First {max_events} TimeGenerated,EntryType,Source,Message | "
+        "ConvertTo-Json -Depth 2 -Compress"
+    ).replace("{max_events}", str(max_events))
+    try:
+        result = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps_script],
+            capture_output=True, text=True, timeout=20
+        )
+        data = json.loads(result.stdout) if result.stdout.strip() else []
+        if isinstance(data, dict):   # single event returned as object not array
+            data = [data]
+        collected = []
+        for ev in data:
+            if not isinstance(ev, dict):
+                continue
+            level_raw = str(ev.get("EntryType", "INFO")).lower()
+            level = "ERROR" if "error" in level_raw else "WARN" if "warn" in level_raw else "INFO"
+            msg   = str(ev.get("Message") or "").replace("\r\n", " ").replace("\n", " ").strip()[:500]
+            ts    = str(ev.get("TimeGenerated") or "")
+            if not msg:
+                continue
+            entry = _normalise_line(f"{level}: {msg}", f"windows/{ev.get('Source','system')}")
+            if entry:
+                entry["log_ts"] = ts or None
+                collected.append(entry)
+        return collected
+    except Exception:
+        return []
+
+
+def _collect_agent_log() -> list[dict[str, Any]]:
+    """Tail the agent's own log file if it exists."""
+    log_path = os.path.join(os.path.expanduser("~"), ".resilo_agent.log")
+    if not os.path.exists(log_path):
+        return []
+    try:
+        result = subprocess.run(
+            ["tail", "-n", "50", log_path] if platform.system() != "Windows"
+            else ["powershell", "-Command", f"Get-Content '{log_path}' -Tail 50"],
+            capture_output=True, text=True, timeout=5
+        )
+        collected = []
+        for raw in result.stdout.splitlines():
+            entry = _normalise_line(raw, "resilo-agent")
+            if entry:
+                collected.append(entry)
+        return collected
+    except Exception:
+        return []
+
+
+class LogShipper:
+    """
+    Collects, filters, deduplicates, and ships log lines to the backend.
+
+    Call tick() from the main loop — it ships every _LOG_SHIP_INTERVAL seconds.
+    Designed to never raise: all errors are printed and swallowed.
+    """
+
+    def __init__(
+        self,
+        backend_url: str,
+        agent_id: str,
+        agent_key: str,
+        org_id: str,
+    ) -> None:
+        self._url       = f"{backend_url.rstrip('/')}/agents/{agent_id}/logs"
+        self._agent_key = agent_key
+        self._org_id    = org_id
+        self._dedup     = _DedupTracker()
+        self._last_ship = 0.0
+        self._pending:  list[dict[str, Any]] = []
+        self._is_win    = platform.system() == "Windows"
+        self._is_linux  = platform.system() == "Linux"
+
+    def _collect(self) -> list[dict[str, Any]]:
+        """Collect logs from all available sources."""
+        lines: list[dict[str, Any]] = []
+        try:
+            if self._is_win:
+                lines += _collect_windows_eventlog(200)
+            else:
+                lines += _collect_journald(300)
+                lines += _collect_syslog(200)
+            lines += _collect_agent_log()
+        except Exception as exc:
+            print(f"[logs] Collection error: {exc}")
+        return lines
+
+    def _dedup_filter(self, lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Deduplicate: keep first occurrence per cycle.
+        Annotate repeated lines with count in message.
+        """
+        result = []
+        for entry in lines:
+            count = self._dedup.seen(entry["message"])
+            if count == 1:
+                result.append(entry)
+            elif count == 5 or count == 20 or count == 50:
+                # Surface periodic reminders for high-frequency errors
+                entry = dict(entry)
+                entry["message"] = f"[x{count}] {entry['message']}"
+                result.append(entry)
+        return result
+
+    def _ship(self, lines: list[dict[str, Any]], alert_id: str | None = None) -> None:
+        """POST a batch of log lines. Silently drops on failure — metric send is primary."""
+        if not lines:
+            return
+        body = json.dumps({"lines": lines[:_LOG_BATCH_SIZE], "alert_id": alert_id}).encode()
+        req = urllib.request.Request(
+            self._url, method="POST", data=body,
+            headers={
+                "Content-Type":  "application/json",
+                "X-Agent-Key":   self._agent_key,
+                "Authorization": f"Bearer {self._agent_key}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                stored = json.loads(resp.read().decode()).get("stored", 0)
+                print(f"[logs] Shipped {stored} line(s)")
+        except Exception as exc:
+            print(f"[logs] Ship failed (non-fatal): {exc}")
+
+    def tick(self, alert_id: str | None = None) -> None:
+        """Call from main loop. Ships once per _LOG_SHIP_INTERVAL seconds."""
+        now = time.time()
+        if now - self._last_ship < _LOG_SHIP_INTERVAL:
+            return
+        self._last_ship = now
+        self._dedup.reset()    # fresh dedup window each cycle
+
+        raw = self._collect()
+        filtered = self._dedup_filter(raw)
+
+        if not filtered:
+            return
+
+        # Ship in batches
+        for i in range(0, len(filtered), _LOG_BATCH_SIZE):
+            self._ship(filtered[i:i + _LOG_BATCH_SIZE], alert_id)
+
+
 # ── Config ───────────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.expanduser("~"), ".resilo_agent.json")
 
@@ -458,6 +778,7 @@ def main() -> None:
             "backend_url": backend_url,
             "org_id":      result["org_id"],
             "agent_key":   result["agent_key"],
+            "agent_id":    result.get("agent_id", result.get("device_id", "")),
             "device_id":   result["device_id"],
             "label":       label,
         })
@@ -474,8 +795,17 @@ def main() -> None:
 
     _load_buffer()
 
+    # ── Log shipper — instantiated once, ticks every 30s independently ────────
+    log_shipper = LogShipper(
+        backend_url=cfg["backend_url"],
+        agent_id=cfg.get("agent_id", cfg.get("device_id", "")),
+        agent_key=cfg["agent_key"],
+        org_id=cfg["org_id"],
+    )
+
     interval = 5.0
     print(f"[info] Agent running — backend={cfg['backend_url']} interval={interval}s")
+    print(f"[info] Log shipping enabled — every {_LOG_SHIP_INTERVAL}s")
 
     while True:
         try:
@@ -488,6 +818,9 @@ def main() -> None:
                 interval = srv_interval
             else:
                 print("[warn] Heartbeat failed — buffered for retry")
+
+            # Ship logs every _LOG_SHIP_INTERVAL seconds (non-blocking, never raises)
+            log_shipper.tick()
 
             if commands:
                 for cmd in commands:

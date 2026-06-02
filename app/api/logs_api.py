@@ -15,6 +15,7 @@ agent and drops lines older than 7 days.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -31,6 +32,57 @@ _log = logging.getLogger(__name__)
 _MAX_LINES_PER_AGENT = 500
 _LOG_TTL_DAYS        = 7
 _INGEST_BATCH_LIMIT  = 200   # max lines accepted per POST
+
+# ── Server-side normalisation ─────────────────────────────────────────────────
+
+_LEVEL_MAP = {
+    "err":      "ERROR",
+    "error":    "ERROR",
+    "warn":     "WARN",
+    "warning":  "WARN",
+    "crit":     "CRITICAL",
+    "critical": "CRITICAL",
+    "fatal":    "CRITICAL",
+    "alert":    "CRITICAL",
+    "emerg":    "CRITICAL",
+    "info":     "INFO",
+    "debug":    "DEBUG",
+    "notice":   "INFO",
+}
+
+_LEVEL_IN_MSG = re.compile(
+    r'\b(error|err|warn(?:ing)?|critical|crit|fatal|alert|emerg)\b',
+    re.IGNORECASE,
+)
+
+
+def _server_normalise(item: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalise a single log item from any source:
+      - Standardise level to ERROR|WARN|CRITICAL|INFO|DEBUG
+      - Detect level from message when field is absent/INFO
+      - Truncate message and raw_line
+      - Sanitise source string
+    """
+    level   = _LEVEL_MAP.get(str(item.get("level") or "info").lower(), "INFO")
+    message = str(item.get("message") or item.get("raw_line") or "").strip()[:4000]
+    source  = re.sub(r"[^\w./ -]", "", str(item.get("source") or "app"))[:100]
+
+    # Promote level when message contains error keywords and level is INFO/DEBUG
+    if level in ("INFO", "DEBUG"):
+        m = _LEVEL_IN_MSG.search(message)
+        if m:
+            detected = _LEVEL_MAP.get(m.group(1).lower(), level)
+            if detected in ("ERROR", "WARN", "CRITICAL"):
+                level = detected
+
+    return {
+        "level":    level,
+        "source":   source,
+        "message":  message,
+        "raw_line": str(item.get("raw_line") or "")[:2000] or None,
+        "log_ts":   item.get("log_ts"),
+    }
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -136,13 +188,14 @@ async def ingest_logs(
     for item in lines[:_INGEST_BATCH_LIMIT]:
         if not isinstance(item, dict):
             continue
-        message = str(item.get("message") or item.get("raw_line") or "").strip()
-        if not message:
+
+        normalised = _server_normalise(item)
+        if not normalised["message"]:
             continue
 
         # Parse log_ts if provided
         log_ts: datetime | None = None
-        ts_str = item.get("log_ts")
+        ts_str = normalised["log_ts"] or item.get("log_ts")
         if ts_str:
             try:
                 log_ts = datetime.fromisoformat(str(ts_str))
@@ -156,10 +209,10 @@ async def ingest_logs(
             org_id=org_id,
             agent_id=agent_id,
             alert_id=alert_id,
-            source=str(item.get("source") or "app")[:100],
-            level=str(item.get("level") or "INFO").upper()[:20],
-            message=message[:4000],
-            raw_line=str(item.get("raw_line") or "")[:4000] or None,
+            source=normalised["source"],
+            level=normalised["level"],
+            message=normalised["message"],
+            raw_line=normalised["raw_line"],
             collected_at=now,
             log_ts=log_ts,
         )

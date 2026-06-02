@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.incident_memory import find_similar_incidents
 from app.core.database import (
-    Incident, IncidentMemory, Investigation, InvestigationFeedback, get_db,
+    Incident, IncidentMemory, Investigation, InvestigationFeedback, LogEntry, get_db,
 )
 
 router = APIRouter(tags=["investigations"])
@@ -172,6 +172,29 @@ async def investigation_stats(
         for a, cnt in Counter(actions).most_common(5)
     ]
 
+    # ── Evidence quality ─────────────────────────────────────────────────────
+    inv_with_logs = [
+        r for r in completed
+        if isinstance(r.evidence, dict) and r.evidence.get("log_line_count", 0) > 0
+    ]
+    inv_with_errors = [
+        r for r in completed
+        if isinstance(r.evidence, dict) and r.evidence.get("error_line_count", 0) > 0
+    ]
+    inv_with_log_summary = [
+        r for r in completed
+        if isinstance(r.evidence, dict) and r.evidence.get("log_summary")
+    ]
+
+    total_logs_collected = sum(
+        r.evidence.get("log_line_count", 0) for r in completed
+        if isinstance(r.evidence, dict)
+    )
+    total_errors_detected = sum(
+        r.evidence.get("error_line_count", 0) for r in completed
+        if isinstance(r.evidence, dict)
+    )
+
     # ── Memory bank size ─────────────────────────────────────────────────────
     mem_count_result = await db.execute(
         select(func.count()).where(IncidentMemory.org_id == org_id)
@@ -266,6 +289,16 @@ async def investigation_stats(
             "avg_hits":                avg_semantic_hits,
             "avg_similarity":          avg_retrieval_similarity,
             "avg_retrieval_ms":        avg_retrieval_ms,
+        },
+        "evidence_quality": {
+            "total_logs_collected":     total_logs_collected,
+            "total_errors_detected":    total_errors_detected,
+            "investigations_with_logs": len(inv_with_logs),
+            "investigations_with_errors": len(inv_with_errors),
+            "investigations_with_summary": len(inv_with_log_summary),
+            "log_coverage_rate": round(
+                len(inv_with_logs) / max(len(completed), 1), 3
+            ),
         },
         "memory_usefulness": {
             "retrieved":   int(sum(
