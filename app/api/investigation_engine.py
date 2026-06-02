@@ -43,6 +43,7 @@ from app.core.database import (
 from app.api.incident_memory import build_memory_context
 from app.api.memory_store import MemoryStore
 from app.api.log_collector import build_log_evidence, format_log_context
+from app.api.context_collector import collect_context, format_context_evidence
 
 _log = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ class Evidence(BaseModel):
     high_value_lines:   list[str] = Field(default_factory=list)
     log_summary:        str | None = None
     log_context:        str = ""   # formatted block for LLM injection
+    # ── Dynamic context evidence (Phase 4) ────────────────────────────────
+    context_evidence:   dict = Field(default_factory=dict)
+    context_text:       str = ""   # formatted block for LLM injection
 
 
 class Hypothesis(BaseModel):
@@ -225,6 +229,14 @@ async def _collect_evidence(
     )
     log_ctx = format_log_context(log_ev)
 
+    # ── Dynamic context evidence ───────────────────────────────────────────
+    ctx_evidence = await collect_context(
+        incident_type=incident_type,
+        top_cpu_processes=top_cpu,
+        top_mem_processes=top_mem,
+    )
+    ctx_text = format_context_evidence(ctx_evidence)
+
     if log_ev["log_line_count"] > 0:
         note_parts.append(
             f"Logs: {log_ev['log_line_count']} lines, "
@@ -253,12 +265,15 @@ async def _collect_evidence(
         high_value_lines=log_ev["high_value_lines"],
         log_summary=log_ev["log_summary"],
         log_context=log_ctx,
+        context_evidence=ctx_evidence,
+        context_text=ctx_text,
     )
 
     timeline.append(_timeline_event(
         InvestigationStage.EVIDENCE_COLLECTION,
         f"Evidence collected: type={incident_type} cpu={cpu:.1f}% mem={memory:.1f}% disk={disk:.1f}% "
-        f"logs={log_ev['log_line_count']}lines/{log_ev['error_line_count']}errors",
+        f"logs={log_ev['log_line_count']}lines/{log_ev['error_line_count']}errors "
+        f"ctx_sections={len(ctx_evidence)}",
     ))
     return evidence, timeline
 
@@ -336,6 +351,7 @@ TOP PROCESSES (MEMORY):
 {top_mem_lines}
 
 {log_context}
+{context_text}
 {memory_context}
 
 Generate 3 to 5 hypotheses explaining this incident.
@@ -385,6 +401,7 @@ async def _generate_hypotheses(
         top_cpu_lines=top_cpu_lines,
         top_mem_lines=top_mem_lines,
         log_context=evidence.log_context or "",
+        context_text=evidence.context_text or "",
         memory_context=memory_context,
     )
 
@@ -464,6 +481,7 @@ Top hypotheses (ranked by confidence):
 {hypotheses_block}
 
 {log_context}
+{context_text}
 {memory_context}
 
 Perform root cause analysis and return exactly this JSON object:
@@ -510,6 +528,7 @@ async def _root_cause_analysis(
         severity=alert.severity,
         hypotheses_block=hypotheses_block,
         log_context=evidence.log_context or "",
+        context_text=evidence.context_text or "",
         memory_context=memory_context,
     )
 
@@ -624,6 +643,7 @@ async def _persist_investigation(
             inv.avg_similarity              = telem.get("avg_similarity")
             inv.retrieval_time_ms           = telem.get("retrieval_time_ms")
             inv.memories_used_in_reasoning  = memories_used
+            inv.context_evidence            = evidence.context_evidence or {}
             inv.completed_at                = datetime.now(timezone.utc)
             await db.commit()
     except Exception as exc:

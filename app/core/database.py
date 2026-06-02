@@ -735,6 +735,8 @@ class Investigation(Base):
     avg_similarity:             Mapped[Optional[float]] = mapped_column(Float, nullable=True)       # mean cosine similarity of retrieved memories
     retrieval_time_ms:          Mapped[Optional[float]] = mapped_column(Float, nullable=True)       # ms spent in memory search
     memories_used_in_reasoning: Mapped[Optional[int]]   = mapped_column(nullable=True)              # how many retrieved memories referenced in final RCA
+    # ── Dynamic context evidence (Phase 4) ─────────────────────────────────────
+    context_evidence:           Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {process_tree, oom_history, pg_connections, ...}
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -142,6 +142,78 @@ def _disk_partitions_list() -> list[dict]:
     return parts
 
 
+def _collect_open_ports() -> list[str]:
+    """Return a list of listening ports (e.g. ['0.0.0.0:5432', ':::80'])."""
+    try:
+        conns = psutil.net_connections(kind="inet")
+        ports = []
+        for c in conns:
+            if c.status == "LISTEN" and c.laddr:
+                ports.append(f"{c.laddr.ip}:{c.laddr.port}")
+        return sorted(set(ports))[:30]
+    except Exception:
+        return []
+
+
+def _collect_failed_services() -> list[str]:
+    """
+    Return names of services in a bad state.
+    Linux: systemctl --failed
+    Windows: auto-start services that are stopped
+    """
+    try:
+        if platform.system() == "Windows":
+            result = subprocess.run(
+                ["powershell", "-NonInteractive", "-Command",
+                 "Get-Service | Where-Object {$_.Status -eq 'Stopped' -and "
+                 "$_.StartType -eq 'Automatic'} | Select-Object -ExpandProperty Name"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return [l.strip() for l in result.stdout.splitlines() if l.strip()][:10]
+        else:
+            result = subprocess.run(
+                ["systemctl", "--failed", "--no-pager", "--no-legend",
+                 "--output=json"],
+                capture_output=True, text=True, timeout=8,
+            )
+            if result.stdout.strip():
+                try:
+                    units = json.loads(result.stdout)
+                    return [u.get("unit", "") for u in units if u.get("unit")][:10]
+                except Exception:
+                    pass
+            # fallback: parse plain text
+            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            return lines[:10]
+    except Exception:
+        return []
+
+
+def _collect_disk_inodes() -> list[dict[str, Any]]:
+    """Per-partition inode usage (Linux/macOS only)."""
+    if platform.system() == "Windows":
+        return []
+    try:
+        result = subprocess.run(
+            ["df", "-i", "--output=source,ipcent,itotal,iused,iavail"],
+            capture_output=True, text=True, timeout=5,
+        )
+        rows = []
+        for line in result.stdout.splitlines()[1:6]:
+            parts = line.split()
+            if len(parts) >= 5:
+                rows.append({
+                    "device":       parts[0],
+                    "inode_pct":    parts[1],
+                    "inode_total":  parts[2],
+                    "inode_used":   parts[3],
+                    "inode_avail":  parts[4],
+                })
+        return rows
+    except Exception:
+        return []
+
+
 def collect(device_id: str, label: str) -> dict[str, Any]:
     vm   = psutil.virtual_memory()
     swap = psutil.swap_memory()
@@ -187,6 +259,12 @@ def collect(device_id: str, label: str) -> dict[str, Any]:
         "os_version":  platform.version(),
         "error_rate":  0,
     }
+
+    # \u2500\u2500 Phase 4: lightweight dynamic evidence shipped with every heartbeat \u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    payload["open_ports"]     = _collect_open_ports()
+    payload["failed_services"] = _collect_failed_services()
+    payload["disk_inodes"]    = _collect_disk_inodes()
+
     return payload
 
 
