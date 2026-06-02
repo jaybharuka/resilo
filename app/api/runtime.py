@@ -27,6 +27,7 @@ from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import (Agent, AgentActionLog, AlertRecord, AlertRule, Incident,
+                               IncidentMemory, Investigation,
                                MetricSnapshot, NotificationChannel, NotificationLog,
                                OnboardingToken, Organization, RemediationJob,
                                SessionLocal, User, UserSession, get_db)
@@ -1476,64 +1477,63 @@ async def _lc_analyze(
 
     _lc_analyze_mark_ran(alert.agent_id)
 
-    # ── 1. GATHER CONTEXT ─────────────────────────────────────────────────────
+    # ── 1-4. MULTI-STAGE INVESTIGATION PIPELINE ───────────────────────────────
+    from app.api.investigation_engine import run_investigation, ActionRouting as _ActionRouting
+
+    extra_metrics = {
+        "top_processes": top_processes,
+        "load_avg_1m":   load_avg_1m,
+        "load_avg_5m":   load_avg_5m,
+        "load_avg_15m":  load_avg_15m,
+    }
+    raw = ""
+    inv_result = None
+    try:
+        async with SessionLocal() as _inv_db:
+            inv_result = await run_investigation(
+                db=_inv_db,
+                alert=alert,
+                org_id=org_id or alert.org_id,
+                agent_id=alert.agent_id,
+                cpu=cpu,
+                memory=memory,
+                disk=0.0,
+                extra_metrics=extra_metrics,
+                call_llm_fn=_call_llm,
+            )
+            await _inv_db.commit()
+    except Exception as _inv_exc:
+        logging.warning("[AGENT] Investigation pipeline failed: %s", _inv_exc)
+
     metrics = {
         "cpu": cpu, "memory": memory, "disk": 0.0, "top_processes": top_processes,
         "load_avg_1m": load_avg_1m, "load_avg_5m": load_avg_5m, "load_avg_15m": load_avg_15m,
     }
     alert_dict = {"category": alert.category, "severity": alert.severity, "detail": alert.detail}
-    ai_history = _AI_HISTORY.get(alert.agent_id, [])
-    feedback   = _ACTION_FEEDBACK.get(alert.agent_id, [])
-    success_rates = _compute_success_rates(alert.agent_id)
     alert_context = f"{alert.category}:{alert.severity}"
 
-    # ── 2. CALL THE LLM ───────────────────────────────────────────────────────
-    raw = ""
-    decision: dict = {}
-    try:
-        context_block = _build_context(
-            alert.agent_id, metrics, alert_dict, ai_history, feedback, success_rates
-        )
-        raw = await asyncio.wait_for(
-            _call_llm(_LC_SYSTEM_PROMPT, context_block),
-            timeout=30.0,   # gemini-2.5-flash needs ~15s for full AIOps context
-        )
-
-        # ── 3. PARSE + VALIDATE ───────────────────────────────────────────────
-        # Support both ```json fenced block and bare JSON
-        fence_start = raw.rfind("```json")
-        if fence_start != -1:
-            json_str = raw[fence_start + 7:]
-            fence_end = json_str.find("```")
-            json_str = json_str[:fence_end].strip() if fence_end != -1 else json_str.strip()
-        else:
-            j_start = raw.rfind("{")
-            j_end   = raw.rfind("}") + 1
-            json_str = raw[j_start:j_end] if j_start != -1 else ""
-
-        parsed = json.loads(json_str)
-        action = parsed.get("action", "notify_only")
+    if inv_result is not None:
+        action = inv_result.recommended_action
         if action not in _LC_ALLOWED_ACTIONS:
-            logging.warning("[AGENT] LLM returned unknown action '%s' — defaulting to notify_only", action)
             action = "notify_only"
-
-        decision = {
-            "action":          action,
-            "confidence":      float(parsed.get("confidence", 0.5)),
-            "root_cause":      parsed.get("root_cause", ""),
-            "summary":         parsed.get("summary", ""),
-            "safe_to_auto_fix": bool(parsed.get("safe_to_auto_fix", False)),
-            "reasoning_steps": parsed.get("reasoning_steps", []),
-            "decision_source": "llm",
+        decision: dict = {
+            "action":           action,
+            "confidence":       inv_result.confidence,
+            "root_cause":       inv_result.root_cause.root_cause,
+            "summary":          (inv_result.root_cause.reasoning_steps or [""])[-1],
+            "safe_to_auto_fix": inv_result.action_routing == _ActionRouting.AUTO_EXECUTE,
+            "reasoning_steps":  inv_result.root_cause.reasoning_steps,
+            "decision_source":  "llm",
+            "investigation_id": inv_result.investigation_id,
+            "action_routing":   inv_result.action_routing.value,
         }
-        logging.info("[AGENT] LLM decision: action=%s conf=%.2f source=llm",
-                     action, decision["confidence"])
-
-    except (asyncio.TimeoutError, Exception) as _llm_exc:
-        logging.warning("[AGENT] LLM failed (%s) — rule fallback", type(_llm_exc).__name__)
+        logging.info("[AGENT] Investigation complete: action=%s conf=%.2f routing=%s",
+                     action, inv_result.confidence, inv_result.action_routing.value)
+    else:
         decision = _rule_fallback(metrics, alert_dict)
         action   = decision["action"]
-        raw      = ""
+        decision["investigation_id"] = None
+        decision["action_routing"]   = "investigation_only"
 
     # Derive target from action type
     target = (
@@ -1591,65 +1591,74 @@ async def _lc_analyze(
         logging.info("[AGENT] manual_approval — queued: %s → %s", action, target)
 
     elif exec_mode == "auto_safe":
-        restart_count = 0
-        try:
-            async with SessionLocal() as _db:
-                from sqlalchemy import func as _sqlfunc
-                one_hour_ago = _now() - timedelta(hours=1)
-                row = await _db.execute(
-                    select(_sqlfunc.count()).where(
-                        AgentActionLog.agent_id == alert.agent_id,
-                        AgentActionLog.action == "restart_service",
-                        AgentActionLog.created_at >= one_hour_ago,
-                    )
-                )
-                restart_count = row.scalar() or 0
-        except Exception as _rc_exc:
-            logging.warning("[AGENT] Could not query restart count: %s", _rc_exc)
+        # Investigation-only routing: AI confidence < 70% — record but do not execute
+        if decision.get("action_routing") == "investigation_only":
+            disp_status = "investigation_only"
+            block_reason = (f"AI confidence {decision['confidence']:.0%} below 70% threshold "
+                            f"— investigation recorded, no action taken")
+            logging.info("[AGENT] investigation_only routing — no command queued (agent=%s conf=%.2f)",
+                         alert.agent_id, decision["confidence"])
 
-        allowed, block_reason = can_auto_execute(action, target, alert.agent_id, restart_count)
-        org_threshold = await _get_confidence_threshold(org_id or alert.org_id)
-        min_conf = max(org_threshold, _CONFIDENCE_THRESHOLDS.get(action, org_threshold))
-        low_conf = decision["confidence"] < min_conf
-
-        if allowed and decision["safe_to_auto_fix"] and not low_conf:
-            try:
-                from app.core.remediation_dispatch import safe_enqueue_command
-                dispatch_result = await safe_enqueue_command(
-                    db=None,
-                    org_id=alert.org_id,
-                    agent_id=alert.agent_id,
-                    command=action,
-                    target=target,
-                    args=None,
-                    role="system",
-                    initiated_by=None,
-                    llm_raw_response=raw or json.dumps(decision),
-                    correlation_id=None,
-                )
-                disp_status = "queued" if dispatch_result.get("dispatched") else "needs_approval"
-                logging.info("[AGENT] auto_safe dispatched: %s → %s (risk=%s)",
-                             action, target, dispatch_result.get("risk_level"))
-                asyncio.create_task(_schedule_feedback_check(
-                    alert.agent_id, action, target,
-                    cpu, memory, metrics.get("disk", 0.0),
-                    alert_context, exec_mode,
-                    org_id=alert.org_id,
-                ))
-            except HTTPException as _he:
-                disp_status = "blocked"
-                block_reason = _he.detail
-                logging.warning("[AGENT] auto_safe blocked by policy: %s", block_reason)
-            except Exception as _disp_exc:
-                disp_status = "error"
-                block_reason = str(_disp_exc)
-                logging.error("[AGENT] auto_safe dispatch failed: %s", _disp_exc)
         else:
-            if low_conf:
-                block_reason = (f"confidence {decision['confidence']:.2f} < "
-                                f"{min_conf:.2f} for {action} (org threshold: {org_threshold:.2f})")
-            disp_status = "needs_review"
-            logging.info("[AGENT] auto_safe blocked: %s", block_reason or "unsafe action")
+            restart_count = 0
+            try:
+                async with SessionLocal() as _db:
+                    from sqlalchemy import func as _sqlfunc
+                    one_hour_ago = _now() - timedelta(hours=1)
+                    row = await _db.execute(
+                        select(_sqlfunc.count()).where(
+                            AgentActionLog.agent_id == alert.agent_id,
+                            AgentActionLog.action == "restart_service",
+                            AgentActionLog.created_at >= one_hour_ago,
+                        )
+                    )
+                    restart_count = row.scalar() or 0
+            except Exception as _rc_exc:
+                logging.warning("[AGENT] Could not query restart count: %s", _rc_exc)
+
+            allowed, block_reason = can_auto_execute(action, target, alert.agent_id, restart_count)
+            org_threshold = await _get_confidence_threshold(org_id or alert.org_id)
+            min_conf = max(org_threshold, _CONFIDENCE_THRESHOLDS.get(action, org_threshold))
+            low_conf = decision["confidence"] < min_conf
+
+            if allowed and decision["safe_to_auto_fix"] and not low_conf:
+                try:
+                    from app.core.remediation_dispatch import safe_enqueue_command
+                    dispatch_result = await safe_enqueue_command(
+                        db=None,
+                        org_id=alert.org_id,
+                        agent_id=alert.agent_id,
+                        command=action,
+                        target=target,
+                        args=None,
+                        role="system",
+                        initiated_by=None,
+                        llm_raw_response=raw or json.dumps(decision),
+                        correlation_id=None,
+                    )
+                    disp_status = "queued" if dispatch_result.get("dispatched") else "needs_approval"
+                    logging.info("[AGENT] auto_safe dispatched: %s → %s (risk=%s)",
+                                 action, target, dispatch_result.get("risk_level"))
+                    asyncio.create_task(_schedule_feedback_check(
+                        alert.agent_id, action, target,
+                        cpu, memory, metrics.get("disk", 0.0),
+                        alert_context, exec_mode,
+                        org_id=alert.org_id,
+                    ))
+                except HTTPException as _he:
+                    disp_status = "blocked"
+                    block_reason = _he.detail
+                    logging.warning("[AGENT] auto_safe blocked by policy: %s", block_reason)
+                except Exception as _disp_exc:
+                    disp_status = "error"
+                    block_reason = str(_disp_exc)
+                    logging.error("[AGENT] auto_safe dispatch failed: %s", _disp_exc)
+            else:
+                if low_conf:
+                    block_reason = (f"confidence {decision['confidence']:.2f} < "
+                                    f"{min_conf:.2f} for {action} (org threshold: {org_threshold:.2f})")
+                disp_status = "needs_review"
+                logging.info("[AGENT] auto_safe blocked: %s", block_reason or "unsafe action")
 
     else:
         disp_status = "dry_run"
@@ -1668,7 +1677,9 @@ async def _lc_analyze(
         "safe_to_auto_fix":   decision.get("safe_to_auto_fix", False),
         "status":             disp_status,
         "decision_source":    decision.get("decision_source", "llm"),
-        "block_reason":       block_reason if disp_status in ("needs_review", "blocked") else None,
+        "block_reason":       block_reason if disp_status in ("needs_review", "blocked", "investigation_only") else None,
+        "investigation_id":   decision.get("investigation_id"),
+        "action_routing":     decision.get("action_routing"),
     }
 
     hist = _AI_HISTORY.setdefault(alert.agent_id, [])

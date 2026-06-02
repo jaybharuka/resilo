@@ -9,6 +9,7 @@ import Alerts from './components/Alerts';
 import Register from './components/Register';
 import Forbidden from './components/Forbidden';
 import RemoteAgents from './components/RemoteAgents';
+import RemediationApprovalPanel from './components/RemediationApprovalPanel';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
 import { ThemeProvider } from './context/ThemeContext';
@@ -21,6 +22,7 @@ import ResetPassword from './components/ResetPassword';
 import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
 import IncidentDeclare from './components/IncidentDeclare';
+import InvestigationPanel from './components/InvestigationPanel';
 import ConnectionStatus from './components/ConnectionStatus';
 import { RefreshCw } from 'lucide-react';
 
@@ -135,6 +137,8 @@ function AppShell() {
           <Route path="/dashboard"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="Dashboard failed to load"><Dashboard /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/alerts"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Alerts failed to load"><Alerts /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/approvals"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Approvals failed to load"><RemediationApprovalPanel /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/investigations" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Investigations failed to load"><InvestigationPanel /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/register"    element={<Register />} />
           <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />

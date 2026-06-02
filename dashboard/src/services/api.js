@@ -502,6 +502,26 @@ export const apiService = {
     catch { return []; }
   },
 
+  // Investigation engine endpoints
+  async listInvestigations(limit = 20, status = null, agentId = null) {
+    const params = new URLSearchParams({ limit });
+    if (status) params.set('status', status);
+    if (agentId) params.set('agent_id', agentId);
+    try { return (await api.get(`/investigations?${params}`)).data; }
+    catch { return { ok: false, count: 0, items: [] }; }
+  },
+  async getInvestigation(id) {
+    return (await api.get(`/investigations/${encodeURIComponent(id)}`)).data;
+  },
+  async getIncidentTimeline(incidentId) {
+    try { return (await api.get(`/incidents/${encodeURIComponent(incidentId)}/timeline`)).data; }
+    catch { return { ok: false, timeline: [] }; }
+  },
+  async getSimilarIncidents(incidentId, limit = 5) {
+    try { return (await api.get(`/incidents/${encodeURIComponent(incidentId)}/similar?limit=${limit}`)).data; }
+    catch { return { ok: false, similar: [] }; }
+  },
+
   // Intelligence endpoints
   async detectAnomalies(limit = 60) {
     const data = (await api.get(`/api/v1/anomalies/detect?limit=${limit}`)).data;

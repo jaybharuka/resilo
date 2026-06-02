@@ -22,6 +22,7 @@ from app.api.runtime import (build_agents_router, build_alerts_router,
 from app.api.v1_api import build_v1_router
 from app.api.intelligence_api import build_intelligence_router
 from app.api.prometheus_bridge import build_prometheus_router
+from app.api.investigations_api import router as investigations_router
 from app.core.database import init_db, wait_for_db
 
 metrics_router = build_metrics_router()
@@ -46,6 +47,7 @@ router.include_router(remediation_jobs_router)
 router.include_router(build_v1_router())
 router.include_router(build_intelligence_router())
 router.include_router(build_prometheus_router())
+router.include_router(investigations_router)
 
 app = FastAPI(title="core_api")
 app.add_middleware(

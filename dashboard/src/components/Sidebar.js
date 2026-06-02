@@ -2,23 +2,45 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { apiService } from '../services/api';
 import {
   LayoutDashboard, MessageSquare, BellRing,
-  Settings, Activity, Palette, LogOut, Monitor
+  Settings, Activity, Palette, LogOut, Monitor, CheckCircle, Search
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 const MONO = { fontFamily: "'IBM Plex Mono', monospace" };
 const UI   = { fontFamily: "'Outfit', sans-serif" };
 
 const Sidebar = () => {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, logout, role } = useAuth();
   const { cycleTheme, theme } = useTheme();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  useEffect(() => {
+    if (isAuthenticated && (role === 'admin' || role === 'devops')) {
+      const fetchPendingCount = async () => {
+        try {
+          const jobs = await apiService.getRemediationJobs(100, { status: 'queued' });
+          setPendingCount(Array.isArray(jobs) ? jobs.length : 0);
+        } catch (error) {
+          // Silently fail, don't show error
+        }
+      };
+
+      fetchPendingCount();
+      const interval = setInterval(fetchPendingCount, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated, role]);
 
   const navItems = [
     { to: '/remote-agents', icon: <Monitor size={15} />,         label: 'Remote Agents' },
     { to: '/dashboard',     icon: <LayoutDashboard size={15} />, label: 'Dashboard' },
     { to: '/alerts',        icon: <BellRing size={15} />,        label: 'Alerts' },
     { to: '/assistant',     icon: <MessageSquare size={15} />,   label: 'AI Assistant' },
+    ...(role === 'admin' || role === 'devops' ? [{ to: '/approvals', icon: <CheckCircle size={15} />, label: 'Approvals', badge: pendingCount }] : []),
+    { to: '/investigations', icon: <Search size={15} />, label: 'Investigations' },
     { to: '/settings',      icon: <Settings size={15} />,        label: 'Settings' },
   ];
 
@@ -51,9 +73,16 @@ const Sidebar = () => {
         {isAuthenticated ? (
           <>
             {navItems.map(item => (
-              <NavLink key={item.to} to={item.to} className={linkClass} style={({ isActive }) => ({ color: isActive ? '#F59E0B' : '#6B6357', ...UI })}>
-                <span className="shrink-0">{item.icon}</span>
-                {item.label}
+              <NavLink key={item.to} to={item.to} className={linkClass} style={({ isActive }) => ({ color: isActive ? '#F59E0B' : '#6B6357', ...UI, display: 'flex', alignItems: 'center', gap: 3, justifyContent: 'space-between' })}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <span className="shrink-0">{item.icon}</span>
+                  {item.label}
+                </span>
+                {item.badge && item.badge > 0 && (
+                  <span style={{ background: '#F87171', color: 'white', fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999, minWidth: 20, textAlign: 'center' }}>
+                    {item.badge}
+                  </span>
+                )}
               </NavLink>
             ))}
           </>
