@@ -3,6 +3,7 @@ investigations_api.py — REST endpoints for the investigation engine.
 
 Routes:
   GET  /investigations                     — list recent investigations for the org
+  GET  /investigations/stats               — AI observability metrics
   GET  /investigations/{id}               — get single investigation with full detail
   GET  /incidents/{incident_id}/timeline  — structured timeline for an incident
   GET  /incidents/{incident_id}/similar   — similar historical incidents from memory
@@ -10,10 +11,12 @@ Routes:
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.incident_memory import find_similar_incidents
@@ -65,6 +68,129 @@ def _inv_to_dict(inv: Investigation) -> dict[str, Any]:
         "timeline":           inv.timeline,
         "created_at":         inv.created_at.isoformat() if inv.created_at else None,
         "completed_at":       inv.completed_at.isoformat() if inv.completed_at else None,
+    }
+
+
+# ── GET /investigations/stats ────────────────────────────────────────────────
+# MUST be registered before /investigations/{id} so the literal "stats" is not
+# treated as an investigation_id path parameter.
+
+@router.get("/investigations/stats")
+async def investigation_stats(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    window_hours: int = Query(default=24, ge=1, le=168,
+                              description="Look-back window in hours"),
+) -> dict[str, Any]:
+    """
+    AI observability metrics for the investigation engine.
+
+    Returns:
+      - total_investigations   : count in window
+      - by_status              : {completed, running, failed}
+      - by_routing             : {auto_execute, manual_approval, investigation_only}
+      - avg_confidence         : mean confidence across completed investigations
+      - successful_fix_rate    : % where executed action resolved the incident
+      - false_positive_rate    : % of investigation_only that had prior similar incident
+      - avg_stage_at_failure   : stage where pipelines fail most
+      - top_root_causes        : top-5 most common root cause strings
+      - top_actions            : top-5 recommended actions
+      - memory_entries         : total rows in incident_memory for this org
+    """
+    payload = await _require_token(request)
+    org_id: str = payload.get("org_id", "")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No org_id in token")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+
+    result = await db.execute(
+        select(Investigation)
+        .where(Investigation.org_id == org_id)
+        .where(Investigation.created_at >= cutoff)
+        .order_by(desc(Investigation.created_at))
+    )
+    rows: list[Investigation] = result.scalars().all()
+
+    # ── Basic counts ──────────────────────────────────────────────────────────
+    by_status: dict[str, int] = Counter(r.status for r in rows)
+    by_routing: dict[str, int] = Counter(
+        r.action_routing or "unknown" for r in rows if r.status == "completed"
+    )
+
+    # ── Confidence ───────────────────────────────────────────────────────────
+    completed = [r for r in rows if r.status == "completed"]
+    confidences = [r.confidence for r in completed if r.confidence is not None]
+    avg_confidence = round(sum(confidences) / len(confidences), 3) if confidences else None
+
+    # ── Successful fix rate (from IncidentMemory) ─────────────────────────────
+    mem_result = await db.execute(
+        select(IncidentMemory)
+        .where(IncidentMemory.org_id == org_id)
+        .where(IncidentMemory.created_at >= cutoff)
+    )
+    mem_rows: list[IncidentMemory] = mem_result.scalars().all()
+
+    resolved   = sum(1 for m in mem_rows if m.success is True)
+    unresolved = sum(1 for m in mem_rows if m.success is False)
+    total_with_outcome = resolved + unresolved
+    successful_fix_rate = (
+        round(resolved / total_with_outcome, 3) if total_with_outcome > 0 else None
+    )
+
+    # ── False positive rate proxy ─────────────────────────────────────────────
+    # investigations_only where similar_incidents > 0 (known pattern, still low conf)
+    inv_only = [r for r in rows if r.action_routing == "investigation_only"]
+    fp_candidates = sum(
+        1 for r in inv_only
+        if r.similar_incidents and len(r.similar_incidents) > 0
+    )
+    false_positive_rate = (
+        round(fp_candidates / len(inv_only), 3) if inv_only else None
+    )
+
+    # ── Stage at failure ──────────────────────────────────────────────────────
+    failed = [r for r in rows if r.status == "failed"]
+    stage_counts: dict[str, int] = Counter(r.stage for r in failed if r.stage)
+
+    # ── Top root causes ───────────────────────────────────────────────────────
+    root_causes: list[str] = []
+    for r in completed:
+        if r.root_cause and isinstance(r.root_cause, dict):
+            rc = r.root_cause.get("root_cause", "")
+            if rc:
+                root_causes.append(rc[:120])   # truncate long strings
+    top_root_causes = [
+        {"root_cause": rc, "count": cnt}
+        for rc, cnt in Counter(root_causes).most_common(5)
+    ]
+
+    # ── Top recommended actions ───────────────────────────────────────────────
+    actions = [r.recommended_action for r in completed if r.recommended_action]
+    top_actions = [
+        {"action": a, "count": cnt}
+        for a, cnt in Counter(actions).most_common(5)
+    ]
+
+    # ── Memory bank size ─────────────────────────────────────────────────────
+    mem_count_result = await db.execute(
+        select(func.count()).where(IncidentMemory.org_id == org_id)
+    )
+    memory_entries = mem_count_result.scalar() or 0
+
+    return {
+        "ok":                   True,
+        "window_hours":         window_hours,
+        "total_investigations": len(rows),
+        "by_status":            dict(by_status),
+        "by_routing":           dict(by_routing),
+        "avg_confidence":       avg_confidence,
+        "successful_fix_rate":  successful_fix_rate,
+        "false_positive_rate":  false_positive_rate,
+        "stage_at_failure":     dict(stage_counts),
+        "top_root_causes":      top_root_causes,
+        "top_actions":          top_actions,
+        "memory_entries":       memory_entries,
     }
 
 

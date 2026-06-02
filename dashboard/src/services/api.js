@@ -503,6 +503,10 @@ export const apiService = {
   },
 
   // Investigation engine endpoints
+  async getInvestigationStats(windowHours = 24) {
+    try { return (await api.get(`/investigations/stats?window_hours=${windowHours}`)).data; }
+    catch { return null; }
+  },
   async listInvestigations(limit = 20, status = null, agentId = null) {
     const params = new URLSearchParams({ limit });
     if (status) params.set('status', status);

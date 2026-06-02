@@ -135,9 +135,40 @@ function SimilarCard({ match }) {
   );
 }
 
+// ── Stats bar ─────────────────────────────────────────────────────────────────
+function StatTile({ label, value, color }) {
+  return (
+    <div style={{ background: '#111827', borderRadius: 8, padding: '12px 16px', flex: 1, minWidth: 120 }}>
+      <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || '#e5e7eb' }}>{value ?? '—'}</div>
+    </div>
+  );
+}
+
+function StatsBar({ stats }) {
+  if (!stats) return null;
+  const conf = stats.avg_confidence != null ? `${(stats.avg_confidence * 100).toFixed(1)}%` : '—';
+  const fix  = stats.successful_fix_rate != null ? `${(stats.successful_fix_rate * 100).toFixed(0)}%` : '—';
+  const auto = stats.by_routing?.auto_execute || 0;
+  const manual = stats.by_routing?.manual_approval || 0;
+  const inv  = stats.by_routing?.investigation_only || 0;
+  return (
+    <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+      <StatTile label="Total" value={stats.total_investigations} />
+      <StatTile label="Avg Confidence" value={conf} color={stats.avg_confidence >= 0.70 ? '#10b981' : '#d97706'} />
+      <StatTile label="Fix Rate" value={fix} color={stats.successful_fix_rate >= 0.60 ? '#10b981' : '#ef4444'} />
+      <StatTile label="Auto Execute" value={auto} color="#dc2626" />
+      <StatTile label="Manual Approval" value={manual} color="#d97706" />
+      <StatTile label="Investigate Only" value={inv} color="#6366f1" />
+      <StatTile label="Memory Entries" value={stats.memory_entries} />
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 export default function InvestigationPanel() {
   const [investigations, setInvestigations] = useState([]);
+  const [stats, setStats] = useState(null);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -150,8 +181,12 @@ export default function InvestigationPanel() {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiService.listInvestigations(30, statusFilter || null);
-      setInvestigations(res.items || []);
+      const [listRes, statsRes] = await Promise.all([
+        apiService.listInvestigations(30, statusFilter || null),
+        apiService.getInvestigationStats(24),
+      ]);
+      setInvestigations(listRes.items || []);
+      setStats(statsRes);
     } catch (err) {
       setError(err.message || 'Failed to load investigations');
     } finally {
@@ -220,6 +255,8 @@ export default function InvestigationPanel() {
           </button>
         </div>
       </div>
+
+      <StatsBar stats={stats} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 20 }}>
         {/* ── Left: Investigation list ── */}
