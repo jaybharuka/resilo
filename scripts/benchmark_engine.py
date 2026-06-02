@@ -273,6 +273,41 @@ def _matches_expected(text: str, keywords: list[str]) -> bool:
     return any(kw.lower() in text_lower for kw in keywords)
 
 
+_VALID_ACTIONS = frozenset([
+    "free_memory", "disk_cleanup", "clear_cache", "run_gc",
+    "kill_process", "restart_service", "notify_only",
+])
+
+
+def _normalize_action(raw: str, root_cause: str) -> str:
+    """Coerce LLM action output to a valid enum value.
+    Falls back to keyword inference from root_cause text when blank/invalid.
+    """
+    # Strip whitespace and check if already valid
+    cleaned = (raw or "").strip().lower().replace("-", "_")
+    if cleaned in _VALID_ACTIONS:
+        return cleaned
+    # Partial match against valid actions (e.g. 'kill process' -> 'kill_process')
+    for v in _VALID_ACTIONS:
+        if v.replace("_", " ") in cleaned or cleaned in v:
+            return v
+    # Infer from root_cause text
+    rc = root_cause.lower()
+    if any(k in rc for k in ["oom", "memory", "killed", "heap", "swap"]):
+        return "free_memory"
+    if any(k in rc for k in ["disk", "space", "log", "inode"]):
+        return "disk_cleanup"
+    if any(k in rc for k in ["connection", "pool", "postgres", "sql"]):
+        return "notify_only"
+    if any(k in rc for k in ["network", "timeout", "upstream", "circuit"]):
+        return "notify_only"
+    if any(k in rc for k in ["nginx", "service", "crash", "failed"]):
+        return "restart_service"
+    if any(k in rc for k in ["cpu", "loop", "process", "runaway"]):
+        return "kill_process"
+    return raw  # return original if nothing matches
+
+
 def _score_scenario(
     scenario: dict[str, Any],
     hypotheses: list[dict],
@@ -285,7 +320,8 @@ def _score_scenario(
 
     root_cause = rca.get("root_cause", "")
     confidence = float(rca.get("confidence", 0.0))
-    rec_action = rca.get("recommended_action", "")
+    raw_action = rca.get("recommended_action", "")
+    rec_action = _normalize_action(raw_action, root_cause)
 
     top1 = _matches_expected(root_cause, keywords)
     top3 = top1 or any(

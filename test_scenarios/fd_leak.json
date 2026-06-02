@@ -1,0 +1,49 @@
+{
+  "scenario_id": "fd_leak",
+  "description": "File descriptor leak in long-running Python worker — 'too many open files' errors, metrics all look normal",
+  "metrics": {
+    "cpu": 24.0,
+    "memory": 51.0,
+    "disk": 40.0,
+    "load_avg_1m": 1.4,
+    "load_avg_5m": 1.3,
+    "load_avg_15m": 1.2,
+    "swap_percent": 3.0,
+    "net_established": 88
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3", "pid": 7712, "cpu_percent": 19.1, "memory_percent": 22.3},
+      {"name": "postgres", "pid": 3312,"cpu_percent":  4.2, "memory_percent": 8.1}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 7712, "cpu_percent": 19.1, "memory_percent": 22.3}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",     "message": "OSError: [Errno 24] Too many open files: '/var/run/app/worker.sock'"},
+    {"level": "ERROR", "source": "app",     "message": "OSError: [Errno 24] Too many open files"},
+    {"level": "ERROR", "source": "app",     "message": "ConnectionRefusedError: [Errno 111] Connection refused (fd exhausted)"},
+    {"level": "WARN",  "source": "kernel",  "message": "process 7712 (python3) exceeded open file limit: 65536/65536"}
+  ],
+  "context": {
+    "process_tree": {
+      "pid_7712": {
+        "open_fds": 65534,
+        "fd_limit_soft": 65536,
+        "fd_limit_hard": 65536,
+        "uptime_hours": 312,
+        "leaked_sockets": "47821 sockets in CLOSE_WAIT state"
+      }
+    }
+  },
+  "alert": {
+    "category": "service",
+    "severity": "high",
+    "detail": "Worker service degraded — file descriptor exhaustion detected"
+  },
+  "expected_root_cause": "file descriptor leak",
+  "expected_root_cause_keywords": ["file descriptor", "fd leak", "too many open files", "CLOSE_WAIT", "fd exhausted", "open files", "socket leak", "errno 24"],
+  "expected_action": "restart_service",
+  "acceptable_actions": ["restart_service", "kill_process", "notify_only"]
+}

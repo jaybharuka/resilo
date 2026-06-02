@@ -1,0 +1,54 @@
+{
+  "scenario_id": "inode_exhaustion",
+  "description": "Inode table exhausted by millions of small temp files — disk usage is only 41% but no new files can be created",
+  "metrics": {
+    "cpu": 16.0,
+    "memory": 45.0,
+    "disk": 41.0,
+    "load_avg_1m": 1.2,
+    "load_avg_5m": 1.1,
+    "load_avg_15m": 1.0,
+    "swap_percent": 2.0,
+    "net_established": 29
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3", "pid": 6621, "cpu_percent": 11.2, "memory_percent": 9.1},
+      {"name": "nginx",   "pid":  882, "cpu_percent":  3.4, "memory_percent": 1.3}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 6621, "cpu_percent": 11.2, "memory_percent": 9.1}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app",    "message": "OSError: [Errno 28] No space left on device (inode exhausted): '/tmp/sess_8f2a3b'"},
+    {"level": "ERROR", "source": "app",    "message": "OSError: [Errno 28] No space left on device (inode exhausted): '/tmp/sess_9c1d4e'"},
+    {"level": "ERROR", "source": "nginx",  "message": "open() failed (28: No space left on device) while writing upstream temporary files"},
+    {"level": "WARN",  "source": "cron",   "message": "tmpwatch: /tmp: cannot create file: No space left on device"}
+  ],
+  "context": {
+    "disk_largest_dirs": {
+      "inode_usage": {
+        "filesystem": "/dev/sda1",
+        "inodes_total": "4194304",
+        "inodes_used": "4194301",
+        "inodes_free": "3",
+        "inode_use_pct": "100%"
+      },
+      "top_inode_dirs": [
+        "/tmp: 3,847,221 files (session files from leaked PHP sessions)",
+        "/var/spool/postfix/deferred: 241,812 files",
+        "/var/cache/app: 82,441 files"
+      ]
+    }
+  },
+  "alert": {
+    "category": "disk",
+    "severity": "critical",
+    "detail": "File creation failing across all services — disk shows 41% used"
+  },
+  "expected_root_cause": "inode exhaustion",
+  "expected_root_cause_keywords": ["inode", "inode exhaustion", "no space left", "4194304", "session files", "tmp", "inode_use_pct", "100%"],
+  "expected_action": "disk_cleanup",
+  "acceptable_actions": ["disk_cleanup", "notify_only"]
+}

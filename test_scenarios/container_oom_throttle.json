@@ -1,0 +1,51 @@
+{
+  "scenario_id": "container_oom_throttle",
+  "description": "Container memory limit hit causing CPU throttling — symptoms look like CPU issue but root cause is cgroup memory limit",
+  "metrics": {
+    "cpu": 88.0,
+    "memory": 71.0,
+    "disk": 38.0,
+    "load_avg_1m": 6.2,
+    "load_avg_5m": 5.8,
+    "load_avg_15m": 3.1,
+    "swap_percent": 12.0,
+    "net_established": 44
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "java",    "pid": 1001, "cpu_percent": 82.1, "memory_percent": 68.4},
+      {"name": "systemd", "pid":    1, "cpu_percent":  1.2, "memory_percent":  0.3}
+    ],
+    "by_mem": [
+      {"name": "java", "pid": 1001, "cpu_percent": 82.1, "memory_percent": 68.4}
+    ]
+  },
+  "logs": [
+    {"level": "WARN",  "source": "app",    "message": "GC overhead limit exceeded — application pausing"},
+    {"level": "WARN",  "source": "app",    "message": "GC overhead limit exceeded — application pausing"},
+    {"level": "ERROR", "source": "kernel", "message": "memory cgroup out of memory: Kill process 1001 (java)"},
+    {"level": "INFO",  "source": "app",    "message": "JVM heap usage: 3891MB / 4096MB (95%)"}
+  ],
+  "context": {
+    "memory_breakdown": {
+      "cgroup_limits": {
+        "memory.limit_in_bytes": "4294967296",
+        "memory.usage_in_bytes": "4289200128",
+        "memory.failcnt": "847"
+      },
+      "meminfo": {
+        "MemTotal": "16384000 kB",
+        "MemAvailable": "4821504 kB"
+      }
+    }
+  },
+  "alert": {
+    "category": "cpu",
+    "severity": "critical",
+    "detail": "CPU utilization 88% — application throughput degraded by 70%"
+  },
+  "expected_root_cause": "container memory limit",
+  "expected_root_cause_keywords": ["cgroup", "container", "memory limit", "heap", "java", "gc overhead", "memory.limit", "oom", "jvm"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "run_gc", "restart_service", "notify_only"]
+}

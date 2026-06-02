@@ -1,0 +1,48 @@
+{
+  "scenario_id": "cascading_restart_loop",
+  "description": "Misconfigured health check causes systemd to restart service repeatedly — CPU spike is a symptom, not the cause",
+  "metrics": {
+    "cpu": 79.0,
+    "memory": 48.0,
+    "disk": 33.0,
+    "load_avg_1m": 4.8,
+    "load_avg_5m": 3.1,
+    "load_avg_15m": 1.4,
+    "swap_percent": 3.0,
+    "net_established": 12
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3",  "pid": 9921, "cpu_percent": 71.2, "memory_percent": 14.1},
+      {"name": "systemd",  "pid":    1, "cpu_percent":  4.1, "memory_percent":  0.4}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 9921, "cpu_percent": 71.2, "memory_percent": 14.1}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "systemd", "message": "api-worker.service: Main process exited, code=exited, status=1/FAILURE"},
+    {"level": "ERROR", "source": "systemd", "message": "api-worker.service: Failed with result 'exit-code'"},
+    {"level": "INFO",  "source": "systemd", "message": "api-worker.service: Scheduled restart job, restart counter is at 23"},
+    {"level": "ERROR", "source": "app",     "message": "RuntimeError: database connection failed during startup health check"},
+    {"level": "INFO",  "source": "systemd", "message": "api-worker.service: Start request repeated too quickly (23 restarts in 4 minutes)"}
+  ],
+  "context": {
+    "service_state": {
+      "failed_units": [
+        "api-worker.service  loaded activating auto-restart  API Worker Service"
+      ],
+      "restart_count": 23,
+      "restart_interval_s": 10
+    }
+  },
+  "alert": {
+    "category": "cpu",
+    "severity": "high",
+    "detail": "CPU utilization 79% — service restart loop detected"
+  },
+  "expected_root_cause": "service restart loop",
+  "expected_root_cause_keywords": ["restart loop", "restart", "health check", "repeated", "exit-code", "startup", "systemd", "api-worker", "database connection"],
+  "expected_action": "restart_service",
+  "acceptable_actions": ["restart_service", "notify_only", "kill_process"]
+}

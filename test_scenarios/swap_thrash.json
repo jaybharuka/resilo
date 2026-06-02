@@ -1,0 +1,55 @@
+{
+  "scenario_id": "swap_thrash",
+  "description": "Swap thrashing causing I/O wait spike — metrics look like disk issue but root cause is memory overcommit",
+  "metrics": {
+    "cpu": 22.0,
+    "memory": 96.2,
+    "disk": 44.0,
+    "load_avg_1m": 18.4,
+    "load_avg_5m": 14.1,
+    "load_avg_15m": 7.2,
+    "swap_percent": 99.4,
+    "net_established": 31,
+    "disk_read_mbps": 312.0,
+    "disk_write_mbps": 289.0
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "kswapd0",  "pid":  23, "cpu_percent": 14.1, "memory_percent": 0.1},
+      {"name": "java",     "pid": 881, "cpu_percent":  6.2, "memory_percent": 81.4}
+    ],
+    "by_mem": [
+      {"name": "java", "pid": 881, "cpu_percent": 6.2, "memory_percent": 81.4}
+    ]
+  },
+  "logs": [
+    {"level": "WARN",  "source": "kernel", "message": "kswapd: page reclaim stalled — system under severe memory pressure"},
+    {"level": "WARN",  "source": "kernel", "message": "INFO: task kswapd0:23 blocked for more than 120 seconds"},
+    {"level": "ERROR", "source": "app",    "message": "java.lang.OutOfMemoryError: GC overhead limit exceeded"},
+    {"level": "WARN",  "source": "kernel", "message": "swap: nearly full — 99.4% used"}
+  ],
+  "context": {
+    "memory_breakdown": {
+      "meminfo": {
+        "MemTotal": "8192000 kB",
+        "MemAvailable": "114688 kB",
+        "SwapTotal": "8192000 kB",
+        "SwapFree": "49152 kB",
+        "Committed_AS": "24576000 kB"
+      },
+      "vmstat": {
+        "si_swap_in_per_s": 4821,
+        "so_swap_out_per_s": 3914
+      }
+    }
+  },
+  "alert": {
+    "category": "disk",
+    "severity": "critical",
+    "detail": "Disk I/O wait 89% — system throughput near zero"
+  },
+  "expected_root_cause": "swap thrashing",
+  "expected_root_cause_keywords": ["swap", "thrash", "kswapd", "memory overcommit", "swap in", "swap out", "memory pressure", "paging", "vmstat", "committed_as"],
+  "expected_action": "free_memory",
+  "acceptable_actions": ["free_memory", "kill_process", "run_gc", "restart_service"]
+}

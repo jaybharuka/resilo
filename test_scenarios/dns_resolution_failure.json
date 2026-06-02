@@ -1,0 +1,46 @@
+{
+  "scenario_id": "dns_resolution_failure",
+  "description": "Internal DNS resolver down causing all service-to-service calls to timeout with generic 'connection refused' errors",
+  "metrics": {
+    "cpu": 18.0,
+    "memory": 44.0,
+    "disk": 29.0,
+    "load_avg_1m": 1.1,
+    "load_avg_5m": 1.0,
+    "load_avg_15m": 0.9,
+    "swap_percent": 1.0,
+    "net_established": 8
+  },
+  "top_processes": {
+    "by_cpu": [
+      {"name": "python3", "pid": 4421, "cpu_percent": 12.1, "memory_percent": 6.2},
+      {"name": "nginx",   "pid":  882, "cpu_percent":  3.4, "memory_percent": 1.1}
+    ],
+    "by_mem": [
+      {"name": "python3", "pid": 4421, "cpu_percent": 12.1, "memory_percent": 6.2}
+    ]
+  },
+  "logs": [
+    {"level": "ERROR", "source": "app", "message": "requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"},
+    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'auth-service.internal'"},
+    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'db.internal'"},
+    {"level": "ERROR", "source": "app", "message": "socket.gaierror: [Errno -2] Name or service not known: 'cache.internal'"}
+  ],
+  "context": {
+    "net_connection_summary": {
+      "dns_queries_failed": 847,
+      "dns_queries_ok": 0,
+      "nameserver": "10.0.0.53",
+      "nameserver_reachable": false
+    }
+  },
+  "alert": {
+    "category": "network",
+    "severity": "critical",
+    "detail": "Service mesh down — all inter-service calls failing with connection errors"
+  },
+  "expected_root_cause": "DNS resolver failure",
+  "expected_root_cause_keywords": ["dns", "resolver", "name or service not known", "gaierror", "nameserver", "resolution", "internal", "10.0.0.53"],
+  "expected_action": "notify_only",
+  "acceptable_actions": ["notify_only", "restart_service"]
+}
