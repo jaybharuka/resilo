@@ -23,6 +23,7 @@ import AcceptInvite from './components/AcceptInvite';
 import HealthRibbon from './components/HealthRibbon';
 import IncidentDeclare from './components/IncidentDeclare';
 import InvestigationPanel from './components/InvestigationPanel';
+import EvalDashboard from './components/EvalDashboard';
 import ConnectionStatus from './components/ConnectionStatus';
 import { RefreshCw } from 'lucide-react';
 
@@ -139,6 +140,7 @@ function AppShell() {
           <Route path="/assistant"   element={<ProtectedRoute><ErrorBoundary fallbackTitle="AI Assistant failed to load"><AIAssistant /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/approvals"      element={<ProtectedRoute><ErrorBoundary fallbackTitle="Approvals failed to load"><RemediationApprovalPanel /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/investigations" element={<ProtectedRoute><ErrorBoundary fallbackTitle="Investigations failed to load"><InvestigationPanel /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/eval"          element={<ProtectedRoute><ErrorBoundary fallbackTitle="Eval Dashboard failed to load"><EvalDashboard /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/settings"    element={<ProtectedRoute><ErrorBoundary fallbackTitle="Settings failed to load"><Settings /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/register"    element={<Register />} />
           <Route path="/redeem"      element={<Navigate to="/accept-invite" replace />} />

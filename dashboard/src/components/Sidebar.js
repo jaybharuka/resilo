@@ -5,7 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import {
   LayoutDashboard, MessageSquare, BellRing,
-  Settings, Activity, Palette, LogOut, Monitor, CheckCircle, Search
+  Settings, Activity, Palette, LogOut, Monitor, CheckCircle, Search, BarChart2
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -41,6 +41,7 @@ const Sidebar = () => {
     { to: '/assistant',     icon: <MessageSquare size={15} />,   label: 'AI Assistant' },
     ...(role === 'admin' || role === 'devops' ? [{ to: '/approvals', icon: <CheckCircle size={15} />, label: 'Approvals', badge: pendingCount }] : []),
     { to: '/investigations', icon: <Search size={15} />, label: 'Investigations' },
+    { to: '/eval',           icon: <BarChart2 size={15} />, label: 'Evaluation' },
     { to: '/settings',      icon: <Settings size={15} />,        label: 'Settings' },
   ];
 

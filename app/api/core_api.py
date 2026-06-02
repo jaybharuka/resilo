@@ -125,6 +125,7 @@ async def _startup() -> None:
                 ("memories_used_in_reasoning", "INTEGER"),
                 ("context_evidence",           "JSON"),
                 ("llm_cost",                   "JSON"),
+                ("evidence_contribution",      "JSON"),
             ]:
                 await conn.execute(text(
                     f"ALTER TABLE investigations ADD COLUMN IF NOT EXISTS {col} {typ}"

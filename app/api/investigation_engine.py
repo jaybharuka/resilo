@@ -129,6 +129,74 @@ class InvestigationResult(BaseModel):
     memory_id: str | None = None
     # ── Cost telemetry (Phase 5) ─────────────────────────────────────────────
     llm_cost: dict = Field(default_factory=dict)  # {llm_calls, est_tokens, total_llm_ms, avg_llm_ms}
+    # ── Evidence contribution (Phase 5) ──────────────────────────────────────
+    evidence_contribution: dict = Field(default_factory=dict)  # {logs_helped, memory_helped, context_helped, planner_helped}
+
+
+# ── Evidence contribution scorer ────────────────────────────────────────────────
+
+def _score_evidence_contribution(
+    evidence: "Evidence",
+    rca: "RootCauseAnalysis",
+    similar: list[dict],
+    memories_used: int,
+) -> dict[str, Any]:
+    """
+    Heuristically determine which evidence sources materially influenced
+    the RCA conclusion.  No extra LLM call — derived from existing artefacts.
+
+    Logic:
+      logs_helped    — error lines > 0 AND any top_error keyword appears in root_cause
+      memory_helped  — at least one retrieved memory was referenced in rca.historical_matches
+      context_helped — context_evidence has sections AND any section key appears in root_cause
+      planner_helped — planner gathered data (planner key in context_evidence)
+    """
+    rc_lower = rca.root_cause.lower()
+    evidence_text = " ".join(rca.supporting_evidence).lower()
+    combined = rc_lower + " " + evidence_text
+
+    # Logs: did any logged error string appear verbatim or near-verbatim in the RCA?
+    logs_helped = False
+    if evidence.error_line_count > 0:
+        for line in evidence.top_errors[:10]:
+            # take the first 6 words of the log line as a fingerprint
+            words = line.lower().split()
+            if len(words) >= 3 and any(
+                " ".join(words[i : i + 3]) in combined for i in range(min(len(words) - 2, 5))
+            ):
+                logs_helped = True
+                break
+        # fallback: if error_line_count high and confidence ≥ 0.7, logs likely helped
+        if not logs_helped and evidence.error_line_count >= 3 and rca.confidence >= 0.70:
+            logs_helped = True
+
+    # Memory: referenced in historical_matches?
+    memory_helped = memories_used > 0
+
+    # Context: any context section key name appears in combined text?
+    ctx_keys = [
+        k for k in evidence.context_evidence.keys() if k != "planner"
+    ]
+    context_helped = bool(ctx_keys) and any(
+        k.replace("_", " ") in combined or k.replace("_", "") in combined
+        for k in ctx_keys
+    )
+    # fallback: if context was collected and confidence is high, it likely helped
+    if not context_helped and ctx_keys and rca.confidence >= 0.75:
+        context_helped = True
+
+    # Planner: did it gather additional evidence?
+    planner_helped = bool(evidence.context_evidence.get("planner"))
+
+    return {
+        "logs_helped":    logs_helped,
+        "memory_helped":  memory_helped,
+        "context_helped": context_helped,
+        "planner_helped": planner_helped,
+        "error_lines":    evidence.error_line_count,
+        "memory_matches": len(similar),
+        "context_sections": len(ctx_keys),
+    }
 
 
 # ── LLM cost tracker ────────────────────────────────────────────────────────
@@ -642,6 +710,7 @@ async def _persist_investigation(
     timeline: list[dict],
     retrieval_telemetry: dict | None = None,
     llm_cost: dict | None = None,
+    evidence_contribution: dict | None = None,
 ) -> None:
     """Upsert Investigation row into DB."""
     telem = retrieval_telemetry or {}
@@ -681,6 +750,7 @@ async def _persist_investigation(
             inv.memories_used_in_reasoning  = memories_used
             inv.context_evidence            = evidence.context_evidence or {}
             inv.llm_cost                    = llm_cost or {}
+            inv.evidence_contribution       = evidence_contribution or {}
             inv.completed_at                = datetime.now(timezone.utc)
             await db.commit()
     except Exception as exc:
@@ -883,11 +953,20 @@ async def run_investigation(
 
     llm_cost = tracker.summary() if tracker else {}
 
+    # ── Evidence contribution scoring ─────────────────────────────────────────
+    hist_refs  = rca.historical_matches or []
+    mem_titles = [m.get("title", "") for m in (similar or [])]
+    memories_used_count = sum(
+        1 for title in mem_titles
+        if title and any(title[:40].lower() in ref.lower() for ref in hist_refs)
+    )
+    ev_contribution = _score_evidence_contribution(evidence, rca, similar, memories_used_count)
+
     # ── Persist Investigation ─────────────────────────────────────────────────
     await _persist_investigation(
         inv_id, org_id, agent_id, alert.id,
         evidence, similar, hypotheses, rca, recommended_action, routing, timeline,
-        retrieval_telemetry, llm_cost,
+        retrieval_telemetry, llm_cost, ev_contribution,
     )
 
     # ── Save to Incident Memory ───────────────────────────────────────────────
@@ -939,6 +1018,7 @@ async def run_investigation(
         timeline=timeline,
         memory_id=memory_id,
         llm_cost=llm_cost,
+        evidence_contribution=ev_contribution,
     )
 
 

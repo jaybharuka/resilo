@@ -739,6 +739,7 @@ class Investigation(Base):
     context_evidence:           Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {process_tree, oom_history, pg_connections, ...}
     # ── LLM cost telemetry (Phase 5) ────────────────────────────────────────────
     llm_cost:                   Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {llm_calls, est_tokens, total_llm_ms, avg_llm_ms}
+    evidence_contribution:      Mapped[Optional[dict]]  = mapped_column(JSON, nullable=True)         # {logs_helped, memory_helped, context_helped, planner_helped}
     created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

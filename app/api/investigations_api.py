@@ -314,6 +314,70 @@ async def investigation_stats(
                 3
             ),
         },
+        "evidence_contribution": _aggregate_contribution(completed),
+    }
+
+
+def _aggregate_contribution(rows: list) -> dict[str, Any]:
+    """Aggregate evidence_contribution flags across completed investigations."""
+    n = len(rows)
+    if n == 0:
+        return {}
+    contrib_rows = [r for r in rows if r.evidence_contribution]
+    if not contrib_rows:
+        return {"note": "no contribution data yet — run investigations first"}
+    cn = len(contrib_rows)
+    logs_helped    = sum(1 for r in contrib_rows if r.evidence_contribution.get("logs_helped"))
+    memory_helped  = sum(1 for r in contrib_rows if r.evidence_contribution.get("memory_helped"))
+    context_helped = sum(1 for r in contrib_rows if r.evidence_contribution.get("context_helped"))
+    planner_helped = sum(1 for r in contrib_rows if r.evidence_contribution.get("planner_helped"))
+    return {
+        "investigations_scored": cn,
+        "logs_helped_rate":    round(logs_helped    / cn, 3),
+        "memory_helped_rate":  round(memory_helped  / cn, 3),
+        "context_helped_rate": round(context_helped / cn, 3),
+        "planner_helped_rate": round(planner_helped / cn, 3),
+        "logs_helped_count":    logs_helped,
+        "memory_helped_count":  memory_helped,
+        "context_helped_count": context_helped,
+        "planner_helped_count": planner_helped,
+    }
+
+
+# ── GET /investigations/benchmark/trends ─────────────────────────────────────
+
+@router.get("/investigations/benchmark/trends")
+async def benchmark_trends(
+    request: Request,
+) -> dict[str, Any]:
+    """
+    Serve the leaderboard.json as an API response for the Evaluation Dashboard.
+    Returns the rolling benchmark history keyed by commit.
+    """
+    await _require_token(request)
+
+    import pathlib, json as _json
+    lb_path = pathlib.Path(__file__).parent.parent.parent / "benchmark_results" / "leaderboard.json"
+    if not lb_path.exists():
+        return {"ok": True, "entries": [], "note": "No benchmark runs yet. Run: python scripts/benchmark_engine.py --ab"}
+
+    try:
+        entries = _json.loads(lb_path.read_text())
+    except Exception:
+        return {"ok": False, "error": "Could not read leaderboard.json"}
+
+    # Enrich with human-readable timestamps
+    import datetime as _dt
+    for e in entries:
+        ts = e.get("timestamp")
+        if ts:
+            e["run_date"] = _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M UTC")
+
+    return {
+        "ok":          True,
+        "entry_count": len(entries),
+        "latest":      entries[-1] if entries else None,
+        "entries":     entries,
     }
 
 
@@ -412,6 +476,7 @@ async def explain_investigation(
     hypotheses: list = inv.hypotheses or []
     ctx_evidence: dict = inv.context_evidence or {}
     llm_cost: dict = inv.llm_cost or {}
+    ev_contribution: dict = inv.evidence_contribution or {}
 
     # ── Evidence sources used ─────────────────────────────────────────────────
     log_line_count    = evidence.get("log_line_count", 0)
@@ -524,6 +589,15 @@ async def explain_investigation(
             "avg_ms":      llm_cost.get("avg_llm_ms", 0),
         },
         "timeline": timeline_highlights,
+        "evidence_contribution": {
+            "logs_helped":    ev_contribution.get("logs_helped",    False),
+            "memory_helped":  ev_contribution.get("memory_helped",  False),
+            "context_helped": ev_contribution.get("context_helped", False),
+            "planner_helped": ev_contribution.get("planner_helped", False),
+            "error_lines":    ev_contribution.get("error_lines",    0),
+            "memory_matches": ev_contribution.get("memory_matches", 0),
+            "context_sections": ev_contribution.get("context_sections", 0),
+        },
         "created_at":   inv.created_at.isoformat() if inv.created_at else None,
         "completed_at": inv.completed_at.isoformat() if inv.completed_at else None,
     }
