@@ -28,8 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Agent, MetricSnapshot, Organization, get_db
 
-PROMETHEUS_WEBHOOK_TOKEN: str = os.getenv("PROMETHEUS_WEBHOOK_TOKEN", "")
-
 _log = logging.getLogger(__name__)
 
 
@@ -40,10 +38,11 @@ def _now() -> datetime:
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 async def _check_prom_auth(request: Request) -> None:
-    if not PROMETHEUS_WEBHOOK_TOKEN:
+    token = os.getenv("PROMETHEUS_WEBHOOK_TOKEN", "")
+    if not token:
         return  # dev mode — accept unauthenticated
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != PROMETHEUS_WEBHOOK_TOKEN:
+    if not auth.startswith("Bearer ") or auth[7:] != token:
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
 
