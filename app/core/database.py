@@ -603,6 +603,77 @@ class AgentActionLog(Base):
     remediation_job:   Mapped[Optional["RemediationJob"]] = relationship("RemediationJob", backref="action_logs")
 
 
+# ── Incident Memory (historical knowledge base) ───────────────────────────────
+
+class IncidentMemory(Base):
+    """
+    Persistent knowledge base entry for every completed AI investigation.
+    Used by find_similar_incidents() to enrich future LLM prompts with
+    historical context before calling Gemini.
+    """
+    __tablename__ = "incident_memory"
+    __table_args__ = (
+        Index("ix_incmem_org_category", "org_id", "category"),
+        Index("ix_incmem_org_created", "org_id", "created_at"),
+    )
+
+    id:                 Mapped[str]            = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id:             Mapped[str]            = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    incident_id:        Mapped[Optional[str]]  = mapped_column(String(100), nullable=True, index=True)
+    alert_id:           Mapped[Optional[str]]  = mapped_column(String(36), nullable=True)
+    agent_id:           Mapped[Optional[str]]  = mapped_column(String(36), nullable=True, index=True)
+    title:              Mapped[str]            = mapped_column(String(500), nullable=False)
+    severity:           Mapped[str]            = mapped_column(String(20), nullable=False)
+    category:           Mapped[str]            = mapped_column(String(50), nullable=False)          # cpu|memory|disk|network|fleet
+    metrics_snapshot:   Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)                # {cpu, memory, disk, load_avg_1m, ...}
+    root_cause:         Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    reasoning:          Mapped[Optional[str]]  = mapped_column(Text, nullable=True)                # full LLM chain-of-thought
+    hypotheses:         Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{cause, confidence, evidence}]
+    recommended_action: Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
+    executed_action:    Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
+    success:            Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    resolution_time:    Mapped[Optional[float]]= mapped_column(Float, nullable=True)               # seconds from first alert to resolve
+    tags:               Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # keyword tags for similarity scoring
+    created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    resolved_at:        Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ── Investigation (multi-stage AI investigation workflow) ─────────────────────
+
+class Investigation(Base):
+    """
+    Tracks a single multi-stage AI investigation lifecycle from alert detection
+    through evidence collection, hypothesis generation, root cause analysis,
+    and action planning.
+
+    Stages: EVIDENCE_COLLECTION → HISTORICAL_ANALYSIS → HYPOTHESIS_GENERATION
+            → ROOT_CAUSE_ANALYSIS → ACTION_PLANNING → completed
+    """
+    __tablename__ = "investigations"
+    __table_args__ = (
+        Index("ix_investigation_org_status", "org_id", "status"),
+        Index("ix_investigation_agent_created", "agent_id", "created_at"),
+    )
+
+    id:                 Mapped[str]            = mapped_column(String(100), primary_key=True)      # INV-YYYYMMDD-XXXXXX
+    org_id:             Mapped[str]            = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id:           Mapped[str]            = mapped_column(String(36), nullable=False, index=True)
+    alert_id:           Mapped[Optional[str]]  = mapped_column(String(36), nullable=True, index=True)
+    incident_id:        Mapped[Optional[str]]  = mapped_column(String(100), nullable=True, index=True)
+    status:             Mapped[str]            = mapped_column(String(20), default="running", nullable=False)   # running|completed|failed
+    stage:              Mapped[str]            = mapped_column(String(30), default="EVIDENCE_COLLECTION", nullable=False)
+    evidence:           Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
+    similar_incidents:  Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
+    hypotheses:         Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
+    root_cause:         Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    recommended_action: Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
+    confidence:         Mapped[float]          = mapped_column(Float, default=0.0, nullable=False)
+    action_routing:     Mapped[Optional[str]]  = mapped_column(String(30), nullable=True)          # auto_execute|manual_approval|investigation_only
+    timeline:           Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # [{timestamp, event}]
+    created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    completed_at:       Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 async def wait_for_db() -> None:
     """
     Retry the database connection until it succeeds or retries are exhausted.
