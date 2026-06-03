@@ -1226,7 +1226,27 @@ async def _dispatch_action(action: str, target: str, params: dict | None = None)
 
 
 async def _call_llm(system_prompt: str, user_message: str) -> str:
-    """Gemini via direct REST API (httpx) — avoids google-generativeai SDK version conflicts."""
+    """LLM caller — routes to Ollama (local) or Gemini REST based on LLM_BACKEND env var."""
+    backend = os.environ.get("LLM_BACKEND", "gemini").lower()
+
+    if backend == "ollama":
+        ollama_url   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        model_name   = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_message},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 4096},
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{ollama_url}/api/chat", json=payload)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
+
+    # ── Gemini REST (default) ──────────────────────────────────────────────
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) not set")

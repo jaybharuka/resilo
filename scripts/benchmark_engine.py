@@ -49,7 +49,11 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 # ── LLM caller (mirrors investigation_engine) ─────────────────────────────────
 
-_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+_GEMINI_MODEL  = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+_LLM_BACKEND   = os.getenv("LLM_BACKEND", "gemini").lower()
+_OLLAMA_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+_OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+_ACTIVE_MODEL  = _OLLAMA_MODEL if _LLM_BACKEND == "ollama" else _GEMINI_MODEL
 
 _REPAIR_SYSTEM = (
     "You are a JSON repair assistant. "
@@ -59,6 +63,24 @@ _REPAIR_SYSTEM = (
 
 
 async def _call_gemini(system_prompt: str, user_msg: str) -> str:
+    """LLM caller — routes to Ollama or Gemini based on LLM_BACKEND."""
+    import httpx
+    if _LLM_BACKEND == "ollama":
+        payload = {
+            "model": _OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_msg},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 2048},
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{_OLLAMA_URL}/api/chat", json=payload)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
+
+    # ── Gemini REST ───────────────────────────────────────────────────────────────────
     import google.generativeai as genai
     genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
     model = genai.GenerativeModel(
@@ -105,7 +127,7 @@ async def _call_gemini_json(
 
 async def _validate_llm() -> None:
     """Fast-fail: verify model is reachable before running any scenarios."""
-    print(f"  Validating LLM ({_GEMINI_MODEL})…", end=" ", flush=True)
+    print(f"  Validating LLM ({_ACTIVE_MODEL} via {_LLM_BACKEND})…", end=" ", flush=True)
     try:
         result = await _call_gemini("You are a test.", "Reply with the word OK only.")
         if not result.strip():
@@ -114,7 +136,7 @@ async def _validate_llm() -> None:
     except Exception as exc:
         print(f"FAILED\n")
         print(f"  [error] LLM validation failed: {exc}")
-        print(f"  Model attempted: {_GEMINI_MODEL}")
+        print(f"  Model attempted: {_ACTIVE_MODEL} (backend={_LLM_BACKEND})")
         print(f"  Tip: set GEMINI_MODEL in .env — check available models with:")
         print(f"       python -c \"import google.generativeai as g; g.configure(api_key='YOUR_KEY'); [print(m.name) for m in g.list_models()]\"")
         sys.exit(1)
