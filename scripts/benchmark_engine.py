@@ -95,13 +95,16 @@ async def _call_gemini(system_prompt: str, user_msg: str) -> str:
     return resp.text or ""
 
 
+_DEFAULT_TIMEOUT = 120.0 if _LLM_BACKEND == "ollama" else 30.0
+
+
 async def _call_gemini_json(
     system_prompt: str,
     user_msg: str,
     array: bool = False,
-    timeout: float = 30,
+    timeout: float = _DEFAULT_TIMEOUT,
 ) -> tuple[Any, str | None, int]:
-    """Call Gemini, parse JSON, repair once on failure. Returns (parsed, error|None, llm_calls_used)."""
+    """Call LLM, parse JSON, repair once on failure. Returns (parsed, error|None, llm_calls_used)."""
     raw = await asyncio.wait_for(_call_gemini(system_prompt, user_msg), timeout=timeout)
     parsed, err = _strip_json(raw, array=array)
 
@@ -115,7 +118,7 @@ async def _call_gemini_json(
     )
     try:
         repaired_raw = await asyncio.wait_for(
-            _call_gemini(_REPAIR_SYSTEM, repair_prompt), timeout=15
+            _call_gemini(_REPAIR_SYSTEM, repair_prompt), timeout=_DEFAULT_TIMEOUT
         )
         repaired, repair_err = _strip_json(repaired_raw, array=array)
         if repair_err is None:
@@ -455,7 +458,7 @@ async def run_scenario(
     hyp_parse_err = None
     try:
         hypotheses, hyp_parse_err, hyp_calls = await _call_gemini_json(
-            _HYP_SYSTEM, hyp_prompt, array=True, timeout=30
+            _HYP_SYSTEM, hyp_prompt, array=True, timeout=_DEFAULT_TIMEOUT
         )
         llm_calls += hyp_calls
         est_tokens += (len(_HYP_SYSTEM) + len(hyp_prompt)) // 4
@@ -534,7 +537,7 @@ async def run_scenario(
     rca_parse_err = None
     try:
         rca, rca_parse_err, rca_calls = await _call_gemini_json(
-            _RCA_SYSTEM, rca_prompt, array=False, timeout=30
+            _RCA_SYSTEM, rca_prompt, array=False, timeout=_DEFAULT_TIMEOUT
         )
         llm_calls += rca_calls
         est_tokens += (len(_RCA_SYSTEM) + len(rca_prompt)) // 4
