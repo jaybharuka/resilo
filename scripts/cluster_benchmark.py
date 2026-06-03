@@ -50,33 +50,27 @@ except ImportError:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_THRESHOLD = float(os.getenv("CLUSTER_THRESHOLD", "0.72"))
-EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+DEFAULT_THRESHOLD = float(os.getenv("CLUSTER_THRESHOLD", "0.50"))
+EMBEDDING_MODEL   = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
+_bench_model = None
+
+def _get_bench_model():
+    global _bench_model
+    if _bench_model is None:
+        from sentence_transformers import SentenceTransformer
+        _bench_model = SentenceTransformer(EMBEDDING_MODEL)
+    return _bench_model
+
+
 async def _embed(texts: list[str]) -> list[list[float]]:
-    """Call Gemini text-embedding-004 via REST (mirrors production memory_store.py)."""
-    import httpx
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{EMBEDDING_MODEL}:embedContent?key={api_key}"
-    )
-
-    async def _one(text: str) -> list[float]:
-        payload = {
-            "model": f"models/{EMBEDDING_MODEL}",
-            "content": {"parts": [{"text": text[:8000]}]},
-            "taskType": "SEMANTIC_SIMILARITY",
-        }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()["embedding"]["values"]
-
-    return await asyncio.gather(*[_one(t) for t in texts])
+    """Embed a batch of texts using sentence-transformers (mirrors production memory_store.py)."""
+    model = await asyncio.to_thread(_get_bench_model)
+    vectors = await asyncio.to_thread(model.encode, texts, normalize_embeddings=True)
+    return [v.tolist() for v in vectors]
 
 
 # ── Maths (mirrors correlation_engine.py — no shared import to keep standalone) ─
@@ -321,10 +315,6 @@ async def main() -> None:
     parser.add_argument("--out",       help="Write JSON results to this file")
     parser.add_argument("--verbose",   action="store_true")
     args = parser.parse_args()
-
-    if not os.getenv("GEMINI_API_KEY"):
-        print("[error] GEMINI_API_KEY not set")
-        sys.exit(1)
 
     if not FIXTURES_DIR.exists():
         print(f"[error] No cluster_fixtures/ directory found at {FIXTURES_DIR}")

@@ -5,7 +5,7 @@ Provides a MemoryStore abstraction that can be swapped to pgvector / Qdrant
 / Pinecone later without touching investigation_engine.py.
 
 Current backend:
-  - Embeddings: Gemini text-embedding-004 via REST (reuses GEMINI_API_KEY)
+  - Embeddings: sentence-transformers all-MiniLM-L6-v2 (local, free, 384-dim)
   - Storage: IncidentMemory.embedding (JSON float[] column)
   - Retrieval: cosine_similarity() in Python over fetched candidates
 
@@ -16,9 +16,8 @@ Public API:
     MemoryStore.update_outcome()     — update executed_action + success
 
 Keyword fallback:
-    If the Gemini embed call fails, search() falls back to the legacy
-    keyword-bucket scorer in incident_memory.py so investigations
-    always complete even without network access.
+    If sentence-transformers is not installed or fails, search() falls back
+    to the legacy keyword-bucket scorer in incident_memory.py.
 """
 from __future__ import annotations
 
@@ -31,7 +30,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,9 +44,8 @@ _log = logging.getLogger(__name__)
 
 # ── Embedding model constants ─────────────────────────────────────────────────
 
-_EMBED_MODEL       = "gemini-embedding-001"
-_EMBED_DIM         = 768          # text-embedding-004 output dimension
-_EMBED_TIMEOUT     = 10.0         # seconds
+_EMBED_MODEL       = "all-MiniLM-L6-v2"  # sentence-transformers local model
+_EMBED_DIM         = 384          # all-MiniLM-L6-v2 output dimension
 _COSINE_THRESHOLD  = 0.70         # minimum cosine similarity to surface a hit
 _CANDIDATE_LIMIT   = 500          # max rows pulled from DB before scoring
 
@@ -100,37 +97,36 @@ def _build_embed_text(
     return ". ".join(parts)
 
 
-# ── Gemini embedding call ─────────────────────────────────────────────────────
+# ── Local embedding (sentence-transformers) ──────────────────────────────────
+
+_st_model = None  # loaded once on first call
+
+def _get_st_model():
+    global _st_model
+    if _st_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _st_model = SentenceTransformer(_EMBED_MODEL)
+            _log.info("[EMBED] Loaded local model %s", _EMBED_MODEL)
+        except Exception as exc:
+            _log.warning("[EMBED] sentence-transformers unavailable: %s", exc)
+    return _st_model
+
 
 async def embed_text(text: str) -> list[float] | None:
     """
-    Call Gemini text-embedding-004 and return the embedding vector.
+    Embed text using a local sentence-transformers model (all-MiniLM-L6-v2).
+    Runs in a thread to avoid blocking the event loop.
     Returns None on failure — callers must handle gracefully.
     """
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        _log.debug("[EMBED] GEMINI_API_KEY not set — skipping embedding")
-        return None
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{_EMBED_MODEL}:embedContent?key={api_key}"
-    )
-    payload = {
-        "model": f"models/{_EMBED_MODEL}",
-        "content": {"parts": [{"text": text[:8000]}]},   # API max ~10k chars
-        "taskType": "SEMANTIC_SIMILARITY",
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=_EMBED_TIMEOUT) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            vector: list[float] = data["embedding"]["values"]
-            return vector
+        model = await asyncio.to_thread(_get_st_model)
+        if model is None:
+            return None
+        vector = await asyncio.to_thread(model.encode, text[:8000], normalize_embeddings=True)
+        return vector.tolist()
     except Exception as exc:
-        _log.warning("[EMBED] Gemini embed call failed: %s", exc)
+        _log.warning("[EMBED] Local embed failed: %s", exc)
         return None
 
 
