@@ -1,15 +1,32 @@
-"""One-shot threshold calibrator for all-MiniLM-L6-v2 against cluster fixtures."""
-import sys, json, math
+"""One-shot threshold calibrator for any sentence-transformers model.
+
+Usage:
+    python scripts/_calibrate_threshold.py
+    python scripts/_calibrate_threshold.py --model all-mpnet-base-v2
+"""
+import argparse, sys, json
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 FIXTURES_DIR = ROOT / "cluster_fixtures"
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", default="all-MiniLM-L6-v2",
+                    help="sentence-transformers model name")
+args = parser.parse_args()
+
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+print(f"Loading {args.model} ...")
+model = SentenceTransformer(args.model)
 
 fixtures = []
 for p in sorted(FIXTURES_DIR.glob("*.json")):

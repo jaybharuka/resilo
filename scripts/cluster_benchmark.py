@@ -312,6 +312,8 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark incident clustering quality")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                         help=f"Cosine similarity threshold (default: {DEFAULT_THRESHOLD})")
+    parser.add_argument("--model",     default=EMBEDDING_MODEL,
+                        help=f"sentence-transformers model name (default: {EMBEDDING_MODEL})")
     parser.add_argument("--out",       help="Write JSON results to this file")
     parser.add_argument("--verbose",   action="store_true")
     args = parser.parse_args()
@@ -325,7 +327,13 @@ async def main() -> None:
         print(f"[error] No fixture files found in {FIXTURES_DIR}")
         sys.exit(1)
 
-    print(f"\nCluster Benchmark — threshold={args.threshold}  fixtures={len(fixtures)}")
+    # Override module-level model if --model was supplied
+    global EMBEDDING_MODEL, _bench_model
+    if args.model != EMBEDDING_MODEL:
+        EMBEDDING_MODEL = args.model
+        _bench_model = None  # force reload with new model name
+
+    print(f"\nCluster Benchmark — model={EMBEDDING_MODEL}  threshold={args.threshold}  fixtures={len(fixtures)}")
     print("=" * 60)
 
     t0 = time.monotonic()
@@ -374,6 +382,7 @@ async def main() -> None:
         print(f"\n  ⚠ Chaining delta={avg_cd:.3f} — some clusters likely formed via chain links")
 
     summary = {
+        "model":                 EMBEDDING_MODEL,
         "threshold":             args.threshold,
         "n_fixtures":            n,
         "cluster_count_accuracy": count_ok / count_total_with_expected if count_total_with_expected else None,
