@@ -95,7 +95,7 @@ async def _call_gemini(system_prompt: str, user_msg: str) -> str:
     return resp.text or ""
 
 
-_DEFAULT_TIMEOUT = 120.0 if _LLM_BACKEND == "ollama" else 30.0
+_DEFAULT_TIMEOUT = 300.0 if _LLM_BACKEND == "ollama" else 30.0
 
 
 async def _call_gemini_json(

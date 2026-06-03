@@ -1,3 +1,7 @@
+"""Rewrites README.md as clean UTF-8."""
+import pathlib
+
+readme = """\
 # Resilo - AI-Powered Remote Monitoring and Auto-Remediation
 
 > Monitor any machine in real time. Let AI detect, analyze, and fix issues automatically. No VPN. No port forwarding. Zero config.
@@ -36,7 +40,7 @@ cd resilo
 
 # Python deps
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\\Scripts\\activate        # Windows
 pip install -r requirements.txt
 
 # Node deps
@@ -270,3 +274,7 @@ git push origin feature/my-feature
 ## License
 
 MIT
+"""
+
+pathlib.Path("README.md").write_text(readme, encoding="utf-8")
+print(f"Written {len(readme)} chars as UTF-8")
